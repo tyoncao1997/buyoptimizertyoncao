@@ -4,8 +4,39 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
-const DB_FILE = '/var/data/database.json';
+const PORT = process.env.PORT || 3000;
+
+// ==========================================
+// CẤU HÌNH ĐƯỜNG DẪN DATABASE AN TOÀN
+// ==========================================
+// 1. Ưu tiên tìm file database.json trong thư mục code hiện tại (giữ được data cũ)
+// 2. Nếu không có, kiểm tra thư mục /var/data/ (dành cho Render Disk)
+// 3. Nếu không có nữa, mặc định lưu ở thư mục hiện tại
+let DB_FILE = path.join(__dirname, 'database.json');
+
+if (!fs.existsSync(DB_FILE)) {
+    if (fs.existsSync('/var/data') && fs.existsSync('/var/data/database.json')) {
+        DB_FILE = '/var/data/database.json';
+        console.log('📁 Tìm thấy database tại /var/data/database.json');
+    }
+}
+
+// Khởi tạo database nếu chưa có
+if (!fs.existsSync(DB_FILE)) {
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify({ 
+            keys: [],           // Chỉ lưu key mua hàng
+            confirmedKeys: [], 
+            feedbackKeys: [],   // Chỉ lưu feedback key (tách riêng)
+            feedbacks: []       // Chứa nội dung đánh giá
+        }, null, 2));
+        console.log('✅ Đã tạo database.json mới tại:', DB_FILE);
+    } catch (err) {
+        console.error('❌ Lỗi tạo file database:', err);
+    }
+} else {
+    console.log('📁 Sử dụng database hiện có tại:', DB_FILE);
+}
 
 // ============ CẤU HÌNH THỜI GIAN XÓA KEY ============
 const KEY_EXPIRE_HOURS = 24;
@@ -22,27 +53,18 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Tăng giới hạn payload để nhận ảnh Base64
 app.use(express.static(__dirname));
 
-// Khởi tạo database nếu chưa có (Tách biệt keys, feedbackKeys và feedbacks)
-if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ 
-        keys: [],           // Chỉ lưu key mua hàng
-        confirmedKeys: [], 
-        feedbackKeys: [],   // Chỉ lưu feedback key (tách riêng)
-        feedbacks: []       // Chứa nội dung đánh giá
-    }, null, 2));
-    console.log('📁 Đã tạo database.json mới');
-}
-
 // ============ ĐỌC / GHI DATABASE ============
 function readDB() {
     try {
         const data = fs.readFileSync(DB_FILE, 'utf8');
         const parsed = JSON.parse(data);
-        // Đảm bảo cấu trúc hợp lệ
+        
+        // Đảm bảo cấu trúc hợp lệ, tự động bổ sung mảng nếu file cũ bị thiếu
         if (!parsed.keys) parsed.keys = [];
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
-        if (!parsed.feedbackKeys) parsed.feedbackKeys = []; // Mảng chứa Key Feedback riêng
-        if (!parsed.feedbacks) parsed.feedbacks = [];       // Mảng chứa bài đánh giá
+        if (!parsed.feedbackKeys) parsed.feedbackKeys = []; // Tự động thêm nếu thiếu
+        if (!parsed.feedbacks) parsed.feedbacks = [];
+        
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi đọc DB:', err.message);
@@ -90,11 +112,7 @@ function cleanupExpiredKeys() {
     if (deletedKeys.length > 0) {
         db.keys = remainingKeys;
         writeDB(db);
-
-        console.log(`\n🧹 [${new Date().toLocaleString('vi-VN')}] Đã xóa ${deletedKeys.length} key hết hạn:`);
-        deletedKeys.forEach(k => {
-            console.log(`   └─ ${k.key} | ${k.customerName} | ${k.plan} | Tạo cách đây ${k.ageHours}h`);
-        });
+        console.log(`\n🧹 [${new Date().toLocaleString('vi-VN')}] Đã xóa ${deletedKeys.length} key hết hạn.`);
     }
 
     return { deletedCount: deletedKeys.length, deletedKeys };
@@ -122,12 +140,7 @@ function calcRemainingTime(createdAt, status) {
     const diffMs = expiresAt - Date.now();
 
     if (diffMs <= 0) {
-        return {
-            hours: 0,
-            minutes: 0,
-            totalHours: 0,
-            isExpired: true
-        };
+        return { hours: 0, minutes: 0, totalHours: 0, isExpired: true };
     }
 
     return {
@@ -154,7 +167,6 @@ app.post('/api/create-key', (req, res) => {
     }
 
     cleanupExpiredKeys();
-
     const db = readDB();
 
     const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -207,7 +219,7 @@ app.post('/api/admin/keys', (req, res) => {
             };
         }
         
-        // Đính kèm Feedback Key vào data trả về (nếu có) để Frontend hiển thị
+        // Đính kèm Feedback Key vào data trả về (nếu có)
         if (k.status === 'confirmed') {
             const fbRecord = db.feedbackKeys.find(fk => fk.originalKey === k.key);
             if (fbRecord) {
@@ -227,7 +239,7 @@ app.post('/api/admin/keys', (req, res) => {
     });
 });
 
-// 3. Admin xác nhận key (Tách riêng logic tạo Feedback Key)
+// 3. Admin xác nhận key (Tạo Feedback Key)
 app.post('/api/admin/confirm-key', (req, res) => {
     const { username, password, pin, key } = req.body;
 
@@ -240,7 +252,6 @@ app.post('/api/admin/confirm-key', (req, res) => {
     }
 
     cleanupExpiredKeys();
-
     const db = readDB();
     const keyIndex = db.keys.findIndex(k => k.key === key);
 
@@ -254,30 +265,30 @@ app.post('/api/admin/confirm-key', (req, res) => {
         return res.status(400).json({ error: 'Key này đã được xác nhận trước đó.' });
     }
 
-    // 1. Cập nhật trạng thái Key mua hàng
+    // Cập nhật trạng thái
     db.keys[keyIndex].status = 'confirmed';
     db.keys[keyIndex].confirmedAt = new Date().toISOString();
     db.keys[keyIndex].confirmedBy = username;
 
-    // 2. Tạo Feedback Key MỚI và lưu vào mảng feedbackKeys riêng biệt
+    // Tạo Feedback Key MỚI
     const randomFB = Math.random().toString(36).substring(2, 8).toUpperCase();
     const feedbackKey = `FB-${randomFB}`;
     
     const newFeedbackKey = {
         feedbackKey: feedbackKey,
-        originalKey: key, // Liên kết với key mua hàng
+        originalKey: key,
         customerName: db.keys[keyIndex].customerName,
-        isUsed: false,    // Đánh dấu chưa dùng
+        isUsed: false,
         createdAt: new Date().toISOString()
     };
 
-    db.feedbackKeys.push(newFeedbackKey); // Lưu vào mảng riêng
+    db.feedbackKeys.push(newFeedbackKey);
     writeDB(db);
 
     res.json({
         success: true,
         message: 'Xác nhận Key thành công',
-        feedbackKey: feedbackKey, // Trả về cho Frontend hiển thị
+        feedbackKey: feedbackKey,
         keyData: db.keys[keyIndex]
     });
 });
@@ -285,13 +296,9 @@ app.post('/api/admin/confirm-key', (req, res) => {
 // 4. Check key CHÍNH XÁC (public)
 app.post('/api/check-key', (req, res) => {
     const { key } = req.body;
-
-    if (!key) {
-        return res.status(400).json({ error: 'Thiếu key' });
-    }
+    if (!key) return res.status(400).json({ error: 'Thiếu key' });
 
     cleanupExpiredKeys();
-
     const db = readDB();
     const keyData = db.keys.find(k => k.key.toUpperCase() === key.trim().toUpperCase());
 
@@ -306,15 +313,10 @@ app.post('/api/check-key', (req, res) => {
     res.json({
         success: true,
         keyData: {
-            key: keyData.key,
-            plan: keyData.plan,
-            status: keyData.status,
-            customerName: keyData.customerName,
-            transferContent: keyData.transferContent,
-            amount: keyData.amount,
-            createdAt: keyData.createdAt,
-            confirmedAt: keyData.confirmedAt,
-            expiresAt: keyData.expiresAt,
+            key: keyData.key, plan: keyData.plan, status: keyData.status,
+            customerName: keyData.customerName, transferContent: keyData.transferContent,
+            amount: keyData.amount, createdAt: keyData.createdAt,
+            confirmedAt: keyData.confirmedAt, expiresAt: keyData.expiresAt,
             remainingTime: rem ? { hours: rem.hours, minutes: rem.minutes } : null
         }
     });
@@ -324,47 +326,30 @@ app.post('/api/check-key', (req, res) => {
 app.post('/api/search-keys', (req, res) => {
     try {
         const { query } = req.body;
-
-        if (!query || !query.trim()) {
-            return res.status(400).json({
-                error: 'Vui lòng nhập từ khóa tìm kiếm!'
-            });
-        }
+        if (!query || !query.trim()) return res.status(400).json({ error: 'Vui lòng nhập từ khóa tìm kiếm!' });
 
         cleanupExpiredKeys();
-
         const searchTerm = query.trim().toUpperCase();
         const db = readDB();
         const allKeys = db.keys || [];
 
         const matches = allKeys.filter(k => {
-            const keyMatch = k.key && k.key.toUpperCase().includes(searchTerm);
-            const contentMatch = k.transferContent && k.transferContent.toUpperCase().includes(searchTerm);
-            const nameMatch = k.customerName && k.customerName.toUpperCase().includes(searchTerm);
-            return keyMatch || contentMatch || nameMatch;
+            return (k.key && k.key.toUpperCase().includes(searchTerm)) ||
+                   (k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)) ||
+                   (k.customerName && k.customerName.toUpperCase().includes(searchTerm));
         });
 
         matches.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
         const totalMatches = matches.length;
         const limitedMatches = matches.slice(0, 50);
 
         const results = limitedMatches.map(k => {
             const rem = calcRemainingTime(k.createdAt, k.status);
-
             return {
-                key: k.key,
-                plan: k.plan,
-                status: k.status,
-                customerName: k.customerName,
-                transferContent: k.transferContent,
-                amount: k.amount,
-                createdAt: k.createdAt,
-                confirmedAt: k.confirmedAt,
-                expiresAt: k.expiresAt,
-                remainingTime: rem && !rem.isExpired
-                    ? { hours: rem.hours, minutes: rem.minutes, totalHours: rem.totalHours }
-                    : null,
+                key: k.key, plan: k.plan, status: k.status, customerName: k.customerName,
+                transferContent: k.transferContent, amount: k.amount, createdAt: k.createdAt,
+                confirmedAt: k.confirmedAt, expiresAt: k.expiresAt,
+                remainingTime: rem && !rem.isExpired ? { hours: rem.hours, minutes: rem.minutes, totalHours: rem.totalHours } : null,
                 isExpired: rem ? rem.isExpired : false,
                 _matchType: {
                     key: !!(k.key && k.key.toUpperCase().includes(searchTerm)),
@@ -374,19 +359,10 @@ app.post('/api/search-keys', (req, res) => {
             };
         });
 
-        res.json({
-            success: true,
-            query: searchTerm,
-            count: results.length,
-            totalMatches: totalMatches,
-            results: results
-        });
-
+        res.json({ success: true, query: searchTerm, count: results.length, totalMatches, results });
     } catch (err) {
         console.error('❌ Search keys error:', err);
-        res.status(500).json({
-            error: 'Lỗi server khi tìm kiếm: ' + err.message
-        });
+        res.status(500).json({ error: 'Lỗi server khi tìm kiếm: ' + err.message });
     }
 });
 
@@ -394,24 +370,15 @@ app.post('/api/search-keys', (req, res) => {
 app.get('/api/confirmed-keys', (req, res) => {
     cleanupExpiredKeys();
     const db = readDB();
-    const confirmed = db.keys
-        .filter(k => k.status === 'confirmed')
-        .map(k => ({
-            key: k.key,
-            plan: k.plan,
-            customerName: k.customerName,
-            confirmedAt: k.confirmedAt
-        }));
+    const confirmed = db.keys.filter(k => k.status === 'confirmed')
+        .map(k => ({ key: k.key, plan: k.plan, customerName: k.customerName, confirmedAt: k.confirmedAt }));
     res.json({ keys: confirmed });
 });
 
 // 7. Admin dọn dẹp thủ công
 app.post('/api/admin/cleanup-now', (req, res) => {
     const { username, password } = req.body;
-
-    if (!verifyAdmin(username, password)) {
-        return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
-    }
+    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
 
     const result = cleanupExpiredKeys();
     res.json({
@@ -430,31 +397,21 @@ app.get('/api/feedbacks', (req, res) => {
     res.json({ feedbacks: sortedFeedbacks });
 });
 
-// 9. User: Gửi Feedback mới (Xác thực qua mảng feedbackKeys)
+// 9. User: Gửi Feedback mới
 app.post('/api/submit-feedback', (req, res) => {
     const { feedbackKey, rating, content, images } = req.body;
-
-    if (!feedbackKey || !rating || !content) {
-        return res.status(400).json({ error: 'Vui lòng nhập đầy đủ thông tin đánh giá.' });
-    }
+    if (!feedbackKey || !rating || !content) return res.status(400).json({ error: 'Vui lòng nhập đầy đủ thông tin đánh giá.' });
 
     const db = readDB();
-    // Tìm trong mảng feedbackKeys (chứ không tìm trong mảng keys)
+    // Tìm trong mảng feedbackKeys
     const fbKeyIndex = db.feedbackKeys.findIndex(fk => fk.feedbackKey === feedbackKey);
 
-    if (fbKeyIndex === -1) {
-        return res.status(400).json({ error: 'Feedback Key không hợp lệ hoặc không tồn tại.' });
-    }
+    if (fbKeyIndex === -1) return res.status(400).json({ error: 'Feedback Key không hợp lệ hoặc không tồn tại.' });
+    if (db.feedbackKeys[fbKeyIndex].isUsed) return res.status(400).json({ error: 'Feedback Key này đã được sử dụng rồi.' });
 
-    if (db.feedbackKeys[fbKeyIndex].isUsed) {
-        return res.status(400).json({ error: 'Feedback Key này đã được sử dụng rồi.' });
-    }
-
-    // Đánh dấu đã dùng trong mảng feedbackKeys
     db.feedbackKeys[fbKeyIndex].isUsed = true;
     db.feedbackKeys[fbKeyIndex].usedAt = new Date().toISOString();
 
-    // Tạo đối tượng feedback mới
     const newFeedback = {
         id: Date.now().toString(),
         customerName: db.feedbackKeys[fbKeyIndex].customerName || 'Khách ẩn danh',
@@ -474,10 +431,7 @@ app.post('/api/submit-feedback', (req, res) => {
 // 10. Admin: Lấy danh sách Feedback
 app.post('/api/admin/feedbacks', (req, res) => {
     const { username, password } = req.body;
-
-    if (!verifyAdmin(username, password)) {
-        return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu Admin!' });
-    }
+    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu Admin!' });
 
     const db = readDB();
     const sortedFeedbacks = [...db.feedbacks].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
