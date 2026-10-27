@@ -7,12 +7,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-// TỰ ĐỘNG TÌM VÀ CẤU HÌNH FILE DATABASE
+// TỰ ĐỘNG TÌM VÀ CẤU HÌNH DATABASE
 // ==========================================
-// Ưu tiên tìm file database.json trong thư mục dự án hiện tại
-let DB_FILE = path.join(__dirname, 'database.json');
+let DB_FILE = path.join(__dirname, 'database.json'); 
 
-// Nếu không có ở thư mục dự án, kiểm tra xem có file cũ ở /var/data/ không
+// Nếu không có ở thư mục hiện tại, kiểm tra xem có file cũ ở /var/data/ không
 if (!fs.existsSync(DB_FILE) && fs.existsSync('/var/data/database.json')) {
     DB_FILE = '/var/data/database.json';
     console.log('📁 Tìm thấy database cũ tại /var/data/database.json');
@@ -20,7 +19,7 @@ if (!fs.existsSync(DB_FILE) && fs.existsSync('/var/data/database.json')) {
     console.log('📁 Sử dụng database tại thư mục dự án:', DB_FILE);
 }
 
-// Khởi tạo file database nếu chưa có (đảm bảo đủ 4 mảng)
+// Khởi tạo file database nếu chưa có
 if (!fs.existsSync(DB_FILE)) {
     try {
         fs.writeFileSync(DB_FILE, JSON.stringify({ 
@@ -35,27 +34,13 @@ if (!fs.existsSync(DB_FILE)) {
     }
 }
 
-// ============ CẤU HÌNH CHUNG ============
-const KEY_EXPIRE_HOURS = 24;
-const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-
-const ADMIN_USERNAME = 'caoquangtuan';
-const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
-const ADMIN_PIN = '997722';
-
-// Middleware
-app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Cho phép nhận ảnh Base64
-app.use(express.static(__dirname));
-
-// ============ ĐỌC / GHI DATABASE AN TOÀN ============
+// ============ ĐỌC / GHI DATABASE ============
 function readDB() {
     try {
         const data = fs.readFileSync(DB_FILE, 'utf8');
         const parsed = JSON.parse(data);
         
-        // Tự động bổ sung mảng nếu file cũ bị thiếu (Giữ nguyên data cũ)
+        // Tự động bổ sung mảng nếu file cũ bị thiếu (Bảo toàn data cũ)
         if (!parsed.keys) parsed.keys = [];
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
         if (!parsed.feedbackKeys) parsed.feedbackKeys = []; 
@@ -76,19 +61,30 @@ function writeDB(data) {
     }
 }
 
+// ============ CẤU HÌNH CHUNG ============
+const KEY_EXPIRE_HOURS = 24;
+const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
+const ADMIN_USERNAME = 'caoquangtuan';
+const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
+const ADMIN_PIN = '997722';
+
+// Middleware
+app.use(cors());
+app.use(express.json({ limit: '50mb' })); // Cho phép nhận ảnh Base64
+app.use(express.static(__dirname));
+
 // ============ HÀM DỌN DẸP KEY HẾT HẠN ============
 function cleanupExpiredKeys() {
     const db = readDB();
     const now = Date.now();
-
     const deletedKeys = [];
     const remainingKeys = [];
 
     db.keys.forEach(k => {
         if (k.status === 'pending') {
-            const createdAt = new Date(k.createdAt).getTime();
-            const age = now - createdAt;
-
+            const age = now - new Date(k.createdAt).getTime();
             if (age > KEY_EXPIRE_MS) {
                 deletedKeys.push({ key: k.key, customerName: k.customerName });
             } else {
@@ -102,34 +98,23 @@ function cleanupExpiredKeys() {
     if (deletedKeys.length > 0) {
         db.keys = remainingKeys;
         writeDB(db);
-        console.log(`\n🧹 [${new Date().toLocaleString('vi-VN')}] Đã xóa ${deletedKeys.length} key hết hạn.`);
+        console.log(`\n🧹 Đã xóa ${deletedKeys.length} key hết hạn.`);
     }
-
     return { deletedCount: deletedKeys.length };
 }
 
-// ============ CRON JOB DỌN DẸP TỰ ĐỘNG ============
-setTimeout(() => {
-    console.log('🚀 Kiểm tra key hết hạn lần đầu...');
-    cleanupExpiredKeys();
-}, 5000);
-
-setInterval(() => {
-    cleanupExpiredKeys();
-}, CLEANUP_INTERVAL_MS);
+setTimeout(() => { cleanupExpiredKeys(); }, 5000);
+setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
 
 // ============ CÁC HÀM HỖ TRỢ ============
 function calcRemainingTime(createdAt, status) {
     if (status !== 'pending') return null;
-    const created = new Date(createdAt).getTime();
-    const expiresAt = created + KEY_EXPIRE_MS;
-    const diffMs = expiresAt - Date.now();
-
+    const diffMs = (new Date(createdAt).getTime() + KEY_EXPIRE_MS) - Date.now();
     if (diffMs <= 0) return { hours: 0, minutes: 0, totalHours: 0, isExpired: true };
     return {
-        hours: Math.floor(diffMs / (60 * 60 * 1000)),
-        minutes: Math.floor((diffMs % (60 * 60 * 1000)) / (60 * 1000)),
-        totalHours: diffMs / (60 * 60 * 1000),
+        hours: Math.floor(diffMs / 3600000),
+        minutes: Math.floor((diffMs % 3600000) / 60000),
+        totalHours: diffMs / 3600000,
         isExpired: false
     };
 }
@@ -173,12 +158,10 @@ app.post('/api/admin/keys', (req, res) => {
     const db = readDB();
 
     const keys = db.keys.map(k => {
-        // Đính kèm thời gian còn lại cho key pending
         if (k.status === 'pending') {
             const rem = calcRemainingTime(k.createdAt, k.status);
             return { ...k, remainingHours: rem.hours, remainingMinutes: rem.minutes };
         }
-        // Đính kèm Feedback Key cho key đã xác nhận
         if (k.status === 'confirmed') {
             const fbRecord = db.feedbackKeys.find(fk => fk.originalKey === k.key);
             if (fbRecord) {
@@ -192,7 +175,7 @@ app.post('/api/admin/keys', (req, res) => {
     res.json({ keys });
 });
 
-// 3. Admin xác nhận key (TRẢ VỀ FEEDBACK KEY)
+// 3. Admin xác nhận key (Tạo Feedback Key)
 app.post('/api/admin/confirm-key', (req, res) => {
     const { username, password, pin, key } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
@@ -210,7 +193,7 @@ app.post('/api/admin/confirm-key', (req, res) => {
     db.keys[keyIndex].confirmedAt = new Date().toISOString();
     db.keys[keyIndex].confirmedBy = username;
 
-    // Tạo Feedback Key mới
+    // TẠO FEEDBACK KEY MỚI
     const randomFB = Math.random().toString(36).substring(2, 8).toUpperCase();
     const feedbackKey = `FB-${randomFB}`;
     
@@ -224,11 +207,10 @@ app.post('/api/admin/confirm-key', (req, res) => {
     
     writeDB(db);
 
-    // TRẢ VỀ CHO FRONTEND
     res.json({
         success: true,
         message: 'Xác nhận Key thành công',
-        feedbackKey: feedbackKey, 
+        feedbackKey: feedbackKey, // Trả về cho Frontend
         keyData: db.keys[keyIndex]
     });
 });
@@ -245,21 +227,52 @@ app.post('/api/check-key', (req, res) => {
     res.json({ success: true, keyData });
 });
 
-// 5. Tìm kiếm Key nâng cao (Public)
+// 5. Tìm kiếm Key nâng cao (ĐÃ FIX LỖI TRẢ VỀ RESULTS)
 app.post('/api/search-keys', (req, res) => {
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ error: 'Nhập từ khóa' });
+    try {
+        const { query } = req.body;
+        if (!query) return res.status(400).json({ error: 'Nhập từ khóa' });
 
-    const searchTerm = query.trim().toUpperCase();
-    const db = readDB();
-    
-    const matches = db.keys.filter(k => 
-        (k.key && k.key.toUpperCase().includes(searchTerm)) ||
-        (k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)) ||
-        (k.customerName && k.customerName.toUpperCase().includes(searchTerm))
-    );
-    
-    res.json({ success: true, results: matches });
+        const searchTerm = query.trim().toUpperCase();
+        const db = readDB();
+        
+        const matches = db.keys.filter(k => 
+            (k.key && k.key.toUpperCase().includes(searchTerm)) ||
+            (k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)) ||
+            (k.customerName && k.customerName.toUpperCase().includes(searchTerm))
+        );
+
+        // Định dạng lại mảng trả về đúng chuẩn Frontend
+        const formattedResults = matches.map(k => {
+            const rem = calcRemainingTime(k.createdAt, k.status);
+            return {
+                key: k.key,
+                plan: k.plan,
+                status: k.status,
+                customerName: k.customerName,
+                transferContent: k.transferContent,
+                amount: k.amount,
+                createdAt: k.createdAt,
+                confirmedAt: k.confirmedAt,
+                remainingTime: rem && !rem.isExpired ? rem : null,
+                isExpired: rem ? rem.isExpired : false,
+                _matchType: {
+                    key: !!(k.key && k.key.toUpperCase().includes(searchTerm)),
+                    content: !!(k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)),
+                    name: !!(k.customerName && k.customerName.toUpperCase().includes(searchTerm))
+                }
+            };
+        });
+
+        res.json({ 
+            success: true, 
+            results: formattedResults, 
+            count: formattedResults.length,
+            totalMatches: formattedResults.length
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Lỗi server khi tìm kiếm' });
+    }
 });
 
 // 6. Lấy danh sách Key đã xác nhận (Public)
@@ -295,11 +308,9 @@ app.post('/api/submit-feedback', (req, res) => {
     if (fbIdx === -1) return res.status(400).json({ error: 'Feedback Key không hợp lệ.' });
     if (db.feedbackKeys[fbIdx].isUsed) return res.status(400).json({ error: 'Feedback Key đã sử dụng.' });
 
-    // Đánh dấu đã dùng
     db.feedbackKeys[fbIdx].isUsed = true;
     db.feedbackKeys[fbIdx].usedAt = new Date().toISOString();
 
-    // Lưu bài đánh giá
     db.feedbacks.push({
         id: Date.now().toString(), 
         customerName: db.feedbackKeys[fbIdx].customerName,
@@ -336,17 +347,14 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// 404 Handler
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại' }));
 
-// Khởi động Server
 app.listen(PORT, () => {
     console.log(`\n✅ TYON OPTIMIZER SERVER ĐANG CHẠY`);
     console.log(`🌐 URL: http://localhost:${PORT}`);
     console.log(`📁 Database: ${DB_FILE}`);
 });
 
-// Graceful Shutdown
 process.on('SIGINT', () => { process.exit(0); });
 process.on('uncaughtException', (err) => console.error('❌ Lỗi:', err));
 process.on('unhandledRejection', (err) => console.error('❌ Lỗi:', err));
