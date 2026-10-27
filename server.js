@@ -5,7 +5,7 @@ const path = require('path');
 
 const app = express();
 const PORT = 3000;
-const DB_FILE = path.join(__dirname, 'database.json');
+const DB_FILE = '/var/data/database.json';
 
 // ============ CẤU HÌNH THỜI GIAN XÓA KEY ============
 const KEY_EXPIRE_HOURS = 24;
