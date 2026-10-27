@@ -33,6 +33,7 @@ function readDB() {
     try {
         const data = fs.readFileSync(DB_FILE, 'utf8');
         const parsed = JSON.parse(data);
+        // Đảm bảo cấu trúc hợp lệ
         if (!parsed.keys) parsed.keys = [];
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
         return parsed;
@@ -137,7 +138,7 @@ function verifyAdmin(username, password) {
 
 // ============ API ENDPOINTS ============
 
-// 1. Tạo key mới (Đuôi key không bao giờ trùng lặp)
+// 1. Tạo key mới
 app.post('/api/create-key', (req, res) => {
     const { plan, customerName, transferContent, amount } = req.body;
 
@@ -146,16 +147,12 @@ app.post('/api/create-key', (req, res) => {
     }
 
     cleanupExpiredKeys();
+
     const db = readDB();
 
-    // Tạo đuôi key không bao giờ trùng:
-    // Random 6 ký tự + Timestamp mili-giây (VD: 6T8S02-MVQXFTLR)
     const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
     const timestamp = Date.now().toString(36).toUpperCase();
-    const uniqueSuffix = `${randomPart}-${timestamp}`; 
-    
-    // Key hoàn chỉnh: TYON-ADVANCED-6T8S02-MVQXFTLR
-    const key = `TYON-${plan.toUpperCase()}-${uniqueSuffix}`;
+    const key = `TYON-${plan.toUpperCase()}-${randomPart}-${timestamp}`;
 
     const newKey = {
         key: key,
@@ -263,6 +260,7 @@ app.post('/api/check-key', (req, res) => {
     }
 
     cleanupExpiredKeys();
+
     const db = readDB();
     const keyData = db.keys.find(k => k.key.toUpperCase() === key.trim().toUpperCase());
 
@@ -291,42 +289,42 @@ app.post('/api/check-key', (req, res) => {
     });
 });
 
-// 5. ✅ SEARCH KEY NÂNG CAO (TÌM CHÍNH XÁC HOẶC THEO ĐUÔI KEY)
+// 5. ✅ SEARCH KEY NÂNG CAO - TÌM THEO KEY / NỘI DUNG CK / TÊN KH
 app.post('/api/search-keys', (req, res) => {
     try {
         const { query } = req.body;
 
         if (!query || !query.trim()) {
-            return res.status(400).json({ error: 'Vui lòng nhập Key hoặc Nội dung CK!' });
+            return res.status(400).json({
+                error: 'Vui lòng nhập từ khóa tìm kiếm!'
+            });
         }
 
+        // Dọn dẹp trước để không hiển thị key đã hết hạn
         cleanupExpiredKeys();
-        const db = readDB();
+
         const searchTerm = query.trim().toUpperCase();
+        const db = readDB();
+        const allKeys = db.keys || [];  // ✅ FIX: dùng db.keys thay vì keysDB
 
-        // Tìm kiếm CHÍNH XÁC (không dùng includes để tránh ra hàng loạt)
-        const matches = db.keys.filter(k => {
-            const keyString = k.key ? k.key.toUpperCase() : '';
-            const contentString = k.transferContent ? k.transferContent.toUpperCase() : '';
-            
-            // Điều kiện 1: Nội dung CK khớp 100%
-            // Điều kiện 2: Mã Key khớp 100%
-            // Điều kiện 3: Chỉ nhập ĐUÔI key (VD: 6T8S02-MVQXFTLR) -> Dùng endsWith
-            const isContentMatch = contentString === searchTerm;
-            const isFullKeyMatch = keyString === searchTerm;
-            const isTailKeyMatch = keyString.endsWith(`-${searchTerm}`);
-
-            return isContentMatch || isFullKeyMatch || isTailKeyMatch;
+        // Tìm kiếm substring trên 3 trường: key, transferContent, customerName
+        const matches = allKeys.filter(k => {
+            const keyMatch = k.key && k.key.toUpperCase().includes(searchTerm);
+            const contentMatch = k.transferContent && k.transferContent.toUpperCase().includes(searchTerm);
+            const nameMatch = k.customerName && k.customerName.toUpperCase().includes(searchTerm);
+            return keyMatch || contentMatch || nameMatch;
         });
 
-        // Format kết quả
-        const results = matches.map(k => {
+        // Sắp xếp: mới nhất trước
+        matches.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        const totalMatches = matches.length;
+        const limitedMatches = matches.slice(0, 50);
+
+        // Format kết quả trả về
+        const results = limitedMatches.map(k => {
             const rem = calcRemainingTime(k.createdAt, k.status);
-            
-            // Đánh dấu xem khớp do key hay nội dung (để frontend highlight)
-            const keyString = k.key ? k.key.toUpperCase() : '';
-            const isMatchByKey = keyString === searchTerm || keyString.endsWith(`-${searchTerm}`);
-            
+
             return {
                 key: k.key,
                 plan: k.plan,
@@ -336,13 +334,16 @@ app.post('/api/search-keys', (req, res) => {
                 amount: k.amount,
                 createdAt: k.createdAt,
                 confirmedAt: k.confirmedAt,
+                expiresAt: k.expiresAt,
                 remainingTime: rem && !rem.isExpired
                     ? { hours: rem.hours, minutes: rem.minutes, totalHours: rem.totalHours }
                     : null,
                 isExpired: rem ? rem.isExpired : false,
+                // Đánh dấu trường nào match để frontend highlight
                 _matchType: {
-                    key: isMatchByKey,
-                    content: !isMatchByKey // Nếu không khớp key thì chắc chắn khớp nội dung
+                    key: !!(k.key && k.key.toUpperCase().includes(searchTerm)),
+                    content: !!(k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)),
+                    name: !!(k.customerName && k.customerName.toUpperCase().includes(searchTerm))
                 }
             };
         });
@@ -351,13 +352,15 @@ app.post('/api/search-keys', (req, res) => {
             success: true,
             query: searchTerm,
             count: results.length,
-            totalMatches: matches.length,
+            totalMatches: totalMatches,
             results: results
         });
 
     } catch (err) {
         console.error('❌ Search keys error:', err);
-        res.status(500).json({ error: 'Lỗi server khi tìm kiếm: ' + err.message });
+        res.status(500).json({
+            error: 'Lỗi server khi tìm kiếm: ' + err.message
+        });
     }
 });
 
@@ -428,7 +431,7 @@ app.listen(PORT, () => {
     console.log(`\n📋 API Endpoints:`);
     console.log(`   POST /api/create-key       - Tạo key mới`);
     console.log(`   POST /api/check-key        - Check chính xác 1 key`);
-    console.log(`   POST /api/search-keys      - 🔍 Tìm kiếm chính xác / đuôi key`);
+    console.log(`   POST /api/search-keys      - 🔍 Tìm kiếm nâng cao`);
     console.log(`   GET  /api/confirmed-keys   - Danh sách key đã xác nhận`);
     console.log(`   GET  /api/health           - Health check`);
     console.log(`   POST /api/admin/keys       - [ADMIN] Danh sách tất cả key`);
