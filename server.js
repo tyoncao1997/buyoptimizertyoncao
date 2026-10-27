@@ -22,9 +22,14 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Tăng giới hạn payload để nhận ảnh Base64
 app.use(express.static(__dirname));
 
-// Khởi tạo database nếu chưa có (thêm mảng feedbacks)
+// Khởi tạo database nếu chưa có (Tách biệt keys, feedbackKeys và feedbacks)
 if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ keys: [], confirmedKeys: [], feedbacks: [] }, null, 2));
+    fs.writeFileSync(DB_FILE, JSON.stringify({ 
+        keys: [],           // Chỉ lưu key mua hàng
+        confirmedKeys: [], 
+        feedbackKeys: [],   // Chỉ lưu feedback key (tách riêng)
+        feedbacks: []       // Chứa nội dung đánh giá
+    }, null, 2));
     console.log('📁 Đã tạo database.json mới');
 }
 
@@ -36,11 +41,12 @@ function readDB() {
         // Đảm bảo cấu trúc hợp lệ
         if (!parsed.keys) parsed.keys = [];
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
-        if (!parsed.feedbacks) parsed.feedbacks = []; // Khởi tạo mảng feedbacks nếu chưa có
+        if (!parsed.feedbackKeys) parsed.feedbackKeys = []; // Mảng chứa Key Feedback riêng
+        if (!parsed.feedbacks) parsed.feedbacks = [];       // Mảng chứa bài đánh giá
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi đọc DB:', err.message);
-        return { keys: [], confirmedKeys: [], feedbacks: [] };
+        return { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
     }
 }
 
@@ -165,8 +171,7 @@ app.post('/api/create-key', (req, res) => {
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + KEY_EXPIRE_MS).toISOString(),
         confirmedAt: null,
-        confirmedBy: null,
-        feedbackKey: null // Thêm trường lưu Feedback Key
+        confirmedBy: null
     };
 
     db.keys.push(newKey);
@@ -201,6 +206,15 @@ app.post('/api/admin/keys', (req, res) => {
                 isExpiringSoon: rem ? rem.hours < 6 : false
             };
         }
+        
+        // Đính kèm Feedback Key vào data trả về (nếu có) để Frontend hiển thị
+        if (k.status === 'confirmed') {
+            const fbRecord = db.feedbackKeys.find(fk => fk.originalKey === k.key);
+            if (fbRecord) {
+                k.feedbackKey = fbRecord.feedbackKey;
+                k.isFeedbackUsed = fbRecord.isUsed;
+            }
+        }
         return k;
     });
 
@@ -213,7 +227,7 @@ app.post('/api/admin/keys', (req, res) => {
     });
 });
 
-// 3. Admin xác nhận key (Đã thêm logic tạo Feedback Key)
+// 3. Admin xác nhận key (Tách riêng logic tạo Feedback Key)
 app.post('/api/admin/confirm-key', (req, res) => {
     const { username, password, pin, key } = req.body;
 
@@ -240,16 +254,24 @@ app.post('/api/admin/confirm-key', (req, res) => {
         return res.status(400).json({ error: 'Key này đã được xác nhận trước đó.' });
     }
 
-    // Tạo Feedback Key ngẫu nhiên
-    const randomFB = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const feedbackKey = `FB-${randomFB}`;
-
+    // 1. Cập nhật trạng thái Key mua hàng
     db.keys[keyIndex].status = 'confirmed';
     db.keys[keyIndex].confirmedAt = new Date().toISOString();
     db.keys[keyIndex].confirmedBy = username;
-    db.keys[keyIndex].feedbackKey = feedbackKey; // Lưu Feedback Key vào data
-    db.keys[keyIndex].isFeedbackUsed = false;    // Đánh dấu Feedback Key chưa sử dụng
 
+    // 2. Tạo Feedback Key MỚI và lưu vào mảng feedbackKeys riêng biệt
+    const randomFB = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const feedbackKey = `FB-${randomFB}`;
+    
+    const newFeedbackKey = {
+        feedbackKey: feedbackKey,
+        originalKey: key, // Liên kết với key mua hàng
+        customerName: db.keys[keyIndex].customerName,
+        isUsed: false,    // Đánh dấu chưa dùng
+        createdAt: new Date().toISOString()
+    };
+
+    db.feedbackKeys.push(newFeedbackKey); // Lưu vào mảng riêng
     writeDB(db);
 
     res.json({
@@ -404,12 +426,11 @@ app.post('/api/admin/cleanup-now', (req, res) => {
 // 8. Public: Lấy danh sách Feedback
 app.get('/api/feedbacks', (req, res) => {
     const db = readDB();
-    // Trả về mảng feedbacks (sắp xếp mới nhất trước)
     const sortedFeedbacks = [...db.feedbacks].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     res.json({ feedbacks: sortedFeedbacks });
 });
 
-// 9. User: Gửi Feedback mới (Có xác thực Feedback Key)
+// 9. User: Gửi Feedback mới (Xác thực qua mảng feedbackKeys)
 app.post('/api/submit-feedback', (req, res) => {
     const { feedbackKey, rating, content, images } = req.body;
 
@@ -418,28 +439,29 @@ app.post('/api/submit-feedback', (req, res) => {
     }
 
     const db = readDB();
-    // Tìm key chứa feedbackKey này
-    const targetKeyIndex = db.keys.findIndex(k => k.feedbackKey === feedbackKey);
+    // Tìm trong mảng feedbackKeys (chứ không tìm trong mảng keys)
+    const fbKeyIndex = db.feedbackKeys.findIndex(fk => fk.feedbackKey === feedbackKey);
 
-    if (targetKeyIndex === -1) {
+    if (fbKeyIndex === -1) {
         return res.status(400).json({ error: 'Feedback Key không hợp lệ hoặc không tồn tại.' });
     }
 
-    if (db.keys[targetKeyIndex].isFeedbackUsed) {
+    if (db.feedbackKeys[fbKeyIndex].isUsed) {
         return res.status(400).json({ error: 'Feedback Key này đã được sử dụng rồi.' });
     }
 
-    // Đánh dấu đã dùng
-    db.keys[targetKeyIndex].isFeedbackUsed = true;
+    // Đánh dấu đã dùng trong mảng feedbackKeys
+    db.feedbackKeys[fbKeyIndex].isUsed = true;
+    db.feedbackKeys[fbKeyIndex].usedAt = new Date().toISOString();
 
     // Tạo đối tượng feedback mới
     const newFeedback = {
         id: Date.now().toString(),
-        customerName: db.keys[targetKeyIndex].customerName || 'Khách ẩn danh',
+        customerName: db.feedbackKeys[fbKeyIndex].customerName || 'Khách ẩn danh',
         feedbackKey: feedbackKey,
         rating: Number(rating),
         content: content,
-        images: images || [], // Mảng base64
+        images: images || [],
         createdAt: new Date().toISOString()
     };
 
@@ -472,6 +494,7 @@ app.get('/api/health', (req, res) => {
         totalKeys: db.keys.length,
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
         confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length,
+        totalFeedbackKeys: db.feedbackKeys.length,
         totalFeedbacks: db.feedbacks.length,
         timestamp: new Date().toISOString()
     });
