@@ -19,12 +19,12 @@ const ADMIN_PIN = '997722';
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Tăng giới hạn payload để nhận ảnh Base64
 app.use(express.static(__dirname));
 
-// Khởi tạo database nếu chưa có
+// Khởi tạo database nếu chưa có (thêm mảng feedbacks)
 if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ keys: [], confirmedKeys: [] }, null, 2));
+    fs.writeFileSync(DB_FILE, JSON.stringify({ keys: [], confirmedKeys: [], feedbacks: [] }, null, 2));
     console.log('📁 Đã tạo database.json mới');
 }
 
@@ -36,10 +36,11 @@ function readDB() {
         // Đảm bảo cấu trúc hợp lệ
         if (!parsed.keys) parsed.keys = [];
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
+        if (!parsed.feedbacks) parsed.feedbacks = []; // Khởi tạo mảng feedbacks nếu chưa có
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi đọc DB:', err.message);
-        return { keys: [], confirmedKeys: [] };
+        return { keys: [], confirmedKeys: [], feedbacks: [] };
     }
 }
 
@@ -164,7 +165,8 @@ app.post('/api/create-key', (req, res) => {
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + KEY_EXPIRE_MS).toISOString(),
         confirmedAt: null,
-        confirmedBy: null
+        confirmedBy: null,
+        feedbackKey: null // Thêm trường lưu Feedback Key
     };
 
     db.keys.push(newKey);
@@ -211,7 +213,7 @@ app.post('/api/admin/keys', (req, res) => {
     });
 });
 
-// 3. Admin xác nhận key
+// 3. Admin xác nhận key (Đã thêm logic tạo Feedback Key)
 app.post('/api/admin/confirm-key', (req, res) => {
     const { username, password, pin, key } = req.body;
 
@@ -238,20 +240,27 @@ app.post('/api/admin/confirm-key', (req, res) => {
         return res.status(400).json({ error: 'Key này đã được xác nhận trước đó.' });
     }
 
+    // Tạo Feedback Key ngẫu nhiên
+    const randomFB = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const feedbackKey = `FB-${randomFB}`;
+
     db.keys[keyIndex].status = 'confirmed';
     db.keys[keyIndex].confirmedAt = new Date().toISOString();
     db.keys[keyIndex].confirmedBy = username;
+    db.keys[keyIndex].feedbackKey = feedbackKey; // Lưu Feedback Key vào data
+    db.keys[keyIndex].isFeedbackUsed = false;    // Đánh dấu Feedback Key chưa sử dụng
 
     writeDB(db);
 
     res.json({
         success: true,
-        message: 'Key đã được xác nhận thành công',
+        message: 'Xác nhận Key thành công',
+        feedbackKey: feedbackKey, // Trả về cho Frontend hiển thị
         keyData: db.keys[keyIndex]
     });
 });
 
-// 4. Check key CHÍNH XÁC (public - giữ nguyên cho tương thích)
+// 4. Check key CHÍNH XÁC (public)
 app.post('/api/check-key', (req, res) => {
     const { key } = req.body;
 
@@ -289,7 +298,7 @@ app.post('/api/check-key', (req, res) => {
     });
 });
 
-// 5. ✅ SEARCH KEY NÂNG CAO - TÌM THEO KEY / NỘI DUNG CK / TÊN KH
+// 5. SEARCH KEY NÂNG CAO
 app.post('/api/search-keys', (req, res) => {
     try {
         const { query } = req.body;
@@ -300,14 +309,12 @@ app.post('/api/search-keys', (req, res) => {
             });
         }
 
-        // Dọn dẹp trước để không hiển thị key đã hết hạn
         cleanupExpiredKeys();
 
         const searchTerm = query.trim().toUpperCase();
         const db = readDB();
-        const allKeys = db.keys || [];  // ✅ FIX: dùng db.keys thay vì keysDB
+        const allKeys = db.keys || [];
 
-        // Tìm kiếm substring trên 3 trường: key, transferContent, customerName
         const matches = allKeys.filter(k => {
             const keyMatch = k.key && k.key.toUpperCase().includes(searchTerm);
             const contentMatch = k.transferContent && k.transferContent.toUpperCase().includes(searchTerm);
@@ -315,13 +322,11 @@ app.post('/api/search-keys', (req, res) => {
             return keyMatch || contentMatch || nameMatch;
         });
 
-        // Sắp xếp: mới nhất trước
         matches.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
         const totalMatches = matches.length;
         const limitedMatches = matches.slice(0, 50);
 
-        // Format kết quả trả về
         const results = limitedMatches.map(k => {
             const rem = calcRemainingTime(k.createdAt, k.status);
 
@@ -339,7 +344,6 @@ app.post('/api/search-keys', (req, res) => {
                     ? { hours: rem.hours, minutes: rem.minutes, totalHours: rem.totalHours }
                     : null,
                 isExpired: rem ? rem.isExpired : false,
-                // Đánh dấu trường nào match để frontend highlight
                 _matchType: {
                     key: !!(k.key && k.key.toUpperCase().includes(searchTerm)),
                     content: !!(k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)),
@@ -395,7 +399,71 @@ app.post('/api/admin/cleanup-now', (req, res) => {
     });
 });
 
-// 8. Health check
+// ============ API DÀNH CHO FEEDBACK ============
+
+// 8. Public: Lấy danh sách Feedback
+app.get('/api/feedbacks', (req, res) => {
+    const db = readDB();
+    // Trả về mảng feedbacks (sắp xếp mới nhất trước)
+    const sortedFeedbacks = [...db.feedbacks].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ feedbacks: sortedFeedbacks });
+});
+
+// 9. User: Gửi Feedback mới (Có xác thực Feedback Key)
+app.post('/api/submit-feedback', (req, res) => {
+    const { feedbackKey, rating, content, images } = req.body;
+
+    if (!feedbackKey || !rating || !content) {
+        return res.status(400).json({ error: 'Vui lòng nhập đầy đủ thông tin đánh giá.' });
+    }
+
+    const db = readDB();
+    // Tìm key chứa feedbackKey này
+    const targetKeyIndex = db.keys.findIndex(k => k.feedbackKey === feedbackKey);
+
+    if (targetKeyIndex === -1) {
+        return res.status(400).json({ error: 'Feedback Key không hợp lệ hoặc không tồn tại.' });
+    }
+
+    if (db.keys[targetKeyIndex].isFeedbackUsed) {
+        return res.status(400).json({ error: 'Feedback Key này đã được sử dụng rồi.' });
+    }
+
+    // Đánh dấu đã dùng
+    db.keys[targetKeyIndex].isFeedbackUsed = true;
+
+    // Tạo đối tượng feedback mới
+    const newFeedback = {
+        id: Date.now().toString(),
+        customerName: db.keys[targetKeyIndex].customerName || 'Khách ẩn danh',
+        feedbackKey: feedbackKey,
+        rating: Number(rating),
+        content: content,
+        images: images || [], // Mảng base64
+        createdAt: new Date().toISOString()
+    };
+
+    db.feedbacks.push(newFeedback);
+    writeDB(db);
+
+    res.json({ success: true, message: 'Gửi đánh giá thành công!', feedback: newFeedback });
+});
+
+// 10. Admin: Lấy danh sách Feedback
+app.post('/api/admin/feedbacks', (req, res) => {
+    const { username, password } = req.body;
+
+    if (!verifyAdmin(username, password)) {
+        return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu Admin!' });
+    }
+
+    const db = readDB();
+    const sortedFeedbacks = [...db.feedbacks].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
+    res.json({ feedbacks: sortedFeedbacks });
+});
+
+// ============ HEALTH CHECK ============
 app.get('/api/health', (req, res) => {
     const db = readDB();
     res.json({
@@ -404,6 +472,7 @@ app.get('/api/health', (req, res) => {
         totalKeys: db.keys.length,
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
         confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length,
+        totalFeedbacks: db.feedbacks.length,
         timestamp: new Date().toISOString()
     });
 });
@@ -429,14 +498,18 @@ app.listen(PORT, () => {
     console.log(`⏰ Key expire: ${KEY_EXPIRE_HOURS} giờ`);
     console.log(`🔄 Cleanup:    mỗi ${CLEANUP_INTERVAL_MS / (60 * 1000)} phút`);
     console.log(`\n📋 API Endpoints:`);
+    console.log(`   [KEYS]`);
     console.log(`   POST /api/create-key       - Tạo key mới`);
     console.log(`   POST /api/check-key        - Check chính xác 1 key`);
     console.log(`   POST /api/search-keys      - 🔍 Tìm kiếm nâng cao`);
     console.log(`   GET  /api/confirmed-keys   - Danh sách key đã xác nhận`);
-    console.log(`   GET  /api/health           - Health check`);
     console.log(`   POST /api/admin/keys       - [ADMIN] Danh sách tất cả key`);
     console.log(`   POST /api/admin/confirm-key- [ADMIN] Xác nhận key`);
-    console.log(`   POST /api/admin/cleanup-now- [ADMIN] Dọn dẹp ngay\n`);
+    console.log(`   POST /api/admin/cleanup-now- [ADMIN] Dọn dẹp ngay`);
+    console.log(`   [FEEDBACK]`);
+    console.log(`   GET  /api/feedbacks        - Danh sách đánh giá (public)`);
+    console.log(`   POST /api/submit-feedback  - Gửi đánh giá mới`);
+    console.log(`   POST /api/admin/feedbacks  - [ADMIN] Xem danh sách đánh giá\n`);
 });
 
 // ============ GRACEFUL SHUTDOWN ============
