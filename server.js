@@ -7,12 +7,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-// TỰ ĐỘNG TÌM VÀ CẤU HÌNH DATABASE AN TOÀN
+// TỰ ĐỘNG TÌM VÀ CẤU HÌNH DATABASE
 // ==========================================
-// Ưu tiên tìm file database.json trong thư mục dự án hiện tại
-let DB_FILE = path.join(__dirname, 'database.json');
+let DB_FILE = path.join(__dirname, 'database.json'); 
 
-// Nếu không có ở thư mục dự án, kiểm tra xem có file cũ ở /var/data/ không
+// Nếu không có ở thư mục hiện tại, kiểm tra xem có file cũ ở /var/data/ không
 if (!fs.existsSync(DB_FILE) && fs.existsSync('/var/data/database.json')) {
     DB_FILE = '/var/data/database.json';
     console.log('📁 Tìm thấy database cũ tại /var/data/database.json');
@@ -211,7 +210,7 @@ app.post('/api/admin/confirm-key', (req, res) => {
     res.json({
         success: true,
         message: 'Xác nhận Key thành công',
-        feedbackKey: feedbackKey, 
+        feedbackKey: feedbackKey, // Trả về cho Frontend
         keyData: db.keys[keyIndex]
     });
 });
@@ -228,7 +227,7 @@ app.post('/api/check-key', (req, res) => {
     res.json({ success: true, keyData });
 });
 
-// 5. Tìm kiếm Key nâng cao (ĐÃ FIX LỖI TRẢ VỀ RESULTS VÀ BIẾN QUERY)
+// 5. Tìm kiếm Key nâng cao (ĐÃ FIX LỖI TRẢ VỀ RESULTS)
 app.post('/api/search-keys', (req, res) => {
     try {
         const { query } = req.body;
