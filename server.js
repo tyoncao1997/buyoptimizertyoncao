@@ -190,8 +190,12 @@ const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
 const ADMIN_PIN = '997722';
 const PAY2S_WEBHOOK_TOKEN = 'cc06a956bb11a0a175e6e1007218277bb3322903db0a1e05df';
 
-// WebHub config (điền sau khi có tài liệu)
-const WEBHUB_API_KEY = process.env.WEBHUB_API_KEY || '';
+// ==========================================
+// WEBHUB CONFIG (CHỈ DÙNG WEBHOOK TOKEN)
+// ==========================================
+// Bạn nói chỉ có Webhook Token, không có API Key.
+// Tôi đã sửa để server dùng WEBHUB_WEBHOOK_TOKEN cho cả việc tạo đơn (nếu WebHub hỗ trợ).
+// Nếu WebHub yêu cầu API Key riêng, bạn cần bổ sung sau.
 const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
 const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
 
@@ -448,7 +452,7 @@ app.get('/api/user/:username', (req, res) => {
 });
 
 // ==========================================
-// PAY2S WEBHOOK
+// PAY2S WEBHOOK (giữ nguyên dự phòng)
 // ==========================================
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
@@ -490,7 +494,7 @@ app.post('/api/pay2s-webhook', (req, res) => {
 });
 
 // ==========================================
-// WEBHUB - TẠO ĐƠN HÀNG (Cần điền API thực tế)
+// WEBHUB - TẠO ĐƠN HÀNG (SỬA: CHỈ DÙNG WEBHOOK TOKEN)
 // ==========================================
 app.post('/api/webhub-create-order', async (req, res) => {
     try {
@@ -498,16 +502,20 @@ app.post('/api/webhub-create-order', async (req, res) => {
         if (!username || !amount || amount < 10000)
             return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
 
-        if (!WEBHUB_API_KEY)
-            return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình' });
+        if (!WEBHUB_WEBHOOK_TOKEN) {
+            return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình (thiếu WEBHUB_WEBHOOK_TOKEN)' });
+        }
 
-        // TODO: Thay bằng endpoint thực tế của WebHub
-        // Ví dụ dưới đây dựa trên pattern phổ biến, cần điều chỉnh theo tài liệu
+        console.log(`[WebHub] Tạo đơn cho ${username}, số tiền ${amount}đ, dùng token: ${WEBHUB_WEBHOOK_TOKEN.substring(0, 10)}...`);
+
+        // Gọi API WebHub. Vì không có tài liệu chính thức, tôi giả định endpoint /orders
+        // và xác thực bằng Bearer token (dùng WEBHUB_WEBHOOK_TOKEN).
+        // Bạn cần điều chỉnh endpoint và header cho đúng với WebHub thực tế.
         const webhubRes = await fetch(`${WEBHUB_API_BASE}/orders`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${WEBHUB_API_KEY}`
+                'Authorization': `Bearer ${WEBHUB_WEBHOOK_TOKEN}`
             },
             body: JSON.stringify({
                 amount: amount,
@@ -516,19 +524,29 @@ app.post('/api/webhub-create-order', async (req, res) => {
             })
         });
 
-        const result = await webhubRes.json();
-        if (!webhubRes.ok)
-            return res.status(400).json({ success: false, error: result.message || 'Tạo đơn thất bại' });
+        const rawText = await webhubRes.text();
+        console.log(`[WebHub] Response status: ${webhubRes.status}, body: ${rawText.substring(0, 500)}`);
+
+        let result;
+        try { result = JSON.parse(rawText); } catch { result = { raw: rawText }; }
+
+        if (!webhubRes.ok) {
+            return res.status(400).json({
+                success: false,
+                error: result.message || result.error || `WebHub trả về lỗi ${webhubRes.status}`,
+                raw: rawText.substring(0, 200)
+            });
+        }
 
         res.json({
             success: true,
-            paymentUrl: result.payment_url || result.checkout_url,
-            qrCode: result.qr_code || result.qr_string,
-            orderId: result.order_id || result.id
+            paymentUrl: result.payment_url || result.checkout_url || result.paymentUrl,
+            qrCode: result.qr_code || result.qr_string || result.qrCode,
+            orderId: result.order_id || result.id || result.orderId
         });
     } catch (err) {
         console.error('WebHub create order error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi kết nối WebHub' });
+        res.status(500).json({ success: false, error: 'Lỗi kết nối WebHub: ' + err.message });
     }
 });
 
@@ -537,15 +555,15 @@ app.post('/api/webhub-create-order', async (req, res) => {
 // ==========================================
 app.post('/api/webhub-webhook', (req, res) => {
     try {
-        // Xác thực (điều chỉnh theo tài liệu WebHub)
         const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
-        if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN)))
+        if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN))) {
+            console.log('[WebHub Webhook] Unauthorized - token không khớp');
             return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
 
         const data = req.body;
         console.log('📥 WebHub webhook:', JSON.stringify(data).substring(0, 500));
 
-        // Phân tích payload (điều chỉnh theo WebHub)
         const status = data.status || data.transactionStatus;
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.description || data.content || '').toUpperCase();
@@ -567,6 +585,8 @@ app.post('/api/webhub-webhook', (req, res) => {
                     });
                     writeDB(db);
                     console.log(`✅ [WebHub] Cộng ${amount}đ cho: ${username}`);
+                } else {
+                    console.log(`⚠️ [WebHub] Không tìm thấy user hoặc amount = 0: ${username}`);
                 }
             }
         }
@@ -635,7 +655,7 @@ app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok', uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
-        webhubConfigured: !!WEBHUB_API_KEY,
+        webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
         isDirty, totalUsers: (db.users || []).length,
         totalKeys: db.keys.length,
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
@@ -666,7 +686,7 @@ async function startServer() {
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
         console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
-        console.log(`💳 WebHub: ${WEBHUB_API_KEY ? 'Đã cấu hình' : 'CHƯA cấu hình'}\n`);
+        console.log(`💳 WebHub: ${WEBHUB_WEBHOOK_TOKEN ? 'Đã có token (dùng cho tạo đơn)' : 'CHƯA cấu hình'}\n`);
     });
 
     let shutting = false;
