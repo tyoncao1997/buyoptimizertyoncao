@@ -1,0 +1,294 @@
+﻿Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Control Panel\Mouse]
+"ActiveWindowTracking"=dword:00000000
+"Beep"="No"
+"DoubleClickHeight"="8"
+"DoubleClickSpeed"="900"
+"DoubleClickWidth"="4"
+"ExtendedSounds"="no"
+"MouseHoverHeight"="100"
+"MouseHoverTime"="900"
+"MouseHoverWidth"="100"
+"MouseSensitivity"="6"
+"MouseSpeed"="0"
+"MouseThreshold1"="0"
+"MouseThreshold2"="0"
+"MouseTrails"="0"
+"SnapToDefaultButton"="0"
+"SwapMouseButtons"="0"
+"DockTargetMouseDragOutWidth"="1"
+"DockTargetMouseSideMoveWidth"="2"
+"DockTargetMouseWidth"="3"
+"DockTargetPenDragOutWidth"="4"
+"DockTargetPenSideMoveWidth"="2"
+"DockTargetPenWidth"="1"
+"DockTargetMousePenDragOutWidth"="2.11111111111188222222222222222222222222222222222722299722222222222298888"
+"DockTargetMousePenSideMoveWidth"="7.49"
+"SmoothMouseXCurve"=hex:65,ef,4f,d4,df,f0,77,69,90,36,37,35,36,35,39,36,39,36,\
+  36,2d,5b,70,34,35,72,34,35,74,72,79,65,72,72,67,6c,6f,7e,b4,5d,3d,5d,2d,5d,\
+  5b,6f,69,75,75,72,74,65,72,66,74,68,79,37,75,35,5d,5b,3d,2d,5d,f3,b4,7e,70,\
+  e7,6f,70,7e,e7,e7,f5,70,7e,e7,6c,e7,7e,70,b4,5d,5b,5d,2d,70,70,68,67,66,74,\
+  65,65,64,72,77,77,00,00,00,00,00,00,00,00,00,a0,00,00,00,00,00,00,00,40,01,\
+  00,00,00,00,00,00,80,02,00,00,00,00,00,00,00,05,00,00,00,00,00
+"SmoothMouseYCurve"=hex:66,6f,76,33,35,33,65,36,64,73,36,79,64,75,63,33,37,33,\
+  63,72,34,72,67,35,66,66,98,09,00,00,00,00,00,00,00,00,00,00,00,00,dd,dd,ee,\
+  f4,f0,00,00,03,34,00,00,00,00,00,00,00,00,00,00,00,00,00,00,35,79,37,69,69,\
+  38,6f,70,b4,e7,b4,3d,e7,e7,70,3d,7e,b4,e7,3b,3d,e7,3b,7e,3d,b4,e7,7e,3d,b4,\
+  e7,7e,b4,3d,77,73,66,75,64,75,68,66,64,67,66,7e,7e,5b,5d,5b,73,64,66,67,6a,\
+  67,75,67,66,74,67,67,66,79,37,79,37,64,66,67,66,37,74,66,5d,5d,7e,b4,00,00,\
+  00,00,00,00,05,00,00,00,00,00,00,00,00,0f,00,00,00,00,00,00,00,05,00,00,00,\
+  00,00,00,00,05,f0,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,66,a6,02,00,\
+  00,00,00,00,cd,4c,05,00,00,00,00,00,a0,99,0a,00,00,00,00,00,38,33,15,00,00,\
+  00,00,00
+@=""
+"ActiveUser"="HS DUX CRIA"
+"ActiveDevoloped"="HS DUX CRIA"
+"Active"="HS DUX CRIA"
+"ActiveAC"="HS DUX CRIA"
+"ActiveFix"="HS DUX CRIA"
+"Assist"="㠸〸㤹㘹㠶㠸됸孝嶴嶴嶴嶴嶴嶴嶴듧繝ⷧ孛炴嬭炴㤹椰杨桧㕴㘵㜶㠷㤷㤸〸㜹欹듧⵰㴽㵛孾㵝繝宴纴烧孾孰孛孰ⶴ둛둛둛㭬嬮뒴ⱛ됻ⱛ됮듧㯧둛宴듧㭛됮Ⱞ殴沴듳濧汯汯둩澴둬潛둬濧둬潛潬孬汯둛濧孬潯潬둬둾둾둾둾繾뒴繛듧듧宴橬㥰桪橵桨桨杨桨票杧摦睳獳睤敷睤敷獷獤獡獡慤獡晤㍳㐲㐴㔵㘵㘵㜶㜸㜶㘵㘵㘷㔵"
+"DoubleClickSpeed2"="0,5"
+"DoubleClickWidth2"="0,6"
+"TcpWindowSize"=dword:0005ae4c
+"TcpNoDelay"=hex(b):7f,14,00,00,00,00,00,00
+"TCPDelAckTicks"=dword:00000004
+"Tcp1323Opts"=dword:00000004
+"TcpMaxDataRetransmissions"=dword:00000003
+"SackOpts"=dword:00000001
+"DefaultTTL"=dword:00007fff
+"Beep2"="No"
+"EnablePMTUDiscovery"=dword:00000011
+"EnablePMTUBHDetect"=dword:00000100
+"MouseCP"="55"
+"MouseCL"="55"
+"Mousetrack"="908"
+"Mousecrib"="10"
+"Mousecontrolusb"="1"
+"MouseTK"="810"
+"Fov"="20000"
+"MouseGrab"="908"
+"MouseStickOn"="10"
+"DoubleClickHeight2"="0,7"
+"ExtendedSounds2"="No"
+"MouseSensibility2"="6"
+"MouseSpeed2"="1"
+"AimAssist"=dword:000003e8
+"AimBot"=dword:000003e8
+"AimFov"=dword:000003e8
+"Headshot"=dword:000003e8
+"AimLock"=dword:000003e8
+"AutoHeadshot"=dword:000003e8
+"AimbotSpeed"=dword:000003e8
+"AimSpeed"=dword:000003e8
+"FovAutoHeadshot"=dword:000003e8
+"AimHead"=dword:000003e8
+"AimHeadshot"=dword:000003e8
+"AimHeadRightClickLifter"=dword:000003e8
+"AimbotHeadLeftClickLifter"=dword:000003e8
+"AimbotHeadshot"=dword:000003e8
+"FovHead"=dword:000003e8
+"MouseGrap"="908"
+"MouseUp"=dword:0000000a
+"ActiveHWID"="Yes"
+"ActiveMouseInGame"="1"
+"AimlockOn"="1"
+"StabilityOn"="1"
+"MouseThreshold12"="0"
+"MouseThreshold22"="0"
+"SwapMouseButton"="1"
+"sensitivity"=dword:00000078
+"CPU"=dword:00000000
+"GPU"=dword:00000001
+"DPI"=dword:00000440
+"AimLok"=dword:00000400
+"AimbotHeadLeft"=dword:00000064
+"AimHeadRightClick"=dword:000000fa
+"AutoHeadshots"=dword:10000000
+"sensibility"=dword:00000078
+"MouseSensitivity2"="6"
+"MouseFix"="yes"
+"FixMouse"="yes"
+"Aim"="100000"
+"AimSystem"="100"
+"MouseHoverHeight2"="0,5"
+"MouseHoverWidth2"="0,5"
+"MouseHoverTime2"=dword:008fc240
+"DockTargetMouse"="10"
+"DockTargetMouse2"="10"
+"Mousecontrolsb"="10"
+"SmoothMouseXCurve2"=hex:00,00,00,00,00,00,00,00,00,00,38,00,00,00,00,00,00,00,\
+  70,00,00,00,00,00,bc,02,00,00,00,00,00,00,08,00,00,00,00,00,00,20,00,00,00,\
+  00
+"SmoothMouseYCurve2"=hex:00,00,00,00,00,00,00,00,00,00,20,00,00,00,00,00,00,00,\
+  58,02,00,00,00,00,70,09,00,00,00,00,00,00,14,00,00,00,00,00,a0,00,00,00,00
+"Admin"="bao loc ><"
+"Tcp13230pts"=dword:00000004
+"MouseSensibility"="1"
+"AIMSUPERIDOL"=dword:001003e8
+"SmoothMouseXCurve1"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,40,\
+  01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve3"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,24,\
+  04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseXCurve33"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseXCurve14"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve24"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00,23,58,\
+  8a,1f,a1,21
+"SmoothMouseYCurve35"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseXCurve36"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseXCurve144"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve244"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00,99,91,\
+  92,49,81,24,99,29,14,ad,f1,92,40,9d,a9,d9,12,9d,91,93,91,9f,91,29
+"SmoothMouseYCurve344"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseXCurve3334"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseXCurve1776"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve256"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseYCurve352"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseXCurve37789"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,\
+  00,40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseXCurve108"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve2876"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseYCurve3678"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseXCurve3764"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseXCurve875"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve098"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseYCurve0952"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"SmoothMouseXCurve7453"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"Type"="user.2505'z"
+"Developer"="BIi"
+"MouseThreshold3"=dword:00000000
+"MouseThreshold4"=dword:00000000
+"SmoothMouseYCurve1"=hex:00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,0a,d8,09,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,5f,01,5e,01,d0,ff,dc
+"SmoothMouseXCurve4"=hex:00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,02,03,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,28,00,00,00,00,c0,ff,ac
+"SmoothMouseYCurve4"=hex:00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,0a,d8,09,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,5f,01,5e,01,d0,ff,dc
+"SmoothMouseXCurve5"=hex:65,ef,4f,d4,df,f0,77,69,90,36,37,35,36,35,39,36,39,36,\
+  36,2d,5b,70,34,35,72,34,35,74,72,79,65,72,72,67,6c,6f,7e,b4,5d,3d,5d,2d,5d,\
+  5b,6f,69,75,75,72,74,65,72,66,74,68,79,37,75,35,5d,5b,3d,2d,5d,f3,b4,7e,70,\
+  e7,6f,70,7e,e7,e7,f5,70,7e,e7,6c,e7,7e,70,b4,5d,5b,5d,2d,70,70,68,67,66,74,\
+  65,65,64,72,77,77,00,00,00,00,00,00,00,00,00,a0,00,00,00,00,00,00,00,40,01,\
+  00,00,00,00,00,00,80,02,00,00,00,00,00,00,00,05,00,00,00,00,00
+"SmoothMouseYCurve5"=hex:66,6f,76,33,35,33,65,36,64,73,36,79,64,75,63,33,37,33,\
+  63,72,34,72,67,35,66,66,98,09,00,00,00,00,00,00,00,00,00,00,00,00,dd,dd,ee,\
+  f4,f0,00,00,03,34,00,00,00,00,00,00,00,00,00,00,00,00,00,00,35,79,37,69,69,\
+  38,6f,70,b4,e7,b4,3d,e7,e7,70,3d,7e,b4,e7,3b,3d,e7,3b,7e,3d,b4,e7,7e,3d,b4,\
+  e7,7e,b4,3d,77,73,66,75,64,75,68,66,64,67,66,7e,7e,5b,5d,5b,73,64,66,67,6a,\
+  67,75,67,66,74,67,67,66,79,37,79,37,64,66,67,66,37,74,66,5d,5d,7e,b4,00,00,\
+  00,00,00,00,05,00,00,00,00,00,00,00,00,0f,00,00,00,00,00,00,00,05,00,00,00,\
+  00,00,00,00,05,f0,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,66,a6,02,00,\
+  00,00,00,00,cd,4c,05,00,00,00,00,00,a0,99,0a,00,00,00,00,00,38,33,15,00,00,\
+  00,00,00
+"SmoothMouseXCurve2313"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,\
+  40,01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve3231"=hex:00,00,00,00,00,00,00,00,fd,11,01,00,00,00,00,00,00,\
+  24,04,00,00,00,00,00,00,fc,12,00,00,00,00,00,00,c0,bb,01,00,00,00,00
+"AvailableLCPPacksMouse"=hex(7):3e,00,29,00,00,00,00,00
+"MosueDouble"=hex(b):01,00,00,00,00,00,00,00
+"Aimslient "=dword:00000101
+"MouseAim"="10"
+"EnhancePointerPrecision"=dword:00000000
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\Config]
+"ActiveWindowTracking"=dword:00000000
+"Beep"="No"
+"DoubleClickHeight"="4"
+"DoubleClickSpeed"="14000"
+"DoubleClickWidth"="92"
+"ExtendedSounds"="No"
+"MouseHoverHeight"="4"
+"MouseHoverWidth"="4"
+"MouseSensitivity"="6"
+"MouseSpeed"="0"
+"MouseThreshold1"="0"
+"MouseThreshold2"="0"
+"MouseTrails"="0"
+"SmoothMouseXCurve"=hex:00,00,00,00,00,00,00,00,15,6e,00,00,00,00,00,00,00,40,\
+  01,00,00,00,00,00,29,dc,03,00,00,00,00,00,00,00,28,00,00,00,00,00
+"SmoothMouseYCurve"=hex:00,00,00,00,00,00,00,00,b8,5e,01,00,00,00,00,00,cd,4c,\
+  05,00,00,00,00,00,cd,4c,18,00,00,00,00,00,00,00,38,02,00,00,00,00
+"SnapToDefaultButton"="0"
+"SwapMouseButtons"="0"
+"MouseHoverTime2"=dword:001dc130
+"MouseHoverTime"="8"
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\CurrentControlSet]
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\CurrentControlSet\Services]
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\CurrentControlSet\Services\Tcpip]
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\CurrentControlSet\Services\Tcpip\Parameters]
+"AEnablePMTUBHDetect"=dword:00000000
+"EnablePMTUDiscovery"=dword:00000001
+"GlobalMaxTcpWindowSize"=dword:00007fff
+"TcpMaxDupAcks"=dword:00000001
+"SackOpts"=dword:00000001
+"Tcp1323Opts"=dword:00000003
+"TcpWindowSize"=dword:0005ae4c
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\CurrentControlSet\Services\Tcpip\Parameters\Interfaces]
+"MouseSpeed"=dword:00000000
+"MouseThreshold1"=dword:00000000
+"MouseThreshold2"=dword:00000000
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE]
+@=""
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE\SYSTEM]
+@=""
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet]
+@=""
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services]
+@=""
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip]
+@=""
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters]
+"AEnablePMTUBHDetect"=dword:00000000
+"EnablePMTUDiscovery"=dword:00000001
+"GlobalMaxTcpWindowSize"=dword:00007fff
+"TcpMaxDupAcks"=dword:00000002
+"SackOpts"=dword:00000001
+"Tcp1323Opts"=dword:00000001
+"TcpWindowSize"=dword:00007fff
+"Headshot"=dword:001003e8
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces]
+"MouseSpeed"="0"
+"MouseThreshold1"="0"
+"MouseThreshold2"="0"
+
+[HKEY_CURRENT_USER\Control Panel\Mouse\MouseConfig]
+"DoubleClickHeight2"="0.50"
+"DoubleClickWidth2"="0.40"
+"MouseHoverHeight2"="0.16"
+"MouseHoverWidth2"="0.10"
+"MouseSpeed2"="0.10"
+"MouseThreshold12"="0.35"
+"MouseThreshold22"="0.5"
+
