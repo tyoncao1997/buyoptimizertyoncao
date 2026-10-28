@@ -213,17 +213,30 @@ function writeDB(data) {
 }
 
 async function initDB() {
+    // 1. Ưu tiên tải dữ liệu từ Gist (Mây) về trước
     if (USE_GIST) {
         const remote = await loadFromGist();
-        if (remote) { MEMORY_DB = remote; saveLocal(remote); return; }
+        if (remote) { 
+            MEMORY_DB = remote; 
+            saveLocal(remote); 
+            console.log('✅ Đã tải dữ liệu từ GitHub Gist');
+            return; 
+        }
     }
+    
+    // 2. Nếu không có Gist, thử tải từ file local
     const local = loadLocal();
-    if (local) { MEMORY_DB = local; if (USE_GIST) await saveToGist(local); return; }
+    if (local) { 
+        MEMORY_DB = local; 
+        if (USE_GIST) await saveToGist(local); 
+        return; 
+    }
+    
+    // 3. Nếu cả 2 đều không có, tạo mới
     MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
     if (USE_GIST) await saveToGist(MEMORY_DB);
     saveLocal(MEMORY_DB);
 }
-
 // ==========================================
 // CẤU HÌNH HỆ THỐNG & ADMIN BẢO MẬT
 // ==========================================
