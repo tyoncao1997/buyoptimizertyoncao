@@ -3,6 +3,7 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto'); // Thêm crypto để tạo chữ ký
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -37,7 +38,7 @@ let isSyncing = false;
 let lastSyncTime = 0;
 
 // ==========================================
-// GITHUB GIST
+// GITHUB GIST (Giữ nguyên)
 // ==========================================
 function gistRequest(method, body) {
     return new Promise((resolve, reject) => {
@@ -188,14 +189,21 @@ const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const ADMIN_USERNAME = 'caoquangtuan';
 const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
 const ADMIN_PIN = '997722';
-const PAY2S_WEBHOOK_TOKEN = 'cc06a956bb11a0a175e6e1007218277bb3322903db0a1e05df';
 
 // ==========================================
-// WEBHUB CONFIG (CHỈ DÙNG WEBHOOK TOKEN)
+// CẤU HÌNH PAY2S (Lấy từ ảnh bạn cung cấp)
 // ==========================================
-// Bạn nói chỉ có Webhook Token, không có API Key.
-// Tôi đã sửa để server dùng WEBHUB_WEBHOOK_TOKEN cho cả việc tạo đơn (nếu WebHub hỗ trợ).
-// Nếu WebHub yêu cầu API Key riêng, bạn cần bổ sung sau.
+const PAY2S_PARTNER_CODE = process.env.PAY2S_PARTNER_CODE || 'PAY2SBB7A1S4XSJKIT8J';
+const PAY2S_ACCESS_KEY = process.env.PAY2S_ACCESS_KEY || '9fce013493559f0aff6385819e583c9308a9a922999fe8e...'; // Thay full key
+const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY || '653b08db2e03f9aa1499d4ce40c63e2c525cdd0f64a09b4...'; // Thay full key
+const PAY2S_API_URL = 'https://payment.pay2s.vn/v1/gateway/api/create';
+
+// Token nhận Webhook IPN từ Pay2S (Bạn cần lấy token này từ Dashboard Pay2S)
+const PAY2S_WEBHOOK_TOKEN = process.env.PAY2S_WEBHOOK_TOKEN || 'cc06a956bb11a0a175e6e1007218277bb3322903db0a1e05df';
+
+// ==========================================
+// WEBHUB CONFIG (Dự phòng)
+// ==========================================
 const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
 const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
 
@@ -204,7 +212,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
 // ==========================================
-// CLEANUP
+// CLEANUP & HELPERS
 // ==========================================
 function cleanupExpiredKeys() {
     if (!MEMORY_DB) return { deletedCount: 0 };
@@ -452,41 +460,140 @@ app.get('/api/user/:username', (req, res) => {
 });
 
 // ==========================================
-// PAY2S WEBHOOK (giữ nguyên dự phòng)
+// PAY2S: TẠO ĐƠN HÀNG (TÍCH HỢP MỚI)
+// ==========================================
+app.post('/api/pay2s-create-order', async (req, res) => {
+    try {
+        const { username, amount } = req.body;
+        if (!username || !amount || amount < 10000) {
+            return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
+        }
+
+        // Tạo mã đơn hàng duy nhất
+        const orderId = `NAP_${username}_${Date.now()}`;
+        const requestId = Date.now().toString();
+        const orderInfo = `NAP ${username}`; // Nội dung chuyển khoản (10-32 ký tự)
+        const redirectUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/payment-return`;
+        const ipnUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/api/pay2s-webhook`;
+
+        // Tạo chữ ký theo đúng thứ tự alphabet của Pay2S
+        const rawSignature = `accessKey=${PAY2S_ACCESS_KEY}` +
+            `&amount=${amount}` +
+            `&bankAccounts=Array` +
+            `&ipnUrl=${ipnUrl}` +
+            `&orderId=${orderId}` +
+            `&orderInfo=${orderInfo}` +
+            `&partnerCode=${PAY2S_PARTNER_CODE}` +
+            `&redirectUrl=${redirectUrl}` +
+            `&requestId=${requestId}` +
+            `&requestType=pay2s`;
+
+        const signature = crypto.createHmac('sha256', PAY2S_SECRET_KEY)
+            .update(rawSignature)
+            .digest('hex');
+
+        const payload = {
+            partnerCode: PAY2S_PARTNER_CODE,
+            partnerName: 'TYON Optimizer',
+            requestId: requestId,
+            amount: amount,
+            orderId: orderId,
+            orderInfo: orderInfo,
+            requestType: 'pay2s',
+            redirectUrl: redirectUrl,
+            ipnUrl: ipnUrl,
+            bankAccounts: [],
+            signature: signature
+        };
+
+        console.log('[Pay2S] Tạo đơn:', payload);
+
+        const response = await fetch(PAY2S_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+        console.log('[Pay2S] Response:', result);
+
+        if (result.status === true || result.resultCode === 0) {
+            res.json({
+                success: true,
+                paymentUrl: result.payUrl || result.paymentUrl || result.data?.payUrl
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                error: result.message || 'Tạo đơn Pay2S thất bại',
+                raw: result
+            });
+        }
+
+    } catch (err) {
+        console.error('Pay2S create order error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi kết nối Pay2S: ' + err.message });
+    }
+});
+
+// ==========================================
+// PAY2S: WEBHOOK IPN (XÁC THỰC CHỮ KÝ)
 // ==========================================
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
+        // Xác thực token từ Header (nếu Pay2S gửi kèm)
         const authHeader = req.headers['authorization'];
-        if (!authHeader || authHeader !== `Bearer ${PAY2S_WEBHOOK_TOKEN}`)
+        if (authHeader && !authHeader.includes(PAY2S_WEBHOOK_TOKEN)) {
+            console.log('[Pay2S Webhook] Unauthorized - Token không khớp');
             return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
 
         const data = req.body;
-        console.log('📥 Pay2S webhook:', JSON.stringify(data).substring(0, 300));
+        console.log('📥 Pay2S webhook:', JSON.stringify(data).substring(0, 500));
 
-        if (data.transferType === 'IN') {
-            const amount = parseInt(data.transferAmount) || 0;
-            const content = (data.content || '').toUpperCase();
-            const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
+        // Xác thực chữ ký m2signature (nếu có trong payload)
+        // Theo tài liệu, IPN của Pay2S có trường m2signature
+        if (data.m2signature) {
+            const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
+            
+            const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY)
+                .update(rawHash)
+                .digest('hex');
 
-            if (match && match[1]) {
-                const username = match[1].toLowerCase();
-                const db = readDB();
-                const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
-                if (idx !== -1 && amount > 0) {
-                    db.users[idx].balance += amount;
-                    if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
-                    db.users[idx].depositHistory.push({
-                        amount, method: 'pay2s', content: data.content,
-                        at: new Date().toISOString()
-                    });
-                    writeDB(db);
-                    console.log(`✅ [Pay2S] Cộng ${amount}đ cho: ${username}`);
-                } else {
-                    console.log(`⚠️ [Pay2S] Không tìm thấy user: ${username}`);
-                }
+            if (expectedSignature !== data.m2signature) {
+                console.log('[Pay2S Webhook] Chữ ký không hợp lệ!');
+                return res.status(400).json({ success: false, message: 'Invalid signature' });
             }
         }
+
+        // Xử lý cộng tiền
+        const amount = parseInt(data.amount || data.transferAmount || 0);
+        const content = (data.orderInfo || data.content || '').toUpperCase();
+        const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
+
+        if (match && match[1] && amount > 0) {
+            const username = match[1].toLowerCase();
+            const db = readDB();
+            const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
+
+            if (idx !== -1) {
+                db.users[idx].balance += amount;
+                if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
+                db.users[idx].depositHistory.push({
+                    amount, method: 'pay2s', content: data.orderInfo || data.content,
+                    transactionId: data.transId || data.transactionNumber,
+                    at: new Date().toISOString()
+                });
+                writeDB(db);
+                console.log(`✅ [Pay2S] Cộng ${amount}đ cho: ${username}`);
+            } else {
+                console.log(`⚠️ [Pay2S] Không tìm thấy user: ${username}`);
+            }
+        }
+
+        // Pay2S yêu cầu trả về HTTP 200 và {"success": true} để dừng retry
         res.status(200).json({ success: true });
+
     } catch (error) {
         console.error('Pay2S webhook error:', error);
         res.status(500).json({ success: false });
@@ -494,7 +601,7 @@ app.post('/api/pay2s-webhook', (req, res) => {
 });
 
 // ==========================================
-// WEBHUB - TẠO ĐƠN HÀNG (SỬA: CHỈ DÙNG WEBHOOK TOKEN)
+// WEBHUB: TẠO ĐƠN HÀNG (DỰ PHÒNG)
 // ==========================================
 app.post('/api/webhub-create-order', async (req, res) => {
     try {
@@ -503,14 +610,9 @@ app.post('/api/webhub-create-order', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
 
         if (!WEBHUB_WEBHOOK_TOKEN) {
-            return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình (thiếu WEBHUB_WEBHOOK_TOKEN)' });
+            return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình' });
         }
 
-        console.log(`[WebHub] Tạo đơn cho ${username}, số tiền ${amount}đ, dùng token: ${WEBHUB_WEBHOOK_TOKEN.substring(0, 10)}...`);
-
-        // Gọi API WebHub. Vì không có tài liệu chính thức, tôi giả định endpoint /orders
-        // và xác thực bằng Bearer token (dùng WEBHUB_WEBHOOK_TOKEN).
-        // Bạn cần điều chỉnh endpoint và header cho đúng với WebHub thực tế.
         const webhubRes = await fetch(`${WEBHUB_API_BASE}/orders`, {
             method: 'POST',
             headers: {
@@ -525,16 +627,13 @@ app.post('/api/webhub-create-order', async (req, res) => {
         });
 
         const rawText = await webhubRes.text();
-        console.log(`[WebHub] Response status: ${webhubRes.status}, body: ${rawText.substring(0, 500)}`);
-
         let result;
         try { result = JSON.parse(rawText); } catch { result = { raw: rawText }; }
 
         if (!webhubRes.ok) {
             return res.status(400).json({
                 success: false,
-                error: result.message || result.error || `WebHub trả về lỗi ${webhubRes.status}`,
-                raw: rawText.substring(0, 200)
+                error: result.message || result.error || `WebHub trả về lỗi ${webhubRes.status}`
             });
         }
 
@@ -551,19 +650,16 @@ app.post('/api/webhub-create-order', async (req, res) => {
 });
 
 // ==========================================
-// WEBHUB - WEBHOOK NHẬN THANH TOÁN
+// WEBHUB: WEBHOOK (DỰ PHÒNG)
 // ==========================================
 app.post('/api/webhub-webhook', (req, res) => {
     try {
         const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
         if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN))) {
-            console.log('[WebHub Webhook] Unauthorized - token không khớp');
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
 
         const data = req.body;
-        console.log('📥 WebHub webhook:', JSON.stringify(data).substring(0, 500));
-
         const status = data.status || data.transactionStatus;
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.description || data.content || '').toUpperCase();
@@ -584,9 +680,6 @@ app.post('/api/webhub-webhook', (req, res) => {
                         at: new Date().toISOString()
                     });
                     writeDB(db);
-                    console.log(`✅ [WebHub] Cộng ${amount}đ cho: ${username}`);
-                } else {
-                    console.log(`⚠️ [WebHub] Không tìm thấy user hoặc amount = 0: ${username}`);
                 }
             }
         }
@@ -655,6 +748,7 @@ app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok', uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
+        pay2sConfigured: !!PAY2S_PARTNER_CODE,
         webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
         isDirty, totalUsers: (db.users || []).length,
         totalKeys: db.keys.length,
@@ -686,7 +780,8 @@ async function startServer() {
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
         console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
-        console.log(`💳 WebHub: ${WEBHUB_WEBHOOK_TOKEN ? 'Đã có token (dùng cho tạo đơn)' : 'CHƯA cấu hình'}\n`);
+        console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
+        console.log(`💳 WebHub: ${WEBHUB_WEBHOOK_TOKEN ? 'Đã cấu hình' : 'CHƯA cấu hình'}\n`);
     });
 
     let shutting = false;
