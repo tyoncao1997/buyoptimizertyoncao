@@ -190,6 +190,11 @@ const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
 const ADMIN_PIN = '997722';
 const PAY2S_WEBHOOK_TOKEN = 'cc06a956bb11a0a175e6e1007218277bb3322903db0a1e05df';
 
+// WebHub config (điền sau khi có tài liệu)
+const WEBHUB_API_KEY = process.env.WEBHUB_API_KEY || '';
+const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
+const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
@@ -375,7 +380,7 @@ app.post('/api/admin/feedbacks', (req, res) => {
 });
 
 // ==========================================
-// ⭐ USER AUTH (ĐẶT TRƯỚC MIDDLEWARE 404)
+// USER AUTH
 // ==========================================
 app.post('/api/register', (req, res) => {
     try {
@@ -395,6 +400,7 @@ app.post('/api/register', (req, res) => {
             username, password, fullName,
             balance: 0,
             purchaseHistory: [],
+            depositHistory: [],
             createdAt: new Date().toISOString()
         };
         db.users.push(newUser);
@@ -442,7 +448,7 @@ app.get('/api/user/:username', (req, res) => {
 });
 
 // ==========================================
-// ⭐ NẠP TIỀN (Pay2S Webhook)
+// PAY2S WEBHOOK
 // ==========================================
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
@@ -466,24 +472,113 @@ app.post('/api/pay2s-webhook', (req, res) => {
                     db.users[idx].balance += amount;
                     if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
                     db.users[idx].depositHistory.push({
-                        amount, content: data.content, at: new Date().toISOString()
+                        amount, method: 'pay2s', content: data.content,
+                        at: new Date().toISOString()
                     });
                     writeDB(db);
-                    console.log(`✅ Cộng ${amount}đ cho: ${username}`);
+                    console.log(`✅ [Pay2S] Cộng ${amount}đ cho: ${username}`);
                 } else {
-                    console.log(`⚠️ Không tìm thấy user: ${username}`);
+                    console.log(`⚠️ [Pay2S] Không tìm thấy user: ${username}`);
                 }
             }
         }
         res.status(200).json({ success: true });
     } catch (error) {
-        console.error('Webhook error:', error);
+        console.error('Pay2S webhook error:', error);
         res.status(500).json({ success: false });
     }
 });
 
 // ==========================================
-// ⭐ MUA HÀNG / TẢI FILE
+// WEBHUB - TẠO ĐƠN HÀNG (Cần điền API thực tế)
+// ==========================================
+app.post('/api/webhub-create-order', async (req, res) => {
+    try {
+        const { username, amount } = req.body;
+        if (!username || !amount || amount < 10000)
+            return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
+
+        if (!WEBHUB_API_KEY)
+            return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình' });
+
+        // TODO: Thay bằng endpoint thực tế của WebHub
+        // Ví dụ dưới đây dựa trên pattern phổ biến, cần điều chỉnh theo tài liệu
+        const webhubRes = await fetch(`${WEBHUB_API_BASE}/orders`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${WEBHUB_API_KEY}`
+            },
+            body: JSON.stringify({
+                amount: amount,
+                description: `NAP_${username}`,
+                return_url: `${process.env.BASE_URL || 'http://localhost:3000'}/payment-return`
+            })
+        });
+
+        const result = await webhubRes.json();
+        if (!webhubRes.ok)
+            return res.status(400).json({ success: false, error: result.message || 'Tạo đơn thất bại' });
+
+        res.json({
+            success: true,
+            paymentUrl: result.payment_url || result.checkout_url,
+            qrCode: result.qr_code || result.qr_string,
+            orderId: result.order_id || result.id
+        });
+    } catch (err) {
+        console.error('WebHub create order error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi kết nối WebHub' });
+    }
+});
+
+// ==========================================
+// WEBHUB - WEBHOOK NHẬN THANH TOÁN
+// ==========================================
+app.post('/api/webhub-webhook', (req, res) => {
+    try {
+        // Xác thực (điều chỉnh theo tài liệu WebHub)
+        const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
+        if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN)))
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+        const data = req.body;
+        console.log('📥 WebHub webhook:', JSON.stringify(data).substring(0, 500));
+
+        // Phân tích payload (điều chỉnh theo WebHub)
+        const status = data.status || data.transactionStatus;
+        const amount = parseInt(data.amount || data.transferAmount || 0);
+        const content = (data.description || data.content || '').toUpperCase();
+
+        if (status === 'success' || status === 'completed' || data.transferType === 'IN') {
+            const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
+            if (match && match[1]) {
+                const username = match[1].toLowerCase();
+                const db = readDB();
+                const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
+
+                if (idx !== -1 && amount > 0) {
+                    db.users[idx].balance += amount;
+                    if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
+                    db.users[idx].depositHistory.push({
+                        amount, method: 'webhub',
+                        transactionId: data.transactionId || data.orderId,
+                        at: new Date().toISOString()
+                    });
+                    writeDB(db);
+                    console.log(`✅ [WebHub] Cộng ${amount}đ cho: ${username}`);
+                }
+            }
+        }
+        res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('WebHub webhook error:', error);
+        res.status(500).json({ success: false });
+    }
+});
+
+// ==========================================
+// MUA HÀNG / TẢI FILE
 // ==========================================
 app.post('/api/buy-product', (req, res) => {
     try {
@@ -533,13 +628,14 @@ app.get('/api/download/:productId', (req, res) => {
 });
 
 // ==========================================
-// HEALTH + ERROR HANDLERS (ĐẶT CUỐI)
+// HEALTH + ERROR HANDLERS
 // ==========================================
 app.get('/api/health', (req, res) => {
     const db = MEMORY_DB || DEFAULT_DB;
     res.json({
         status: 'ok', uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
+        webhubConfigured: !!WEBHUB_API_KEY,
         isDirty, totalUsers: (db.users || []).length,
         totalKeys: db.keys.length,
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
@@ -551,7 +647,6 @@ app.get('/api/health', (req, res) => {
 // 404 — PHẢI NẰM CUỐI CÙNG
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 
-// Error handler
 app.use((err, req, res, next) => {
     console.error('❌ Server error:', err);
     res.status(500).json({ error: 'Lỗi server: ' + err.message });
@@ -570,7 +665,8 @@ async function startServer() {
     await initDB();
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
-        console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}\n`);
+        console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
+        console.log(`💳 WebHub: ${WEBHUB_API_KEY ? 'Đã cấu hình' : 'CHƯA cấu hình'}\n`);
     });
 
     let shutting = false;
