@@ -417,7 +417,7 @@ app.post('/api/admin/users', (req, res) => {
 // ==========================================
 // USER AUTH
 // ==========================================
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', (req, res) => {
     try {
         const { username, password, fullName } = req.body;
         if (!username || !password || !fullName)
@@ -440,8 +440,6 @@ app.post('/api/register', async (req, res) => {
         };
         db.users.push(newUser);
         writeDB(db);
-
-        await flushToGist(true); 
 
         res.json({
             success: true,
