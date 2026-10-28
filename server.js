@@ -414,6 +414,76 @@ app.post('/api/admin/users', (req, res) => {
     res.json({ success: true, users });
 });
 
+app.post('/api/admin/add-balance', (req, res) => {
+    try {
+        const { username, password, pin, targetUsername, amount, note } = req.body;
+
+        // 1. Xác thực admin
+        if (!verifyAdmin(username, password)) {
+            return res.status(401).json({ success: false, error: 'Sai tài khoản admin' });
+        }
+
+        // 2. Xác thực PIN
+        if (pin !== ADMIN_PIN) {
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
+
+        // 3. Validate input
+        const addAmount = parseInt(amount);
+        if (!targetUsername || !addAmount || addAmount <= 0) {
+            return res.status(400).json({ success: false, error: 'Thiếu thông tin hoặc số tiền không hợp lệ' });
+        }
+        if (addAmount > 100000000) {
+            return res.status(400).json({ success: false, error: 'Số tiền cộng tối đa 100.000.000đ' });
+        }
+
+        // 4. Tìm user
+        const db = readDB();
+        const idx = db.users.findIndex(u => 
+            u.username.toLowerCase() === targetUsername.toLowerCase().trim()
+        );
+        if (idx === -1) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy user: ' + targetUsername });
+        }
+
+        // 5. Cộng tiền
+        const user = db.users[idx];
+        const oldBalance = user.balance || 0;
+        user.balance = oldBalance + addAmount;
+
+        // 6. Ghi lịch sử nạp
+        if (!user.depositHistory) user.depositHistory = [];
+        user.depositHistory.push({
+            amount: addAmount,
+            method: 'admin_manual',
+            content: note || `Admin cộng tiền thủ công bởi ${username}`,
+            transactionId: 'ADMIN_' + Date.now(),
+            at: new Date().toISOString(),
+            addedBy: username
+        });
+
+        writeDB(db);
+
+        console.log(`💰 [Admin] ${username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${user.balance})`);
+
+        res.json({
+            success: true,
+            message: `Đã cộng ${addAmount.toLocaleString('vi-VN')}đ cho ${targetUsername}`,
+            data: {
+                username: user.username,
+                fullName: user.fullName,
+                oldBalance,
+                newBalance: user.balance,
+                addedAmount: addAmount
+            }
+        });
+
+    } catch (err) {
+        console.error('Admin add-balance error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+    }
+});
+
 // ==========================================
 // USER AUTH
 // ==========================================
