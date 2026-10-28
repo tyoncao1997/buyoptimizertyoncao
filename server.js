@@ -29,8 +29,16 @@ try {
     console.error('❌ Không tạo được thư mục backup:', err.message);
 }
 
-// Thêm mảng users vào DB mặc định
-const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
+// Thêm mảng users và products vào DB mặc định
+const DEFAULT_DB = { 
+    keys: [], 
+    confirmedKeys: [], 
+    feedbackKeys: [], 
+    feedbacks: [], 
+    users: [],
+    // Bạn có thể lưu danh sách sản phẩm ở đây nếu muốn quản lý qua server
+    // Hiện tại sản phẩm đang được hardcode ở Frontend, server chỉ cần biết giá để trừ tiền
+};
 
 let MEMORY_DB = null;
 let isDirty = false;
@@ -38,7 +46,7 @@ let isSyncing = false;
 let lastSyncTime = 0;
 
 // ==========================================
-// GITHUB GIST API (Giữ nguyên)
+// GITHUB GIST API
 // ==========================================
 function gistRequest(method, body) {
     return new Promise((resolve, reject) => {
@@ -93,7 +101,7 @@ async function loadFromGist() {
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
         if (!parsed.feedbackKeys) parsed.feedbackKeys = [];
         if (!parsed.feedbacks) parsed.feedbacks = [];
-        if (!parsed.users) parsed.users = []; // Đảm bảo có mảng users
+        if (!parsed.users) parsed.users = []; 
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi load từ Gist:', err.message);
@@ -129,7 +137,7 @@ async function saveToGist(data) {
 }
 
 // ==========================================
-// ĐỒNG BỘ — DEBOUNCE + RETRY (Giữ nguyên)
+// ĐỒNG BỘ — DEBOUNCE + RETRY
 // ==========================================
 let syncTimer = null;
 const SYNC_DEBOUNCE_MS = 2000;
@@ -166,7 +174,7 @@ async function flushToGist(force = false) {
 }
 
 // ==========================================
-// LOCAL CACHE (Giữ nguyên)
+// LOCAL CACHE
 // ==========================================
 function saveLocal(data) {
     try {
@@ -210,7 +218,7 @@ function writeDB(data) {
     if (!data.confirmedKeys) data.confirmedKeys = [];
     if (!data.feedbackKeys) data.feedbackKeys = [];
     if (!data.feedbacks) data.feedbacks = [];
-    if (!data.users) data.users = []; // Đảm bảo users tồn tại
+    if (!data.users) data.users = []; 
 
     MEMORY_DB = data;
     scheduleSync();
@@ -268,7 +276,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
 // ==========================================
-// DỌN KEY HẾT HẠN (Giữ nguyên)
+// DỌN KEY HẾT HẠN
 // ==========================================
 function cleanupExpiredKeys() {
     if (!MEMORY_DB) return { deletedCount: 0 };
@@ -311,9 +319,8 @@ function verifyAdmin(username, password) {
 }
 
 // ==========================================
-// API ENDPOINTS (Keys & Feedback - Giữ nguyên)
+// API ENDPOINTS (Keys & Feedback)
 // ==========================================
-// 1. Tạo key mới
 app.post('/api/create-key', (req, res) => {
     const { plan, customerName, transferContent, amount } = req.body;
     if (!plan || !customerName) return res.status(400).json({ error: 'Thiếu thông tin' });
@@ -344,7 +351,6 @@ app.post('/api/create-key', (req, res) => {
     });
 });
 
-// 2. Admin lấy danh sách key
 app.post('/api/admin/keys', (req, res) => {
     const { username, password } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
@@ -370,7 +376,6 @@ app.post('/api/admin/keys', (req, res) => {
     res.json({ keys });
 });
 
-// 3. Admin xác nhận key → tạo Feedback Key
 app.post('/api/admin/confirm-key', (req, res) => {
     const { username, password, pin, key } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
@@ -408,7 +413,6 @@ app.post('/api/admin/confirm-key', (req, res) => {
     });
 });
 
-// 4. Check key chính xác (Public)
 app.post('/api/check-key', (req, res) => {
     const { key } = req.body;
     if (!key) return res.status(400).json({ error: 'Thiếu key' });
@@ -429,7 +433,6 @@ app.post('/api/check-key', (req, res) => {
     });
 });
 
-// 5. Tìm kiếm Key nâng cao
 app.post('/api/search-keys', (req, res) => {
     try {
         const { query } = req.body;
@@ -474,14 +477,12 @@ app.post('/api/search-keys', (req, res) => {
     }
 });
 
-// 6. Danh sách Key đã xác nhận (Public)
 app.get('/api/confirmed-keys', (req, res) => {
     cleanupExpiredKeys();
     const db = readDB();
     res.json({ keys: db.keys.filter(k => k.status === 'confirmed') });
 });
 
-// 7. Admin dọn dẹp thủ công
 app.post('/api/admin/cleanup-now', (req, res) => {
     const { username, password } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
@@ -494,7 +495,7 @@ app.post('/api/admin/cleanup-now', (req, res) => {
 });
 
 // ==========================================
-// API FEEDBACK (Giữ nguyên)
+// API FEEDBACK
 // ==========================================
 app.get('/api/feedbacks', (req, res) => {
     const db = readDB();
@@ -538,7 +539,7 @@ app.post('/api/admin/feedbacks', (req, res) => {
 });
 
 // ==========================================
-// API USERS & PAY2S WEBHOOK (MỚI)
+// API USERS & PAY2S WEBHOOK
 // ==========================================
 
 // API lấy thông tin user (để frontend hiển thị số dư)
@@ -552,7 +553,7 @@ app.get('/api/user/:username', (req, res) => {
     }
 });
 
-// API Đăng ký user (để lưu vào DB thật)
+// API Đăng ký user
 app.post('/api/register', (req, res) => {
     const { username, password, fullName } = req.body;
     if (!username || !password || !fullName) return res.status(400).json({ error: 'Thiếu thông tin' });
@@ -585,7 +586,7 @@ app.post('/api/login', (req, res) => {
     }
 });
 
-// API nhận Webhook từ Pay2S
+// API nhận Webhook từ Pay2S (Tự động cộng tiền)
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
         // 1. Xác thực Token
@@ -611,7 +612,6 @@ app.post('/api/pay2s-webhook', (req, res) => {
                 const username = match[1].toLowerCase();
                 const db = readDB();
                 
-                // Khởi tạo users nếu chưa có
                 if (!db.users) db.users = [];
                 
                 const userIndex = db.users.findIndex(u => u.username.toLowerCase() === username);
@@ -634,6 +634,59 @@ app.post('/api/pay2s-webhook', (req, res) => {
     } catch (error) {
         console.error('❌ Lỗi xử lý Webhook:', error);
         res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+});
+
+// ==========================================
+// API MỚI: XỬ LÝ MUA HÀNG (TRỪ TIỀN VÍ)
+// ==========================================
+app.post('/api/buy-product', (req, res) => {
+    try {
+        const { username, productId, price, productName } = req.body;
+
+        if (!username || !productId || price === undefined) {
+            return res.status(400).json({ error: 'Thiếu thông tin giao dịch' });
+        }
+
+        const db = readDB();
+        const userIndex = db.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+
+        if (userIndex === -1) {
+            return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+        }
+
+        const user = db.users[userIndex];
+
+        // Kiểm tra số dư
+        if (user.balance < price) {
+            return res.status(400).json({ error: 'Số dư ví không đủ. Vui lòng nạp thêm tiền.' });
+        }
+
+        // Trừ tiền
+        user.balance -= price;
+        
+        // Lưu lịch sử mua hàng (tùy chọn)
+        if (!user.purchaseHistory) user.purchaseHistory = [];
+        user.purchaseHistory.push({
+            productId,
+            productName,
+            price,
+            purchasedAt: new Date().toISOString()
+        });
+
+        writeDB(db);
+
+        console.log(`✅ User ${username} đã mua ${productName} (${price}đ). Số dư còn: ${user.balance}đ`);
+
+        res.json({ 
+            success: true, 
+            message: 'Thanh toán thành công', 
+            newBalance: user.balance 
+        });
+
+    } catch (error) {
+        console.error('❌ Lỗi mua hàng:', error);
+        res.status(500).json({ error: 'Lỗi server khi xử lý giao dịch' });
     }
 });
 
