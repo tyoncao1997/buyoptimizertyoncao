@@ -194,8 +194,8 @@ const ADMIN_PIN = '997722';
 // CẤU HÌNH PAY2S (Lấy từ ảnh bạn cung cấp)
 // ==========================================
 const PAY2S_PARTNER_CODE = process.env.PAY2S_PARTNER_CODE || 'PAY2SBB7A1S4XSJKIT8J';
-const PAY2S_ACCESS_KEY = process.env.PAY2S_ACCESS_KEY || '9fce013493559f0aff6385819e583c9308a9a922999fe8e...'; // Thay full key
-const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY || '653b08db2e03f9aa1499d4ce40c63e2c525cdd0f64a09b4...'; // Thay full key
+const PAY2S_ACCESS_KEY = process.env.PAY2S_ACCESS_KEY || '9fce013493559f0aff6385819e583c9308a9a922999fe8e2119ca3775637e9f6'; // Thay full key
+const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY || '653b08db2e03f9aa1499d4ce40c63e2c525cdd0f64a09b4ed37e5d5d40772dc0'; // Thay full key
 const PAY2S_API_URL = 'https://payment.pay2s.vn/v1/gateway/api/create';
 
 // Token nhận Webhook IPN từ Pay2S (Bạn cần lấy token này từ Dashboard Pay2S)
