@@ -1,15 +1,56 @@
+// ==========================================
+// TYON OPTIMIZER - SECURE SERVER (FULL)
+// ==========================================
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const crypto = require('crypto'); 
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ⭐ KHAI BÁO DOMAIN FRONTEND
-const FRONTEND_URL = 'https://buyoptimizertc.infinityfreeapp.com';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
+
+// ==========================================
+// BẢO MẬT CƠ BẢN (HELMET + RATE LIMIT)
+// ==========================================
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+}));
+
+// Chặn spam request toàn cục
+const globalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 phút
+    max: 200,
+    message: { error: 'Quá nhiều request. Vui lòng thử lại sau 15 phút.' }
+});
+
+// Chặn spam API Admin
+const adminLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    message: { error: 'Quá nhiều request admin. Vui lòng thử lại sau.' }
+});
+
+// Chặn spam đăng nhập (Brute Force)
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    skipSuccessfulRequests: true,
+    message: { error: 'Sai mật khẩu quá 5 lần. Vui lòng thử lại sau 15 phút.' }
+});
+
+app.use('/api/', globalLimiter);
+app.use('/api/admin/', adminLimiter);
 
 // ==========================================
 // CẤU HÌNH LƯU TRỮ
@@ -41,7 +82,7 @@ let isSyncing = false;
 let lastSyncTime = 0;
 
 // ==========================================
-// GITHUB GIST
+// GITHUB GIST API
 // ==========================================
 function gistRequest(method, body) {
     return new Promise((resolve, reject) => {
@@ -183,15 +224,24 @@ async function initDB() {
 }
 
 // ==========================================
-// CONFIG
+// CẤU HÌNH HỆ THỐNG & ADMIN BẢO MẬT
 // ==========================================
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
-const ADMIN_USERNAME = 'caoquangtuan';
-const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
-const ADMIN_PIN = '997722';
+// ⭐ ĐỌC TỪ BIẾN MÔI TRƯỜNG (.ENV)
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const ADMIN_PIN = process.env.ADMIN_PIN;
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
+
+if (!ADMIN_USERNAME || !ADMIN_PASSWORD || !ADMIN_PIN || !JWT_SECRET) {
+    console.error('❌ LỖI BẢO MẬT: Thiếu biến môi trường trong file .env!');
+    console.error('Yêu cầu: ADMIN_USERNAME, ADMIN_PASSWORD, ADMIN_PIN, JWT_SECRET');
+    // process.exit(1); // Bỏ comment dòng này nếu muốn server dừng ngay khi thiếu env
+}
 
 // CẤU HÌNH PAY2S
 const PAY2S_PARTNER_CODE = process.env.PAY2S_PARTNER_CODE || 'PAY2SBB7A1S4XSJKIT8J';
@@ -200,13 +250,56 @@ const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY || '653b08db2e03f9aa1499d4
 const PAY2S_API_URL = 'https://payment.pay2s.vn/v1/gateway/api/create';
 const PAY2S_WEBHOOK_TOKEN = process.env.PAY2S_WEBHOOK_TOKEN || 'cc06a956bb11a0a175e6e1007218277bb3322903db0a1e05df';
 
-// WEBHUB CONFIG (Dự phòng)
+// WEBHUB CONFIG
 const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
 const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
+
+// ==========================================
+// BẢO MẬT ADMIN (VERIFY, JWT MIDDLEWARE)
+// ==========================================
+// So sánh mật khẩu an toàn (chống timing attack)
+function verifyAdmin(username, password) {
+    if (username !== ADMIN_USERNAME) return false;
+    try {
+        const a = Buffer.from(password || '');
+        const b = Buffer.from(ADMIN_PASSWORD || '');
+        if (a.length !== b.length) return false;
+        return crypto.timingSafeEqual(a, b);
+    } catch { return false; }
+}
+
+// So sánh PIN an toàn
+function verifyPin(pin) {
+    if (!pin || pin.length !== ADMIN_PIN.length) return false;
+    try {
+        const a = Buffer.from(pin);
+        const b = Buffer.from(ADMIN_PIN);
+        return crypto.timingSafeEqual(a, b);
+    } catch { return false; }
+}
+
+// Middleware kiểm tra JWT Token
+function requireAdminToken(req, res, next) {
+    try {
+        const authHeader = req.headers['authorization'];
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ error: 'Từ chối truy cập: Thiếu token' });
+        }
+        const token = authHeader.substring(7);
+        const decoded = jwt.verify(token, JWT_SECRET);
+        if (decoded.role !== 'admin') {
+            return res.status(403).json({ error: 'Không có quyền admin' });
+        }
+        req.admin = decoded;
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: 'Token không hợp lệ hoặc đã hết hạn' });
+    }
+}
 
 // ==========================================
 // CLEANUP & HELPERS (CHỈ XÓA KEY CHƯA XÁC NHẬN)
@@ -216,7 +309,6 @@ function cleanupExpiredKeys() {
     const now = Date.now();
     const before = MEMORY_DB.keys.length;
 
-    // CHỈ LỌC MẢNG keys, TUYỆT ĐỐI KHÔNG ĐỘNG VÀO MẢNG users
     MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
         if (k.status === 'confirmed') return true; 
         if (k.status !== 'pending') return true; 
@@ -244,9 +336,37 @@ function calcRemainingTime(createdAt, status) {
     };
 }
 
-function verifyAdmin(username, password) {
-    return username === ADMIN_USERNAME && password === ADMIN_PASSWORD;
-}
+// ==========================================
+// API: ADMIN LOGIN (CẤP JWT TOKEN)
+// ==========================================
+app.post('/api/admin/login', loginLimiter, (req, res) => {
+    try {
+        const { username, password } = req.body;
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Thiếu thông tin đăng nhập' });
+        }
+
+        if (!verifyAdmin(username, password)) {
+            console.log(`🚫 [Login Failed] IP=${req.ip}`);
+            return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
+        }
+
+        const token = jwt.sign(
+            { username: ADMIN_USERNAME, role: 'admin' },
+            JWT_SECRET,
+            { expiresIn: JWT_EXPIRES_IN }
+        );
+
+        console.log(`✅ [Login Success] admin="${username}" IP=${req.ip}`);
+        res.json({ success: true, token, expiresIn: JWT_EXPIRES_IN });
+    } catch (err) {
+        res.status(500).json({ error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/admin/verify-token', requireAdminToken, (req, res) => {
+    res.json({ success: true, admin: { username: req.admin.username }, valid: true });
+});
 
 // ==========================================
 // KEY ENDPOINTS
@@ -271,9 +391,8 @@ app.post('/api/create-key', (req, res) => {
         message: `Key đã tạo. Xác nhận trong ${KEY_EXPIRE_HOURS}h.` });
 });
 
-app.post('/api/admin/keys', (req, res) => {
-    const { username, password } = req.body;
-    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
+// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
+app.post('/api/admin/keys', requireAdminToken, (req, res) => {
     cleanupExpiredKeys();
     const db = readDB();
     const keys = db.keys.map(k => {
@@ -290,24 +409,28 @@ app.post('/api/admin/keys', (req, res) => {
     res.json({ keys });
 });
 
-app.post('/api/admin/confirm-key', (req, res) => {
-    const { username, password, pin, key } = req.body;
-    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
-    if (pin !== ADMIN_PIN) return res.status(403).json({ error: 'Sai PIN' });
+// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
+app.post('/api/admin/confirm-key', requireAdminToken, (req, res) => {
+    const { pin, key } = req.body;
+    if (!verifyPin(pin)) return res.status(403).json({ error: 'Mã PIN không chính xác' });
+    
     cleanupExpiredKeys();
     const db = readDB();
     const idx = db.keys.findIndex(k => k.key === key);
     if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy key' });
     if (db.keys[idx].status === 'confirmed') return res.status(400).json({ error: 'Đã xác nhận' });
+    
     db.keys[idx].status = 'confirmed';
     db.keys[idx].confirmedAt = new Date().toISOString();
-    db.keys[idx].confirmedBy = username;
+    db.keys[idx].confirmedBy = req.admin.username; // Lấy từ token
+    
     const feedbackKey = `FB-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
     db.feedbackKeys.push({
         feedbackKey, originalKey: key,
         customerName: db.keys[idx].customerName, isUsed: false,
         createdAt: new Date().toISOString()
     });
+    
     writeDB(db);
     res.json({ success: true, message: 'OK', feedbackKey, keyData: db.keys[idx] });
 });
@@ -353,9 +476,8 @@ app.get('/api/confirmed-keys', (req, res) => {
     res.json({ keys: readDB().keys.filter(k => k.status === 'confirmed') });
 });
 
-app.post('/api/admin/cleanup-now', (req, res) => {
-    const { username, password } = req.body;
-    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
+// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
+app.post('/api/admin/cleanup-now', requireAdminToken, (req, res) => {
     const result = cleanupExpiredKeys();
     res.json({ success: true, message: `Đã xóa ${result.deletedCount} key hết hạn. Các tài khoản người dùng được giữ nguyên.` });
 });
@@ -388,47 +510,36 @@ app.post('/api/submit-feedback', (req, res) => {
     res.json({ success: true, message: 'OK', feedback: fb });
 });
 
-app.post('/api/admin/feedbacks', (req, res) => {
-    const { username, password } = req.body;
-    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
+// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
+app.post('/api/admin/feedbacks', requireAdminToken, (req, res) => {
     const db = readDB();
     res.json({ feedbacks: [...db.feedbacks].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
 });
 
-app.post('/api/admin/users', (req, res) => {
-    const { username, password } = req.body;
-    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
-    
+// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE & ẨN PASSWORD USER
+app.post('/api/admin/users', requireAdminToken, (req, res) => {
     const db = readDB();
-    // Trả về danh sách users (có thể ẩn bớt password nếu muốn bảo mật)
     const users = db.users.map(u => ({
         username: u.username,
-        password: u.password, // Có thể xóa dòng này nếu không muốn Admin thấy pass
+        // BỎ TRƯỜNG PASSWORD TẠI ĐÂY ĐỂ BẢO MẬT
         fullName: u.fullName,
         balance: u.balance || 0,
         createdAt: u.createdAt,
         depositCount: (u.depositHistory || []).length,
         purchaseCount: (u.purchaseHistory || []).length
     }));
-    
     res.json({ success: true, users });
 });
 
-app.post('/api/admin/add-balance', (req, res) => {
+// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
+app.post('/api/admin/add-balance', requireAdminToken, (req, res) => {
     try {
-        const { username, password, pin, targetUsername, amount, note } = req.body;
+        const { pin, targetUsername, amount, note } = req.body;
 
-        // 1. Xác thực admin
-        if (!verifyAdmin(username, password)) {
-            return res.status(401).json({ success: false, error: 'Sai tài khoản admin' });
-        }
-
-        // 2. Xác thực PIN
-        if (pin !== ADMIN_PIN) {
+        if (!verifyPin(pin)) {
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
         }
 
-        // 3. Validate input
         const addAmount = parseInt(amount);
         if (!targetUsername || !addAmount || addAmount <= 0) {
             return res.status(400).json({ success: false, error: 'Thiếu thông tin hoặc số tiền không hợp lệ' });
@@ -437,7 +548,6 @@ app.post('/api/admin/add-balance', (req, res) => {
             return res.status(400).json({ success: false, error: 'Số tiền cộng tối đa 100.000.000đ' });
         }
 
-        // 4. Tìm user
         const db = readDB();
         const idx = db.users.findIndex(u => 
             u.username.toLowerCase() === targetUsername.toLowerCase().trim()
@@ -446,36 +556,28 @@ app.post('/api/admin/add-balance', (req, res) => {
             return res.status(404).json({ success: false, error: 'Không tìm thấy user: ' + targetUsername });
         }
 
-        // 5. Cộng tiền
         const user = db.users[idx];
         const oldBalance = user.balance || 0;
         user.balance = oldBalance + addAmount;
 
-        // 6. Ghi lịch sử nạp
         if (!user.depositHistory) user.depositHistory = [];
         user.depositHistory.push({
             amount: addAmount,
             method: 'admin_manual',
-            content: note || `Admin cộng tiền thủ công bởi ${username}`,
+            content: note || `Admin cộng tiền thủ công`,
             transactionId: 'ADMIN_' + Date.now(),
             at: new Date().toISOString(),
-            addedBy: username
+            addedBy: req.admin.username,
+            ip: req.ip // Log lại IP để truy vết nếu có biến
         });
 
         writeDB(db);
-
-        console.log(`💰 [Admin] ${username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${user.balance})`);
+        console.log(`💰 [AUDIT] ${req.admin.username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${user.balance})`);
 
         res.json({
             success: true,
             message: `Đã cộng ${addAmount.toLocaleString('vi-VN')}đ cho ${targetUsername}`,
-            data: {
-                username: user.username,
-                fullName: user.fullName,
-                oldBalance,
-                newBalance: user.balance,
-                addedAmount: addAmount
-            }
+            data: { username: user.username, fullName: user.fullName, oldBalance, newBalance: user.balance, addedAmount: addAmount }
         });
 
     } catch (err) {
@@ -485,7 +587,7 @@ app.post('/api/admin/add-balance', (req, res) => {
 });
 
 // ==========================================
-// USER AUTH
+// USER AUTH & CHỨC NĂNG NGƯỜI DÙNG
 // ==========================================
 app.post('/api/register', (req, res) => {
     try {
@@ -503,9 +605,7 @@ app.post('/api/register', (req, res) => {
 
         const newUser = {
             username, password, fullName,
-            balance: 0,
-            purchaseHistory: [],
-            depositHistory: [],
+            balance: 0, purchaseHistory: [], depositHistory: [],
             createdAt: new Date().toISOString()
         };
         db.users.push(newUser);
@@ -549,7 +649,6 @@ app.post('/api/login', (req, res) => {
     }
 });
 
-// ⭐ ĐÃ SỬA: TRẢ VỀ ĐẦY ĐỦ LỊCH SỬ
 app.get('/api/user/:username', (req, res) => {
     const db = readDB();
     const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
@@ -563,9 +662,6 @@ app.get('/api/user/:username', (req, res) => {
     }});
 });
 
-// ==========================================
-// API ĐỔI MẬT KHẨU
-// ==========================================
 app.post('/api/change-password', (req, res) => {
     try {
         const { username, oldPassword, newPassword } = req.body;
@@ -594,7 +690,7 @@ app.post('/api/change-password', (req, res) => {
 });
 
 // ==========================================
-// PAY2S: TẠO ĐƠN HÀNG
+// PAY2S & WEBHUB (THANH TOÁN)
 // ==========================================
 app.post('/api/pay2s-create-order', async (req, res) => {
     try {
@@ -609,99 +705,50 @@ app.post('/api/pay2s-create-order', async (req, res) => {
         const redirectUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/payment-return`;
         const ipnUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/api/pay2s-webhook`;
 
-        const rawSignature = `accessKey=${PAY2S_ACCESS_KEY}` +
-            `&amount=${amount}` +
-            `&bankAccounts=Array` +
-            `&ipnUrl=${ipnUrl}` +
-            `&orderId=${orderId}` +
-            `&orderInfo=${orderInfo}` +
-            `&partnerCode=${PAY2S_PARTNER_CODE}` +
-            `&redirectUrl=${redirectUrl}` +
-            `&requestId=${requestId}` +
-            `&requestType=pay2s`;
-
-        const signature = crypto.createHmac('sha256', PAY2S_SECRET_KEY)
-            .update(rawSignature)
-            .digest('hex');
+        const rawSignature = `accessKey=${PAY2S_ACCESS_KEY}&amount=${amount}&bankAccounts=Array&ipnUrl=${ipnUrl}&orderId=${orderId}&orderInfo=${orderInfo}&partnerCode=${PAY2S_PARTNER_CODE}&redirectUrl=${redirectUrl}&requestId=${requestId}&requestType=pay2s`;
+        const signature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawSignature).digest('hex');
 
         const payload = {
-            accessKey: PAY2S_ACCESS_KEY,
-            partnerCode: PAY2S_PARTNER_CODE,
-            partnerName: 'TYON Optimizer',
-            requestId: requestId,
-            amount: amount,
-            orderId: orderId,
-            orderInfo: orderInfo,
-            requestType: 'pay2s',
-            redirectUrl: redirectUrl,
-            ipnUrl: ipnUrl,
-            bankAccounts: [{ account_number: "0976289958", bank_id: "MBB" }],
-            signature: signature
+            accessKey: PAY2S_ACCESS_KEY, partnerCode: PAY2S_PARTNER_CODE, partnerName: 'TYON Optimizer',
+            requestId: requestId, amount: amount, orderId: orderId, orderInfo: orderInfo,
+            requestType: 'pay2s', redirectUrl: redirectUrl, ipnUrl: ipnUrl,
+            bankAccounts: [{ account_number: "0976289958", bank_id: "MBB" }], signature: signature
         };
 
-        console.log('[Pay2S] Tạo đơn:', payload);
-
         const response = await fetch(PAY2S_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
         });
 
         const result = await response.json();
-        console.log('[Pay2S] Response:', result);
-
         if (result.status === true || result.resultCode === 0) {
-            res.json({
-                success: true,
-                paymentUrl: result.payUrl || result.paymentUrl || result.data?.payUrl
-            });
+            res.json({ success: true, paymentUrl: result.payUrl || result.paymentUrl || result.data?.payUrl });
         } else {
-            res.status(400).json({
-                success: false,
-                error: result.message || 'Tạo đơn Pay2S thất bại',
-                raw: result
-            });
+            res.status(400).json({ success: false, error: result.message || 'Tạo đơn Pay2S thất bại', raw: result });
         }
-
     } catch (err) {
         console.error('Pay2S create order error:', err);
         res.status(500).json({ success: false, error: 'Lỗi kết nối Pay2S: ' + err.message });
     }
 });
 
-// ==========================================
-// PAY2S: WEBHOOK IPN (SỬA LỖI CỘNG TIỀN KHI HỦY)
-// ==========================================
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
         const authHeader = req.headers['authorization'];
         if (authHeader && !authHeader.includes(PAY2S_WEBHOOK_TOKEN)) {
-            console.log('[Pay2S Webhook] Unauthorized - Token không khớp');
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
 
         const data = req.body;
-        console.log('📥 Pay2S webhook:', JSON.stringify(data).substring(0, 500));
-
         if (data.m2signature) {
             const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
-            
-            const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY)
-                .update(rawHash)
-                .digest('hex');
-
+            const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawHash).digest('hex');
             if (expectedSignature !== data.m2signature) {
-                console.log('[Pay2S Webhook] Chữ ký không hợp lệ!');
                 return res.status(400).json({ success: false, message: 'Invalid signature' });
             }
         }
 
-        // ⭐ BẮT ĐẦU SỬA: Chỉ cộng tiền nếu resultCode = 0 (Thành công)
         const resultCode = String(data.resultCode);
-        if (resultCode !== '0') {
-            console.log(`⚠️ [Pay2S] Giao dịch không thành công (Mã: ${resultCode}). Không cộng tiền.`);
-            return res.status(200).json({ success: true });
-        }
+        if (resultCode !== '0') return res.status(200).json({ success: true });
 
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.orderInfo || data.content || '').toUpperCase();
@@ -713,80 +760,45 @@ app.post('/api/pay2s-webhook', (req, res) => {
             const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
 
             if (idx !== -1) {
-                // Kiểm tra trùng lặp giao dịch
                 const transId = data.transId || data.transactionNumber;
                 const isDuplicate = (db.users[idx].depositHistory || []).some(d => d.transactionId === transId);
-                
-                if (isDuplicate) {
-                    console.log(`⚠️ [Pay2S] Giao dịch ${transId} đã được xử lý trước đó. Bỏ qua.`);
-                    return res.status(200).json({ success: true });
-                }
+                if (isDuplicate) return res.status(200).json({ success: true });
 
                 db.users[idx].balance += amount;
                 if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
                 db.users[idx].depositHistory.push({
                     amount, method: 'pay2s', content: data.orderInfo || data.content,
-                    transactionId: transId,
-                    at: new Date().toISOString()
+                    transactionId: transId, at: new Date().toISOString()
                 });
                 writeDB(db);
-                console.log(`✅ [Pay2S] Cộng ${amount}đ cho: ${username}`);
-            } else {
-                console.log(`⚠️ [Pay2S] Không tìm thấy user: ${username}`);
             }
         }
-
         res.status(200).json({ success: true });
-
     } catch (error) {
         console.error('Pay2S webhook error:', error);
         res.status(500).json({ success: false });
     }
 });
 
-// ==========================================
-// WEBHUB (DỰ PHÒNG)
-// ==========================================
 app.post('/api/webhub-create-order', async (req, res) => {
     try {
         const { username, amount } = req.body;
         if (!username || !amount || amount < 10000)
             return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
-
-        if (!WEBHUB_WEBHOOK_TOKEN) {
-            return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình' });
-        }
+        if (!WEBHUB_WEBHOOK_TOKEN) return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình' });
 
         const webhubRes = await fetch(`${WEBHUB_API_BASE}/orders`, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${WEBHUB_WEBHOOK_TOKEN}`
-            },
-            body: JSON.stringify({
-                amount: amount,
-                description: `NAP_${username}`,
-                return_url: `${process.env.BASE_URL || 'http://localhost:3000'}/payment-return`
-            })
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${WEBHUB_WEBHOOK_TOKEN}` },
+            body: JSON.stringify({ amount: amount, description: `NAP_${username}`, return_url: `${process.env.BASE_URL || 'http://localhost:3000'}/payment-return` })
         });
 
         const rawText = await webhubRes.text();
-        let result;
-        try { result = JSON.parse(rawText); } catch { result = { raw: rawText }; }
+        let result; try { result = JSON.parse(rawText); } catch { result = { raw: rawText }; }
 
-        if (!webhubRes.ok) {
-            return res.status(400).json({
-                success: false,
-                error: result.message || result.error || `WebHub trả về lỗi ${webhubRes.status}`
-            });
-        }
+        if (!webhubRes.ok) return res.status(400).json({ success: false, error: result.message || result.error || `WebHub lỗi ${webhubRes.status}` });
 
-        res.json({
-            success: true,
-            paymentUrl: result.payment_url || result.checkout_url || result.paymentUrl,
-            qrCode: result.qr_code || result.qr_string || result.qrCode,
-            orderId: result.order_id || result.id || result.orderId
-        });
+        res.json({ success: true, paymentUrl: result.payment_url || result.checkout_url || result.paymentUrl, qrCode: result.qr_code || result.qr_string || result.qrCode, orderId: result.order_id || result.id || result.orderId });
     } catch (err) {
         console.error('WebHub create order error:', err);
         res.status(500).json({ success: false, error: 'Lỗi kết nối WebHub: ' + err.message });
@@ -799,7 +811,6 @@ app.post('/api/webhub-webhook', (req, res) => {
         if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN))) {
             return res.status(401).json({ success: false, message: 'Unauthorized' });
         }
-
         const data = req.body;
         const status = data.status || data.transactionStatus;
         const amount = parseInt(data.amount || data.transferAmount || 0);
@@ -811,15 +822,10 @@ app.post('/api/webhub-webhook', (req, res) => {
                 const username = match[1].toLowerCase();
                 const db = readDB();
                 const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
-
                 if (idx !== -1 && amount > 0) {
                     db.users[idx].balance += amount;
                     if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
-                    db.users[idx].depositHistory.push({
-                        amount, method: 'webhub',
-                        transactionId: data.transactionId || data.orderId,
-                        at: new Date().toISOString()
-                    });
+                    db.users[idx].depositHistory.push({ amount, method: 'webhub', transactionId: data.transactionId || data.orderId, at: new Date().toISOString() });
                     writeDB(db);
                 }
             }
@@ -845,14 +851,11 @@ app.post('/api/buy-product', (req, res) => {
         if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
 
         const user = db.users[idx];
-        if (user.balance < price)
-            return res.status(400).json({ success: false, error: 'Số dư không đủ' });
+        if (user.balance < price) return res.status(400).json({ success: false, error: 'Số dư không đủ' });
 
         user.balance -= price;
         if (!user.purchaseHistory) user.purchaseHistory = [];
-        user.purchaseHistory.push({
-            productId, productName, price, purchasedAt: new Date().toISOString()
-        });
+        user.purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
         writeDB(db);
 
         res.json({ success: true, newBalance: user.balance });
@@ -875,24 +878,16 @@ app.get('/api/download/:productId', (req, res) => {
     
     if (hasBought || String(productId) === '1') {
         const filesDir = path.join(__dirname, 'files');
-        let filePath = '';
-        let originalFileName = '';
+        let filePath = ''; let originalFileName = '';
 
         if (fs.existsSync(filesDir)) {
             const filesInDir = fs.readdirSync(filesDir);
             const foundFile = filesInDir.find(f => f.startsWith(`${productId}.`));
-            
-            if (foundFile) {
-                filePath = path.join(filesDir, foundFile);
-                originalFileName = foundFile; 
-            }
+            if (foundFile) { filePath = path.join(filesDir, foundFile); originalFileName = foundFile; }
         }
 
-        if (filePath && fs.existsSync(filePath)) {
-            res.download(filePath, `TYON_${originalFileName}`);
-        } else {
-            res.status(404).send('File không tồn tại trên server.');
-        }
+        if (filePath && fs.existsSync(filePath)) res.download(filePath, `TYON_${originalFileName}`);
+        else res.status(404).send('File không tồn tại trên server.');
     } else {
         res.status(403).send('Chưa mua sản phẩm.');
     }
@@ -903,37 +898,8 @@ app.get('/api/download/:productId', (req, res) => {
 // ==========================================
 app.get('/payment-return', (req, res) => {
     const message = req.query.message || 'Giao dịch đã được xử lý.';
-    
     res.send(`
-        <!DOCTYPE html>
-        <html lang="vi">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Kết quả thanh toán - TYON Optimizer</title>
-            <style>
-                body { font-family: sans-serif; background: #0f172a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; text-align: center; }
-                .box { background: #1e293b; padding: 40px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 400px; width: 90%; }
-                h1 { color: #22c55e; font-size: 24px; margin-bottom: 10px; }
-                p { color: #a0a5b5; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
-                .btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; transition: 0.3s; }
-                .btn:hover { background: #2563eb; }
-            </style>
-        </head>
-        <body>
-            <div class="box">
-                <h1>🎉 Thanh toán hoàn tất!</h1>
-                <p>Cảm ơn bạn đã nạp tiền. Hệ thống sẽ tự động cộng tiền vào ví của bạn trong 1-2 phút.</p>
-                <p><strong>Trạng thái:</strong> ${message}</p>
-                
-                <a href="${FRONTEND_URL}" class="btn">Quay lại trang chủ</a>
-            </div>
-            
-            <script>
-                setTimeout(() => { window.location.href = '${FRONTEND_URL}'; }, 5000);
-            </script>
-        </body>
-        </html>
+        <!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Kết quả thanh toán</title><style>body { font-family: sans-serif; background: #0f172a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; text-align: center; } .box { background: #1e293b; padding: 40px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 400px; width: 90%; } h1 { color: #22c55e; font-size: 24px; margin-bottom: 10px; } p { color: #a0a5b5; font-size: 14px; margin-bottom: 20px; line-height: 1.5; } .btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; transition: 0.3s; } .btn:hover { background: #2563eb; }</style></head><body><div class="box"><h1>🎉 Thanh toán hoàn tất!</h1><p>Cảm ơn bạn đã nạp tiền. Hệ thống sẽ tự động cộng tiền vào ví của bạn trong 1-2 phút.</p><p><strong>Trạng thái:</strong> ${message}</p><a href="${FRONTEND_URL}" class="btn">Quay lại trang chủ</a></div><script>setTimeout(() => { window.location.href = '${FRONTEND_URL}'; }, 5000);</script></body></html>
     `);
 });
 
@@ -948,34 +914,26 @@ app.get('/api/health', (req, res) => {
         pay2sConfigured: !!PAY2S_PARTNER_CODE,
         webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
         isDirty, totalUsers: (db.users || []).length,
-        totalKeys: db.keys.length,
-        pendingKeys: db.keys.filter(k => k.status === 'pending').length,
-        confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length,
-        totalFeedbacks: db.feedbacks.length
+        totalKeys: db.keys.length, pendingKeys: db.keys.filter(k => k.status === 'pending').length,
+        confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length, totalFeedbacks: db.feedbacks.length
     });
 });
 
-// 404 — PHẢI NẰM CUỐI CÙNG
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
-
-app.use((err, req, res, next) => {
-    console.error('❌ Server error:', err);
-    res.status(500).json({ error: 'Lỗi server: ' + err.message });
-});
+app.use((err, req, res, next) => { console.error('❌ Server error:', err); res.status(500).json({ error: 'Lỗi server: ' + err.message }); });
 
 // ==========================================
-// TIMERS
+// TIMERS & START
 // ==========================================
 setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
 setInterval(() => { if (isDirty) flushToGist(true); }, 60000);
 
-// ==========================================
-// START
-// ==========================================
 async function startServer() {
     await initDB();
     const server = app.listen(PORT, () => {
-        console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
+        console.log(`\n✅ TYON SERVER BẢO MẬT chạy tại http://localhost:${PORT}`);
+        console.log(`🔐 JWT Security: BẬT`);
+        console.log(`🛡️ Rate Limit: BẬT`);
         console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
         console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
         console.log(`🌐 Frontend URL: ${FRONTEND_URL}\n`);
