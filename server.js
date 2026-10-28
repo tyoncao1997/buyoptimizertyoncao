@@ -15,6 +15,7 @@ const helmet = require('helmet');
 const archiver = require('archiver')
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // ⭐ KHAI BÁO DOMAIN FRONTEND
