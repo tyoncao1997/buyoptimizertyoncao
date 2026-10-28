@@ -11,8 +11,8 @@ const PORT = process.env.PORT || 3000;
 // CẤU HÌNH LƯU TRỮ — CHỐNG MẤT DATA TUYỆT ĐỐI
 // ==========================================
 // Ưu tiên: GitHub Gist (persistent) > file local (ephemeral trên Render)
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
-const GIST_ID = process.env.GIST_ID || '';
+const GITHUB_TOKEN = (process.env.GITHUB_TOKEN || '').trim();
+const GIST_ID = (process.env.GIST_ID || '').trim();
 const GIST_FILENAME = 'database.json';
 const USE_GIST = !!(GITHUB_TOKEN && GIST_ID);
 
