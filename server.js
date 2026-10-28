@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ⭐ KHAI BÁO DOMAIN FRONTEND (NƠI CHỨA INDEX.HTML CỦA BẠN)
-const FRONTEND_URL = 'https://buyoptimizertyoncao.infinityfreeapp.com';
+const FRONTEND_URL = 'https://buyoptimizertc.infinityfreeapp.com';
 
 // ==========================================
 // CẤU HÌNH LƯU TRỮ
