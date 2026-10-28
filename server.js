@@ -120,7 +120,7 @@ let syncTimer = null;
 function scheduleSync() {
     isDirty = true;
     if (syncTimer) clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => flushToGist(), 2000);
+    syncTimer = setTimeout(() => flushToGist(), 10000);
 }
 
 async function flushToGist(force = false) {
