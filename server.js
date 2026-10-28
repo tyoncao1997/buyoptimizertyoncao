@@ -600,63 +600,9 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));app.post('/api/register', (req, res) => {
-    const { username, password, fullName } = req.body;
-    if (!username || !password || !fullName) return res.status(400).json({ error: 'Thiếu thông tin' });
-
-    const db = readDB();
-    if (db.users.find(u => u.username.toLowerCase() === username.toLowerCase())) {
-        return res.status(400).json({ error: 'Username đã tồn tại' });
-    }
-
-    db.users.push({
-        username, password, fullName, balance: 0, createdAt: new Date().toISOString()
-    });
-    writeDB(db);
-    res.json({ success: true, message: 'Đăng ký thành công', user: { username, fullName, balance: 0 } });
-});
-
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    const db = readDB();
-    const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === password);
-    if (user) {
-        res.json({ success: true, user: { username: user.username, fullName: user.fullName, balance: user.balance } });
-    } else {
-        res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
-    }
-});
-
-// Middleware 404 PHẢI NẰM DƯỚI CÙNG CỦA CÁC ROUTE
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
-app.use((err, req, res, next) => {
-    console.error('❌ Server error:', err);
-    res.status(500).json({ error: 'Lỗi server: ' + err.message });
-});
-
 // ==========================================
-// TIMERS
+// API ĐĂNG KÝ / ĐĂNG NHẬP (Đặt trên 404)
 // ==========================================
-setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
-
-// Force sync mỗi 60s nếu có thay đổi chưa đẩy lên
-setInterval(() => {
-    if (isDirty) {
-        console.log('⏰ Force sync (60s) — isDirty=true');
-        flushToGist(true);
-    }
-}, 60000);
-
-app.get('/api/user/:username', (req, res) => {
-    const db = readDB();
-    const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
-    if (user) {
-        res.json({ success: true, user: { username: user.username, balance: user.balance, fullName: user.fullName } });
-    } else {
-        res.status(404).json({ error: 'User not found' });
-    }
-});
-
 app.post('/api/register', (req, res) => {
     const { username, password, fullName } = req.body;
     if (!username || !password || !fullName) return res.status(400).json({ error: 'Thiếu thông tin' });
@@ -681,6 +627,16 @@ app.post('/api/login', (req, res) => {
         res.json({ success: true, user: { username: user.username, fullName: user.fullName, balance: user.balance } });
     } else {
         res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
+    }
+});
+
+app.get('/api/user/:username', (req, res) => {
+    const db = readDB();
+    const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
+    if (user) {
+        res.json({ success: true, user: { username: user.username, balance: user.balance, fullName: user.fullName } });
+    } else {
+        res.status(404).json({ error: 'User not found' });
     }
 });
 
@@ -754,11 +710,32 @@ app.get('/api/download/:productId', (req, res) => {
 });
 
 // ==========================================
-// KHỞI ĐỘNG
+// MIDDLEWARE BẮT LỖI (BẮT BUỘC PHẢI NẰM DƯỚI CÙNG)
+// ==========================================
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
+
+app.use((err, req, res, next) => {
+    console.error('❌ Server error:', err);
+    res.status(500).json({ error: 'Lỗi server: ' + err.message });
+});
+
+// ==========================================
+// TIMERS
+// ==========================================
+setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
+
+setInterval(() => {
+    if (isDirty) {
+        console.log('⏰ Force sync (60s) — isDirty=true');
+        flushToGist(true);
+    }
+}, 60000);
+
+// ==========================================
+// KHỞI ĐỘNG SERVER
 // ==========================================
 async function startServer() {
     await initDB();
-
     const server = app.listen(PORT, () => {
         console.log(`\n╔════════════════════════════════════════════╗`);
         console.log(`║  ✅ TYON OPTIMIZER SERVER ĐANG CHẠY         ║`);
@@ -769,16 +746,11 @@ async function startServer() {
         console.log(`🔄 Cleanup:    mỗi ${CLEANUP_INTERVAL_MS / 60000} phút\n`);
     });
 
-    // ==========================================
-    // GRACEFUL SHUTDOWN
-    // ==========================================
     let isShuttingDown = false;
     async function gracefulShutdown(signal) {
         if (isShuttingDown) return;
         isShuttingDown = true;
         console.log(`\n👋 Nhận ${signal} — đang tắt server an toàn...`);
-
-        // Flush data cuối cùng
         try {
             if (isDirty) {
                 console.log('💾 Đang flush data cuối cùng lên Gist...');
@@ -787,12 +759,10 @@ async function startServer() {
         } catch (e) {
             console.error('❌ Flush cuối thất bại:', e.message);
         }
-
         server.close(() => {
             console.log('✅ Server đã đóng. Tạm biệt!');
             process.exit(0);
         });
-
         setTimeout(() => {
             console.error('⚠️  Force exit sau timeout.');
             process.exit(1);
@@ -801,16 +771,13 @@ async function startServer() {
 
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
     process.on('uncaughtException', (err) => {
         console.error('❌ Uncaught Exception:', err);
-        // Cố gắng flush trước khi chết
         if (isDirty && USE_GIST) {
             try { flushToGist(true); } catch (_) {}
         }
         setTimeout(() => process.exit(1), 2000);
     });
-
     process.on('unhandledRejection', (err) => {
         console.error('❌ Unhandled Rejection:', err);
     });
