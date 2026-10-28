@@ -417,7 +417,7 @@ app.post('/api/admin/users', (req, res) => {
 // ==========================================
 // USER AUTH
 // ==========================================
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
     try {
         const { username, password, fullName } = req.body;
         if (!username || !password || !fullName)
