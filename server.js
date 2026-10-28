@@ -503,7 +503,7 @@ app.post('/api/pay2s-create-order', async (req, res) => {
             requestType: 'pay2s',
             redirectUrl: redirectUrl,
             ipnUrl: ipnUrl,
-            bankAccounts: [{ account_number: "0976289958", bank_id: "MBBank" }],
+            bankAccounts: [{ account_number: "0976289958", bank_id: "MBB" }],
             signature: signature
         };
 
