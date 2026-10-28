@@ -2,147 +2,290 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-// CẤU HÌNH DATABASE — TỰ ĐỘNG + AN TOÀN
+// CẤU HÌNH LƯU TRỮ — CHỐNG MẤT DATA TUYỆT ĐỐI
 // ==========================================
-// Ưu tiên: ENV > /var/data (nếu ghi được) > thư mục dự án
-function resolveDbFile() {
-    // 1. Nếu có ENV chỉ định
-    if (process.env.DB_FILE) {
-        return process.env.DB_FILE;
-    }
+// Ưu tiên: GitHub Gist (persistent) > file local (ephemeral trên Render)
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GIST_ID = process.env.GIST_ID || '';
+const GIST_FILENAME = 'database.json';
+const USE_GIST = !!(GITHUB_TOKEN && GIST_ID);
 
-    // 2. Thử /var/data (Render persistent disk)
-    const varDataPath = '/var/data/database.json';
-    try {
-        if (!fs.existsSync('/var/data')) {
-            fs.mkdirSync('/var/data', { recursive: true });
-        }
-        // Test quyền ghi
-        fs.accessSync('/var/data', fs.constants.W_OK);
-        return varDataPath;
-    } catch (e) {
-        // Không có quyền → fallback
-    }
+// File local làm cache + fallback
+const LOCAL_DB_FILE = path.join(__dirname, 'database.json');
+const LOCAL_BACKUP_DIR = path.join(__dirname, 'backups');
 
-    // 3. Fallback: thư mục dự án (luôn ghi được)
-    return path.join(__dirname, 'database.json');
+console.log(USE_GIST
+    ? `☁️  Lưu trữ: GitHub Gist (${GIST_ID}) — CHỐNG MẤT DATA TUYỆT ĐỐI`
+    : `⚠️  Lưu trữ: FILE LOCAL — SẼ MẤT KHI RENDER RESTART!`
+);
+if (!USE_GIST) {
+    console.warn('⚠️  Thiếu GITHUB_TOKEN hoặc GIST_ID → không thể chống mất data trên Render Free');
 }
 
-const DB_FILE = resolveDbFile();
-const DB_DIR = path.dirname(DB_FILE);
-const DB_BACKUP_DIR = path.join(DB_DIR, 'backups');
-
-console.log(`📁 Database: ${DB_FILE}`);
-
-// Đảm bảo thư mục tồn tại
+// Đảm bảo thư mục local tồn tại
 try {
-    if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
-    if (!fs.existsSync(DB_BACKUP_DIR)) fs.mkdirSync(DB_BACKUP_DIR, { recursive: true });
+    if (!fs.existsSync(LOCAL_BACKUP_DIR)) fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true });
 } catch (err) {
-    console.error('❌ Không tạo được thư mục DB:', err.message);
+    console.error('❌ Không tạo được thư mục backup:', err.message);
 }
 
-// Khởi tạo DB nếu chưa có
 const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
 
-if (!fs.existsSync(DB_FILE)) {
-    try {
-        fs.writeFileSync(DB_FILE, JSON.stringify(DEFAULT_DB, null, 2));
-        console.log('✅ Đã tạo database.json mới');
-    } catch (err) {
-        console.error('❌ Lỗi tạo file database:', err.message);
-    }
+// ==========================================
+// IN-MEMORY DB (source of truth khi chạy)
+// ==========================================
+let MEMORY_DB = null;     // Cache trong RAM
+let isDirty = false;      // Có thay đổi chưa ghi lên Gist
+let isSyncing = false;    // Đang ghi lên Gist
+let lastSyncTime = 0;
+
+// ==========================================
+// GITHUB GIST API
+// ==========================================
+function gistRequest(method, body) {
+    return new Promise((resolve, reject) => {
+        const options = {
+            hostname: 'api.github.com',
+            path: `/gists/${GIST_ID}`,
+            method: method,
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'User-Agent': 'TyonOptimizer',
+                'Accept': 'application/vnd.github+json',
+                'Content-Type': 'application/json'
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                    try { resolve(JSON.parse(data)); }
+                    catch (e) { resolve(data); }
+                } else {
+                    reject(new Error(`Gist API ${res.statusCode}: ${data.substring(0, 200)}`));
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.setTimeout(15000, () => {
+            req.destroy(new Error('Gist request timeout'));
+        });
+
+        if (body) req.write(JSON.stringify(body));
+        req.end();
+    });
 }
 
-// ==========================================
-// ĐỌC / GHI DATABASE — ATOMIC + BACKUP
-// ==========================================
-function readDB() {
+async function loadFromGist() {
+    if (!USE_GIST) return null;
     try {
-        const data = fs.readFileSync(DB_FILE, 'utf8');
-        if (!data.trim()) return { ...DEFAULT_DB };
+        const gist = await gistRequest('GET');
+        const file = gist.files && gist.files[GIST_FILENAME];
+        if (!file) {
+            console.warn('⚠️  Không tìm thấy file trong Gist, tạo mới');
+            return { ...DEFAULT_DB };
+        }
 
-        const parsed = JSON.parse(data);
+        // Nếu content bị truncated (file lớn), fetch raw_url
+        let content;
+        if (file.truncated && file.raw_url) {
+            content = await fetchRaw(file.raw_url);
+        } else {
+            content = file.content;
+        }
+
+        const parsed = JSON.parse(content || '{}');
         if (!parsed.keys) parsed.keys = [];
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
         if (!parsed.feedbackKeys) parsed.feedbackKeys = [];
         if (!parsed.feedbacks) parsed.feedbacks = [];
         return parsed;
     } catch (err) {
-        console.error('❌ Lỗi đọc DB:', err.message);
-        // Thử khôi phục từ backup gần nhất
-        try {
-            const backups = fs.readdirSync(DB_BACKUP_DIR)
-                .filter(f => f.startsWith('database-') && f.endsWith('.json'))
-                .sort()
-                .reverse();
+        console.error('❌ Lỗi load từ Gist:', err.message);
+        return null;
+    }
+}
 
-            if (backups.length > 0) {
-                const latest = path.join(DB_BACKUP_DIR, backups[0]);
-                console.log(`♻️  Khôi phục từ backup: ${latest}`);
-                const parsed = JSON.parse(fs.readFileSync(latest, 'utf8'));
-                if (!parsed.keys) parsed.keys = [];
-                if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
-                if (!parsed.feedbackKeys) parsed.feedbackKeys = [];
-                if (!parsed.feedbacks) parsed.feedbacks = [];
-                return parsed;
+function fetchRaw(url) {
+    return new Promise((resolve, reject) => {
+        https.get(url, { headers: { 'User-Agent': 'TyonOptimizer' } }, (res) => {
+            let data = '';
+            res.on('data', c => data += c);
+            res.on('end', () => resolve(data));
+        }).on('error', reject);
+    });
+}
+
+async function saveToGist(data) {
+    if (!USE_GIST) return false;
+    try {
+        await gistRequest('PATCH', {
+            files: {
+                [GIST_FILENAME]: {
+                    content: JSON.stringify(data, null, 2)
+                }
             }
-        } catch (e) {
-            console.error('❌ Không khôi phục được backup:', e.message);
-        }
-        return { ...DEFAULT_DB };
-    }
-}
-
-// Ghi atomic: ghi file tạm rồi rename → tránh corrupt khi crash
-function writeDB(data) {
-    try {
-        const tmpFile = DB_FILE + '.tmp';
-        fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
-        fs.renameSync(tmpFile, DB_FILE);
+        });
+        return true;
     } catch (err) {
-        console.error('❌ Lỗi ghi DB:', err.message);
-        // Fallback: ghi trực tiếp
-        try {
-            fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-        } catch (e) {
-            console.error('❌ Fallback ghi DB cũng lỗi:', e.message);
-        }
+        console.error('❌ Lỗi save lên Gist:', err.message);
+        return false;
     }
 }
 
-// Backup định kỳ (giữ 7 bản gần nhất)
-function backupDB() {
+// ==========================================
+// ĐỒNG BỘ — DEBOUNCE + RETRY
+// ==========================================
+let syncTimer = null;
+const SYNC_DEBOUNCE_MS = 2000; // Gộp nhiều thay đổi trong 2s
+const SYNC_INTERVAL_MAX = 60000; // Tối đa 60s phải sync 1 lần
+
+function scheduleSync() {
+    isDirty = true;
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => flushToGist(), SYNC_DEBOUNCE_MS);
+}
+
+async function flushToGist(force = false) {
+    if (isSyncing) return;
+    if (!isDirty && !force) return;
+    if (!USE_GIST) {
+        // Fallback: ghi local
+        saveLocal(MEMORY_DB);
+        isDirty = false;
+        return;
+    }
+
+    isSyncing = true;
     try {
-        if (!fs.existsSync(DB_FILE)) return;
+        const success = await saveToGist(MEMORY_DB);
+        if (success) {
+            isDirty = false;
+            lastSyncTime = Date.now();
+            saveLocal(MEMORY_DB); // Cache local
+        } else {
+            console.warn('⚠️  Sync Gist thất bại, sẽ retry sau 30s');
+            setTimeout(() => flushToGist(true), 30000);
+        }
+    } finally {
+        isSyncing = false;
+    }
+}
+
+// ==========================================
+// LOCAL CACHE (chỉ fallback, không phải source of truth)
+// ==========================================
+function saveLocal(data) {
+    try {
+        const tmp = LOCAL_DB_FILE + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+        fs.renameSync(tmp, LOCAL_DB_FILE);
+
+        // Backup local (phòng khi Gist chết)
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        const backupFile = path.join(DB_BACKUP_DIR, `database-${ts}.json`);
-        fs.copyFileSync(DB_FILE, backupFile);
+        fs.copyFileSync(LOCAL_DB_FILE, path.join(LOCAL_BACKUP_DIR, `db-${ts}.json`));
 
-        // Dọn backup cũ, giữ 7 bản mới nhất
-        const backups = fs.readdirSync(DB_BACKUP_DIR)
-            .filter(f => f.startsWith('database-') && f.endsWith('.json'))
-            .sort()
-            .reverse();
-
-        backups.slice(7).forEach(f => {
-            try { fs.unlinkSync(path.join(DB_BACKUP_DIR, f)); } catch (_) {}
+        // Giữ 5 bản
+        const backups = fs.readdirSync(LOCAL_BACKUP_DIR)
+            .filter(f => f.startsWith('db-') && f.endsWith('.json'))
+            .sort().reverse();
+        backups.slice(5).forEach(f => {
+            try { fs.unlinkSync(path.join(LOCAL_BACKUP_DIR, f)); } catch (_) {}
         });
     } catch (err) {
-        console.error('⚠️  Lỗi backup DB:', err.message);
+        // Không quan trọng, local chỉ là cache
     }
 }
 
-// ============ CẤU HÌNH ============
+function loadLocal() {
+    try {
+        if (!fs.existsSync(LOCAL_DB_FILE)) return null;
+        const data = JSON.parse(fs.readFileSync(LOCAL_DB_FILE, 'utf8'));
+        if (!data.keys) data.keys = [];
+        if (!data.confirmedKeys) data.confirmedKeys = [];
+        if (!data.feedbackKeys) data.feedbackKeys = [];
+        if (!data.feedbacks) data.feedbacks = [];
+        return data;
+    } catch (err) {
+        return null;
+    }
+}
+
+// ==========================================
+// READ / WRITE API (đồng bộ, dùng memory cache)
+// ==========================================
+function readDB() {
+    if (!MEMORY_DB) {
+        // Chưa init — trả về default (initDB sẽ chạy lúc start)
+        return { ...DEFAULT_DB, keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
+    }
+    // Trả về clone để tránh mutate ngoài ý muốn
+    return JSON.parse(JSON.stringify(MEMORY_DB));
+}
+
+function writeDB(data) {
+    // Chuẩn hóa
+    if (!data.keys) data.keys = [];
+    if (!data.confirmedKeys) data.confirmedKeys = [];
+    if (!data.feedbackKeys) data.feedbackKeys = [];
+    if (!data.feedbacks) data.feedbacks = [];
+
+    MEMORY_DB = data;
+    scheduleSync();
+}
+
+// ==========================================
+// KHỞI TẠO DB
+// ==========================================
+async function initDB() {
+    console.log('🔄 Đang tải database...');
+
+    // 1. Thử Gist trước
+    if (USE_GIST) {
+        const remote = await loadFromGist();
+        if (remote) {
+            MEMORY_DB = remote;
+            console.log(`✅ Đã tải từ Gist: ${remote.keys.length} keys, ${remote.feedbacks.length} feedbacks`);
+            saveLocal(remote);
+            return;
+        }
+        console.warn('⚠️  Không tải được Gist, thử local cache...');
+    }
+
+    // 2. Fallback: local cache
+    const local = loadLocal();
+    if (local) {
+        MEMORY_DB = local;
+        console.log(`✅ Đã tải từ local cache: ${local.keys.length} keys`);
+        if (USE_GIST) {
+            console.log('📤 Đang push local cache lên Gist...');
+            await saveToGist(local);
+        }
+        return;
+    }
+
+    // 3. Default
+    MEMORY_DB = { ...DEFAULT_DB, keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
+    console.log('📁 Khởi tạo DB mới (empty)');
+    if (USE_GIST) await saveToGist(MEMORY_DB);
+    saveLocal(MEMORY_DB);
+}
+
+// ==========================================
+// CẤU HÌNH
+// ==========================================
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1h
-const BACKUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h backup/lần
 
 const ADMIN_USERNAME = 'caoquangtuan';
 const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
@@ -153,32 +296,35 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
-// ============ DỌN KEY HẾT HẠN ============
+// ==========================================
+// DỌN KEY HẾT HẠN — CHỈ XÓA pending
+// ==========================================
+// Key confirmed + feedbackKeys + feedbacks KHÔNG BAO GIỜ BỊ XÓA
 function cleanupExpiredKeys() {
-    const db = readDB();
-    const now = Date.now();
-    const deletedKeys = [];
-    const remainingKeys = [];
+    if (!MEMORY_DB) return { deletedCount: 0 };
 
-    db.keys.forEach(k => {
-        if (k.status === 'pending') {
-            const age = now - new Date(k.createdAt).getTime();
-            if (age > KEY_EXPIRE_MS) {
-                deletedKeys.push({ key: k.key, customerName: k.customerName });
-            } else {
-                remainingKeys.push(k);
-            }
-        } else {
-            remainingKeys.push(k);
+    const now = Date.now();
+    const before = MEMORY_DB.keys.length;
+
+    // CHỈ giữ lại: không phải pending, HOẶC pending còn hạn
+    MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
+        if (k.status === 'confirmed') return true; // ✅ giữ vĩnh viễn
+        if (k.status !== 'pending') return true;  // ✅ giữ các trạng thái khác
+
+        const age = now - new Date(k.createdAt).getTime();
+        if (age > KEY_EXPIRE_MS) {
+            console.log(`   🗑️  Xóa key hết hạn: ${k.key} | ${k.customerName}`);
+            return false; // ❌ xóa pending quá 24h
         }
+        return true; // ✅ pending còn hạn
     });
 
-    if (deletedKeys.length > 0) {
-        db.keys = remainingKeys;
-        writeDB(db);
-        console.log(`\n🧹 Đã xóa ${deletedKeys.length} key hết hạn.`);
+    const deletedCount = before - MEMORY_DB.keys.length;
+    if (deletedCount > 0) {
+        writeDB(MEMORY_DB);
+        console.log(`🧹 Đã xóa ${deletedCount} key pending hết hạn. Keys confirmed + feedbacks được giữ nguyên.`);
     }
-    return { deletedCount: deletedKeys.length };
+    return { deletedCount };
 }
 
 // ============ HELPER ============
@@ -199,7 +345,7 @@ function verifyAdmin(username, password) {
 }
 
 // ==========================================
-// API ENDPOINTS
+// API ENDPOINTS (giữ nguyên hành vi gốc)
 // ==========================================
 
 // 1. Tạo key mới
@@ -227,8 +373,7 @@ app.post('/api/create-key', (req, res) => {
     writeDB(db);
 
     res.json({
-        success: true,
-        key,
+        success: true, key,
         expiresAt: newKey.expiresAt,
         message: `Key đã được tạo. Vui lòng thanh toán và xác nhận trong ${KEY_EXPIRE_HOURS}h.`
     });
@@ -338,14 +483,11 @@ app.post('/api/search-keys', (req, res) => {
         const formattedResults = matches.map(k => {
             const rem = calcRemainingTime(k.createdAt, k.status);
             return {
-                key: k.key,
-                plan: k.plan,
-                status: k.status,
+                key: k.key, plan: k.plan, status: k.status,
                 customerName: k.customerName,
                 transferContent: k.transferContent,
                 amount: k.amount,
-                createdAt: k.createdAt,
-                confirmedAt: k.confirmedAt,
+                createdAt: k.createdAt, confirmedAt: k.confirmedAt,
                 remainingTime: rem && !rem.isExpired ? rem : null,
                 isExpired: rem ? rem.isExpired : false,
                 _matchType: {
@@ -357,8 +499,7 @@ app.post('/api/search-keys', (req, res) => {
         });
 
         res.json({
-            success: true,
-            results: formattedResults,
+            success: true, results: formattedResults,
             count: formattedResults.length,
             totalMatches: formattedResults.length
         });
@@ -381,7 +522,10 @@ app.post('/api/admin/cleanup-now', (req, res) => {
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
 
     const result = cleanupExpiredKeys();
-    res.json({ success: true, message: `Đã xóa ${result.deletedCount} key hết hạn.` });
+    res.json({
+        success: true,
+        message: `Đã xóa ${result.deletedCount} key pending hết hạn. Key confirmed + feedback được giữ nguyên.`
+    });
 });
 
 // ==========================================
@@ -433,14 +577,16 @@ app.post('/api/admin/feedbacks', (req, res) => {
 });
 
 // ==========================================
-// HEALTH CHECK & KHỞI ĐỘNG
+// HEALTH CHECK (dùng để keep-alive + monitor)
 // ==========================================
 app.get('/api/health', (req, res) => {
-    const db = readDB();
+    const db = MEMORY_DB || { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
     res.json({
         status: 'ok',
         uptime: process.uptime(),
-        dbFile: DB_FILE,
+        storage: USE_GIST ? 'github-gist' : 'local-file',
+        isDirty,
+        lastSyncTime: lastSyncTime ? new Date(lastSyncTime).toISOString() : null,
         totalKeys: db.keys.length,
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
         confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length,
@@ -458,67 +604,79 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// TIMERS — cleanup + backup
+// TIMERS
 // ==========================================
-setTimeout(() => { cleanupExpiredKeys(); }, 5000);
 setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
 
-// Backup ngay khi khởi động + định kỳ
-setTimeout(() => { backupDB(); }, 10000);
-setInterval(() => { backupDB(); }, BACKUP_INTERVAL_MS);
+// Force sync mỗi 60s nếu có thay đổi chưa đẩy lên
+setInterval(() => {
+    if (isDirty) {
+        console.log('⏰ Force sync (60s) — isDirty=true');
+        flushToGist(true);
+    }
+}, 60000);
 
 // ==========================================
-// KHỞI ĐỘNG SERVER
+// KHỞI ĐỘNG
 // ==========================================
-const server = app.listen(PORT, () => {
-    console.log(`\n╔════════════════════════════════════════════╗`);
-    console.log(`║  ✅ TYON OPTIMIZER SERVER ĐANG CHẠY         ║`);
-    console.log(`╚════════════════════════════════════════════╝`);
-    console.log(`🌐 URL:        http://localhost:${PORT}`);
-    console.log(`📁 Database:   ${DB_FILE}`);
-    console.log(`💾 Backup dir: ${DB_BACKUP_DIR}`);
-    console.log(`⏰ Key expire: ${KEY_EXPIRE_HOURS} giờ`);
-    console.log(`🔄 Cleanup:    mỗi ${CLEANUP_INTERVAL_MS / 60000} phút`);
-    console.log(`🗄️  Backup:     mỗi ${BACKUP_INTERVAL_MS / 3600000} giờ\n`);
-});
+async function startServer() {
+    await initDB();
 
-// ==========================================
-// GRACEFUL SHUTDOWN — FLUSH DATA TRƯỚC KHI TẮT
-// ==========================================
-let isShuttingDown = false;
-function gracefulShutdown(signal) {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-    console.log(`\n👋 Nhận ${signal} — đang tắt server an toàn...`);
-
-    // Flush lần cuối
-    try { backupDB(); } catch (_) {}
-
-    server.close(() => {
-        console.log('✅ Server đã đóng. Tạm biệt!');
-        process.exit(0);
+    const server = app.listen(PORT, () => {
+        console.log(`\n╔════════════════════════════════════════════╗`);
+        console.log(`║  ✅ TYON OPTIMIZER SERVER ĐANG CHẠY         ║`);
+        console.log(`╚════════════════════════════════════════════╝`);
+        console.log(`🌐 URL:        http://localhost:${PORT}`);
+        console.log(`☁️  Storage:    ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE (⚠️ RỦI RO)'}`);
+        console.log(`⏰ Key expire: ${KEY_EXPIRE_HOURS} giờ (chỉ pending)`);
+        console.log(`🔄 Cleanup:    mỗi ${CLEANUP_INTERVAL_MS / 60000} phút\n`);
     });
 
-    // Force exit sau 10s nếu không đóng được
-    setTimeout(() => {
-        console.error('⚠️  Force exit sau timeout.');
-        process.exit(1);
-    }, 10000).unref();
+    // ==========================================
+    // GRACEFUL SHUTDOWN
+    // ==========================================
+    let isShuttingDown = false;
+    async function gracefulShutdown(signal) {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        console.log(`\n👋 Nhận ${signal} — đang tắt server an toàn...`);
+
+        // Flush data cuối cùng
+        try {
+            if (isDirty) {
+                console.log('💾 Đang flush data cuối cùng lên Gist...');
+                await flushToGist(true);
+            }
+        } catch (e) {
+            console.error('❌ Flush cuối thất bại:', e.message);
+        }
+
+        server.close(() => {
+            console.log('✅ Server đã đóng. Tạm biệt!');
+            process.exit(0);
+        });
+
+        setTimeout(() => {
+            console.error('⚠️  Force exit sau timeout.');
+            process.exit(1);
+        }, 10000).unref();
+    }
+
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+    process.on('uncaughtException', (err) => {
+        console.error('❌ Uncaught Exception:', err);
+        // Cố gắng flush trước khi chết
+        if (isDirty && USE_GIST) {
+            try { flushToGist(true); } catch (_) {}
+        }
+        setTimeout(() => process.exit(1), 2000);
+    });
+
+    process.on('unhandledRejection', (err) => {
+        console.error('❌ Unhandled Rejection:', err);
+    });
 }
 
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
-// QUAN TRỌNG: uncaughtException phải EXIT để tránh zombie process
-process.on('uncaughtException', (err) => {
-    console.error('❌ Uncaught Exception:', err);
-    // Flush data trước khi chết
-    try { backupDB(); } catch (_) {}
-    // Thoát để process manager (PM2/Render) restart sạch
-    setTimeout(() => process.exit(1), 1000);
-});
-
-process.on('unhandledRejection', (err) => {
-    console.error('❌ Unhandled Rejection:', err);
-    // Không exit — chỉ log, vì rejection thường không nghiêm trọng bằng uncaught
-});
+startServer();
