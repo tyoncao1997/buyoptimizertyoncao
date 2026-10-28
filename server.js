@@ -218,12 +218,8 @@ function cleanupExpiredKeys() {
 
     // CHỈ LỌC MẢNG keys, TUYỆT ĐỐI KHÔNG ĐỘNG VÀO MẢNG users
     MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
-        // Giữ lại tất cả các key đã xác nhận (confirmed)
         if (k.status === 'confirmed') return true; 
-        // Giữ lại các key có trạng thái khác (nếu có)
         if (k.status !== 'pending') return true; 
-
-        // Chỉ xóa các key 'pending' (chưa xác nhận) đã tạo quá 24h
         const age = now - new Date(k.createdAt).getTime();
         return age <= KEY_EXPIRE_MS; 
     });
@@ -451,20 +447,61 @@ app.post('/api/login', (req, res) => {
 
         res.json({
             success: true,
-            user: { username: user.username, fullName: user.fullName, balance: user.balance, depositHistory: user.depositHistory || [], purchaseHistory: user.purchaseHistory || [] }
+            user: { 
+                username: user.username, 
+                fullName: user.fullName, 
+                balance: user.balance, 
+                depositHistory: user.depositHistory || [], 
+                purchaseHistory: user.purchaseHistory || [] 
+            }
         });
     } catch (err) {
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
+// ⭐ ĐÃ SỬA: TRẢ VỀ ĐẦY ĐỦ LỊCH SỬ
 app.get('/api/user/:username', (req, res) => {
     const db = readDB();
     const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
     if (!user) return res.status(404).json({ success: false, error: 'User not found' });
     res.json({ success: true, user: {
-        username: user.username, balance: user.balance, fullName: user.fullName
+        username: user.username, 
+        balance: user.balance, 
+        fullName: user.fullName,
+        depositHistory: user.depositHistory || [],
+        purchaseHistory: user.purchaseHistory || []
     }});
+});
+
+// ==========================================
+// API ĐỔI MẬT KHẨU
+// ==========================================
+app.post('/api/change-password', (req, res) => {
+    try {
+        const { username, oldPassword, newPassword } = req.body;
+        if (!username || !oldPassword || !newPassword) {
+            return res.status(400).json({ success: false, error: 'Vui lòng nhập đầy đủ thông tin' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ success: false, error: 'Mật khẩu mới phải có ít nhất 6 ký tự' });
+        }
+
+        const db = readDB();
+        const idx = db.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+        if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+
+        if (db.users[idx].password !== oldPassword) {
+            return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
+        }
+
+        db.users[idx].password = newPassword;
+        writeDB(db);
+        res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
+    } catch (err) {
+        console.error('Change password error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
 });
 
 // ==========================================
@@ -544,7 +581,7 @@ app.post('/api/pay2s-create-order', async (req, res) => {
 });
 
 // ==========================================
-// PAY2S: WEBHOOK IPN
+// PAY2S: WEBHOOK IPN (SỬA LỖI CỘNG TIỀN KHI HỦY)
 // ==========================================
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
@@ -570,6 +607,13 @@ app.post('/api/pay2s-webhook', (req, res) => {
             }
         }
 
+        // ⭐ BẮT ĐẦU SỬA: Chỉ cộng tiền nếu resultCode = 0 (Thành công)
+        const resultCode = String(data.resultCode);
+        if (resultCode !== '0') {
+            console.log(`⚠️ [Pay2S] Giao dịch không thành công (Mã: ${resultCode}). Không cộng tiền.`);
+            return res.status(200).json({ success: true });
+        }
+
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.orderInfo || data.content || '').toUpperCase();
         const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
@@ -580,11 +624,20 @@ app.post('/api/pay2s-webhook', (req, res) => {
             const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
 
             if (idx !== -1) {
+                // Kiểm tra trùng lặp giao dịch
+                const transId = data.transId || data.transactionNumber;
+                const isDuplicate = (db.users[idx].depositHistory || []).some(d => d.transactionId === transId);
+                
+                if (isDuplicate) {
+                    console.log(`⚠️ [Pay2S] Giao dịch ${transId} đã được xử lý trước đó. Bỏ qua.`);
+                    return res.status(200).json({ success: true });
+                }
+
                 db.users[idx].balance += amount;
                 if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
                 db.users[idx].depositHistory.push({
                     amount, method: 'pay2s', content: data.orderInfo || data.content,
-                    transactionId: data.transId || data.transactionNumber,
+                    transactionId: transId,
                     at: new Date().toISOString()
                 });
                 writeDB(db);
