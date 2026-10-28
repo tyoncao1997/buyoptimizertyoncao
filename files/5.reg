@@ -1,0 +1,447 @@
+﻿Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Control Panel\Cursors]
+"AppStarting"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,\
+  00,74,00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,\
+  65,00,72,00,6f,00,5f,00,77,00,6f,00,72,00,6b,00,69,00,6e,00,67,00,2e,00,61,\
+  00,6e,00,69,00,00,00
+"Arrow"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,61,00,72,00,72,00,6f,00,77,00,2e,00,63,00,75,00,72,00,00,\
+  00
+"ContactVisualization"=dword:00000001
+"Crosshair"=hex(2):00,00
+"CursorBaseSize"=dword:00000020
+"GestureVisualization"=dword:0000001f
+"Hand"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,6c,00,69,00,6e,00,6b,00,2e,00,63,00,75,00,72,00,00,00
+"Help"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,68,00,65,00,6c,00,70,00,73,00,65,00,6c,00,2e,00,63,00,75,\
+  00,72,00,00,00
+"IBeam"=hex(2):00,00
+"No"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,00,\
+  25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,72,\
+  00,6f,00,5f,00,75,00,6e,00,61,00,76,00,61,00,69,00,6c,00,2e,00,63,00,75,00,\
+  72,00,00,00
+"NWPen"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,70,00,65,00,6e,00,2e,00,63,00,75,00,72,00,00,00
+"Scheme Source"=dword:00000002
+"SizeAll"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,\
+  74,00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,\
+  00,72,00,6f,00,5f,00,6d,00,6f,00,76,00,65,00,2e,00,63,00,75,00,72,00,00,00
+"SizeNESW"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,\
+  74,00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,\
+  00,72,00,6f,00,5f,00,6e,00,65,00,73,00,77,00,2e,00,63,00,75,00,72,00,00,00
+"SizeNS"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,6e,00,73,00,2e,00,63,00,75,00,72,00,00,00
+"SizeNWSE"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,\
+  74,00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,\
+  00,72,00,6f,00,5f,00,6e,00,77,00,73,00,65,00,2e,00,63,00,75,00,72,00,00,00
+"SizeWE"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,65,00,77,00,2e,00,63,00,75,00,72,00,00,00
+"UpArrow"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,\
+  74,00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,\
+  00,72,00,6f,00,5f,00,75,00,70,00,2e,00,63,00,75,00,72,00,00,00
+"Wait"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,5c,00,63,00,75,00,72,00,73,00,6f,00,72,00,73,00,5c,00,61,00,65,00,\
+  72,00,6f,00,5f,00,62,00,75,00,73,00,79,00,2e,00,61,00,6e,00,69,00,00,00
+@="Windows Predefinido"
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_USERS\.DEFAULT\Control Panel\Mouse]
+
+"Beep2"="No"
+"DoubleClickHeight2"="0,9"
+"DoubleClickSpeed2"="0,47"
+"DoubleClickWidth2"="0,5"
+"MouseHoverHeight2"=hex(-14):-25-64
+"MouseThreshold"="6"
+"MouseThreshold"="10"
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\Guests\Android\sensibility]
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\Guests\Android\sensibility\0]
+"InboundRules"=hex(7):74,00,63,00,70,00,3a,00,35,00,35,00,35,00,35,00,3a,00,35,\
+  00,35,00,35,00,35,00,00,00,74,00,63,00,70,00,3a,00,36,00,36,00,36,00,36,00,\
+  3a,00,36,00,36,00,36,00,36,00,00,00,74,00,63,00,70,00,3a,00,37,00,37,00,37,\
+  00,37,00,3a,00,37,00,37,00,37,00,37,00,00,00,74,00,63,00,70,00,3a,00,39,00,\
+  39,00,39,00,39,00,3a,00,39,00,39,00,39,00,39,00,00,00,75,00,64,00,70,00,3a,\
+  00,31,00,32,00,30,00,30,00,30,00,3a,00,31,00,32,00,30,00,30,00,30,00,00,00,\
+  00,00
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\Guests\ProjectTitan\sensibility]
+"tcp/5555"=dword:000015b3
+"tcp/6666"=dword:00001a0a
+"tcp/7777"=dword:00001e61
+"tcp/9999"=dword:0000270f
+"udp/12000"=dword:00002ee0
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\ProjectTitan\sensibility]
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\ProjectTitan\sensibility\0]
+"InboundRules"=hex(7):74,00,63,00,70,00,3a,00,35,00,35,00,35,00,35,00,3a,00,35,\
+  00,35,00,35,00,35,00,00,00,74,00,63,00,70,00,3a,00,36,00,36,00,36,00,36,00,\
+  3a,00,36,00,36,00,36,00,36,00,00,00,74,00,63,00,70,00,3a,00,37,00,37,00,37,\
+  00,37,00,3a,00,37,00,37,00,37,00,37,00,00,00,74,00,63,00,70,00,3a,00,39,00,\
+  39,00,39,00,39,00,3a,00,39,00,39,00,39,00,39,00,00,00,75,00,64,00,70,00,3a,\
+  00,31,00,32,00,30,00,30,00,30,00,3a,00,31,00,32,00,30,00,30,00,30,00,00,00,\
+  00,00
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\BlueStacksmsi\Guests\Android\Network\Redirect]
+"tcp/5555"=dword:000015b3
+"tcp/6666"=dword:00001a0a
+"tcp/7777"=dword:00001e61
+"tcp/9999"=dword:0000270f
+"udp/12000"=dword:00002ee0
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_CURRENT_USER\Control Panel\Mouse]
+"ActiveWindowTracking"=dword:00000000
+"ActiveUser"="HS DUX CRIA"
+"Beep"="No"
+"ActiveDevoloped"="HS DUX CRIA"
+"Active"="HS DUX CRIA"
+"ActiveAC"="HS DUX CRIA"
+"ActiveFix"="HS DUX CRIA"
+"Assist"="㠸〸㤹㘹㠶㠸됸孝嶴嶴嶴嶴嶴嶴嶴듧繝ⷧ孛炴嬭炴㤹椰杨桧㕴㘵㜶㠷㤷㤸〸㜹欹듧⵰㴽㵛孾㵝繝宴纴烧孾孰孛孰ⶴ둛둛둛㭬嬮뒴ⱛ됻ⱛ됮듧㯧둛宴듧㭛됮Ⱞ殴沴듳濧汯汯둩澴둬潛둬濧둬潛潬孬汯둛濧孬潯潬둬둾둾둾둾繾뒴繛듧듧宴橬㥰桪橵桨桨杨桨票杧摦睳獳睤敷睤敷獷獤獡獡慤獡晤㍳㐲㐴㔵㘵㘵㜶㜸㜶㘵㘵㘷㔵"
+"ExtendedSounds"="no"
+"MouseHoverHeight"="100"
+"MouseHoverTime"="900"
+"MouseHoverWidth"="100"
+"MouseSensitivity"="2"
+"MouseSpeed"="4"
+"MouseThreshold1"="7"
+"MouseThreshold2"="11"
+"MouseTrails"="㠸〸㤹㘹㠶㠸됸孝嶴嶴嶴嶴嶴嶴嶴듧繝ⷧ孛炴嬭炴㤹椰杨桧㕴㘵㜶㠷㤷㤸〸㜹欹듧⵰㴽㵛孾㵝繝宴纴烧孾孰孛孰ⶴ둛둛둛㭬嬮뒴ⱛ됻ⱛ됮듧㯧둛宴듧㭛됮Ⱞ殴沴듳濧汯汯둩澴둬潛둬濧둬潛潬孬汯둛濧孬潯潬둬둾둾둾둾繾뒴繛듧듧宴橬㥰桪橵桨桨杨桨票杧摦睳獳睤敷睤敷獷獤獡獡慤獡晤㍳㐲㐴㔵㘵㘵㜶㜸㜶㘵㘵㘷㔵"
+"SmoothMouseXCurve"=hex:65,ef,4f,d4,df,f0,77,69,90,36,37,35,36,35,39,36,39,36,\
+  36,2d,5b,70,34,35,72,34,35,74,72,79,65,72,72,67,6c,6f,7e,b4,5d,3d,5d,2d,5d,\
+  5b,6f,69,75,75,72,74,65,72,66,74,68,79,37,75,35,5d,5b,3d,2d,5d,f3,b4,7e,70,\
+  e7,6f,70,7e,e7,e7,f5,70,7e,e7,6c,e7,7e,70,b4,5d,5b,5d,2d,70,70,68,67,66,74,\
+  65,65,64,72,77,77,00,00,00,00,00,00,00,00,00,a0,00,00,00,00,00,00,00,40,\
+  01,00,00,00,00,00,00,80,02,00,00,00,00,00,00,00,05,00,00,00,00,00
+"SmoothMouseYCurve"=hex:66,6f,76,33,35,33,65,36,64,73,36,79,64,75,63,33,37,33,\
+  63,72,34,72,67,35,66,66,98,09,00,00,00,00,00,00,00,00,00,00,00,00,dd,dd,ee,\
+  f4,f0,00,00,03,34,00,00,00,00,00,00,00,00,00,00,00,00,00,00,35,79,37,69,69,\
+  38,6f,70,b4,e7,b4,3d,e7,e7,70,3d,7e,b4,e7,3b,3d,e7,3b,7e,3d,b4,e7,7e,3d,b4,\
+  e7,7e,b4,3d,77,73,66,75,64,75,68,66,64,67,66,7e,7e,5b,5d,5b,73,64,66,67,6a,\
+  67,75,67,66,74,67,67,66,79,37,79,37,64,66,67,66,37,74,66,5d,5d,7e,b4,00,00,\
+  00,00,00,00,05,00,00,00,00,00,00,00,00,0f,00,00,00,00,00,00,00,05,00,00,00,\
+  00,00,00,00,05,f0,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,66,a6,02,00,00,00,00,00,cd,4c,\
+  05,00,00,00,00,00,a0,99,0a,00,00,00,00,00,38,33,15,00,00,00,00,00
+"SnapToDefaultButton"="0"
+"SwapMouseButtons"="0"
+"DoubleClickSpeed2"="0,5"
+"DoubleClickWidth2"="0,6"
+"TcpWindowSize"=dword:0005ae4c
+"TcpNoDelay"=hex(b):7f,14,00,00,00,00,00,00
+"TCPDelAckTicks"=dword:00000004
+"Tcp1323Opts"=dword:00000004
+"TcpMaxDataRetransmissions"=dword:00000003
+"SackOpts"=dword:00000001
+"DefaultTTL"=dword:00007fff
+"Beep2"="No"
+"EnablePMTUDiscovery"=dword:00000011
+"EnablePMTUBHDetect"=dword:00000100
+"MouseCP"="55"
+"MouseCL"="55"
+"Mousetrack"="908"
+"Mousecrib"="10"
+"Mousecontrolusb"="1"
+"MouseTK"="810"
+"Fov"="20000"
+"MouseGrab"="908"
+"MouseStickOn"="10"
+"DockTargetMouseDragOutWidth"="1"
+"DockTargetMouseSideMoveWidth"="2"
+"DockTargetMouseWidth"="3"
+"DockTargetPenDragOutWidth"="4"
+"DockTargetPenSideMoveWidth"="2"
+"DoubleClickHeight2"="0,7"
+"DockTargetPenWidth"="1"
+"ExtendedSounds2"="No"
+"MouseSensibility2"="6"
+"MouseSpeed2"="1"
+"AimAssist"=dword:000003e8
+"AimBot"=dword:000003e8
+"AimFov"=dword:000003e8
+"Headshot"=dword:000003e8
+"AimLock"=dword:000003e8
+"AutoHeadshot"=dword:000003e8
+"AimbotSpeed"=dword:000003e8
+"AimSpeed"=dword:000003e8
+"FovAutoHeadshot"=dword:000003e8
+"AimHead"=dword:000003e8
+"AimHeadshot"=dword:000003e8
+"AimHeadRightClickLifter"=dword:000003e8
+"AimbotHeadLeftClickLifter"=dword:000003e8
+"AimbotHeadshot"=dword:000003e8
+"FovHead"=dword:000003e8
+@="Cao Quang Tuấn(Tyon)"
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control]
+"WaitToKillServiceTimeout"="2000"
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"MenuShowDelay"="0"
+
+[HKEY_CURRENT_USER\Control Panel\Accessibility\Keyboard Response]
+"AutoRepeatDelay"="0"
+"AutoRepeatRate"="15"
+"BounceTime"="0"
+"DelayBeforeAcceptance"="0"
+"Flags"="24"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\BlueStacks_msi2\Guests\Android\sensibility]
+"ToConnect"="[HKEY_CURRENT_USER\\Control Panel\\Mouse]"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\BlueStacks_msi2\Guests\Android\sensibility\0]
+"Delay"="5"
+"MouseTrack"="710"
+"SmoothMouseXCurve"=hex:00,00,00,00,00,00,00,00,ae,1e,05,00,00,00,00,00,5c,3d,\
+  0a,00,00,00,00,00,0a,5c,0f,00,00,00,00,00,b8,7a,14,00,00,00,00,00
+"SmoothMouseYCurve"=hex:00,00,00,00,00,00,00,00,00,00,38,00,00,00,00,00,00,00,\
+  70,00,00,00,00,00,00,00,a8,00,00,00,00,00,00,00,e0,00,00,00,00,00
+"sensibility"=dword:00000064
+"SMALLESTWIDTH"=dword:000002ee
+"speedofmovement"=dword:00000064
+"touchsensitivyty"=dword:00000102
+"X"=dword:00000320
+"Y"=dword:00000708
+"CPU"=dword:00000064
+"GPU"=dword:00000064
+"DPI"=dword:00000064
+"generalemulatorsensitivity"=dword:00000064
+"joystick"=dword:000003e8
+"Fov"=dword:000008fc
+"LEFTCLICK"=dword:000003e8
+"sensitivity"=dword:00000064
+"rightclicklifter"=dword:000003e8
+"RIGHTCLICK"=dword:000003e8
+"Mousespeed"=dword:00000064
+"MouseSensitivity"=dword:00000102
+"Headshot"=dword:001003e8
+"Fovhead"=dword:000003e8
+"FovAutoHeadshot"=dword:001003e8
+"AutoHeadshots"=dword:000003e8
+"AimSpeed"=dword:000003e8
+"AimLok"=dword:000003e8
+"AimHeadshot"=dword:000003e8
+"AimHead"=dword:000013e8
+"AimFov"=dword:000003e8
+"AimbotSpeed"=dword:000003e8
+"AimbotHeadshot"=dword:000003e8
+"AimbotHeadLeft"=dword:000003e8
+"Aimbot"=dword:000003e8
+"AimAssist"=dword:000003e8
+"AimHeadRightClick"=dword:000003e8
+"sensibility2"=dword:00000064
+"SMALLESTWIDTH2"=dword:000002ee
+"speedofmovement2"=dword:00000064
+"touchsensitivyty2"=dword:00000102
+"X2"=dword:00000320
+"Y2"=dword:00000708
+"CPU2"=dword:00000064
+"MouseSensitivity2"=dword:00000102
+"Headshot2"=dword:001003e8
+"Fovhead2"=dword:000003e8
+"FovAutoHeadshot2"=dword:001003e8
+"AutoHeadshots2"=dword:000003e8
+"AimLok2"=dword:000003e8
+"AimHeadshot2"=dword:000003e8
+"AimHead2"=dword:000013e8
+"AimFov2"=dword:000003e8
+"AimbotHeadshot2"=dword:000003e8
+"AimbotHeadLeft2"=dword:000003e8
+"Aimbot2"=dword:000003e8
+"AimAssist2"=dword:000003e8
+"AimHeadRightClick2"=dword:000003e8
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\BlueStacks\Guests\Android\sensibility\0]
+"CPU"=dword:00000064
+"DPI"=dword:000001b8
+"Fov"=dword:0000003c
+"generalemulatorsensitivity"=dword:00000064
+"GPU"=dword:00000064
+"joystick"=dword:000003e8
+"LEFTCLICK"=dword:000003e8
+"sensitivity"=dword:00000064
+"SMALLESTWIDTH"=dword:000002ee
+"speedofmovement"=dword:00000078
+"touchsensitivyty"=dword:000002d0
+"X"=dword:0000044c
+"SMALLESTWIDHT"=dword:000002ee
+"Y"=dword:00000375
+"X2"="ǟ"
+"Y2"="ſ"
+"X3"="Ǡ"
+"Y3"="ŵ"
+"X4"="ǚ"
+"X5"="Ǜ"
+"Y4"="ź"
+"Y5"="Ž"
+"X6"="ź"
+"Y6"="ž"
+"Aim assist"="yes"
+"Aim assist2"="yes"
+"Aim Lock"=hex:58,34,36,2c,34,39,30,30,59,35,31,2c,37,35,30,30
+"Aim Lock2"="yes"
+"Aim Bot"=hex:3c,52,00,00,00,00,00,00,31,52,00,00,00,00,00,00
+"Aim bot Headshot"=" 496826171875.00 458099365234375.00"
+"Aim bot Headshot2"="yes"
+"Aim Head2"="yes"
+"Mouse Lock"=" 496826171875.00 458099365234375.00"
+"Mouse LockX"="띚㫃䍥"
+"Mouse LockX2"="媜昌ﲦ䌱"
+"Mouse LockY"="纚ⷣ겤䍤"
+"Mouse LockY2"="餘혓䌮"
+"Aim Bot2"="yes"
+"Aim Head"=hex:58,34,37,2c,37,35,30,30,59,35,31,2c,37,35,30,30
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\BlueStacks_msi2\Guests\Android\sensibility\1]
+"瞄準輔助"="䦴碩꿀䌰覴ꇹ礮䌰঴栯响䌰঴ఊ䌰鍨꽩䌯鍨젿戯䌯፨蹵㷎䌯卨䐰빺䌮卨킛疷䌮"
+"爆頭"=hex:39,32,31,38,38,36,38,34,33,37,32,32,37,34,30,35,33,31,32
+"史詩般的頭像"=hex:39,32,31,38,38,36,38,34,33,37,32,32,37,34,30,35,33,31,32
+@=""
+"X"="Ǟ"
+"X2"="ǟ"
+"X3"="Ǡ"
+"X4"="ǚ"
+"X5"="Ǜ"
+"X6"="ź"
+"Y"="Ɔ"
+"Y2"="ſ"
+"Y3"="ŵ"
+"Y4"="ź"
+"Y5"="Ž"
+"Y6"="ž"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\Guests\ProjectTitan\sensibility]
+"ToConnect"="[HKEY_CURRENT_USER\\Control Panel\\Mouse]"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\Guests\ProjectTitan\sensibility\0]
+"Delay"="5"
+"MouseTrack"="710"
+"SmoothMouseXCurve"=hex:00,00,00,00,00,00,00,00,ae,1e,05,00,00,00,00,00,5c,3d,\
+  0a,00,00,00,00,00,0a,5c,0f,00,00,00,00,00,b8,7a,14,00,00,00,00,00,39,32,31,38,38,36,38,34,33,37,32,32,37,34,30,35,33,31,32,65,ef,4f,d4,df,f0,77,69,90,36,37,35,36,35,39,36,39,36,\
+  36,2d,5b,70,34,35,72,34,35,74,72,79,65,72,72,67,6c,6f,7e,b4,5d,3d,5d,2d,5d,\
+  5b,6f,69,75,75,72,74,65,72,66,74,68,79,37,75,35,5d,5b,3d,2d,5d,f3,b4,7e,70,\
+  e7,6f,70,7e,e7,e7,f5,70,7e,e7,6c,e7,7e,70,b4,5d,5b,5d,2d,70,70,68,67,66,74,\
+  65,65,64,72,77,77,00,00,00,00,00,00,00,00,00,a0,00,00,00,00,00,00,00,40,\
+  01,00,00,00,00,00,00,80,02,00,00,00,00,00,00,00,05,00,00,00,00,00
+"SmoothMouseYCurve"=hex:00,00,00,00,00,00,00,00,00,00,38,00,00,00,00,00,00,00,\
+  70,00,00,00,00,00,00,00,a8,00,00,00,00,00,00,00,e0,00,00,00,00,00,39,32,31,38,38,36,38,34,33,37,32,32,37,34,30,35,33,31,32,66,6f,76,33,35,33,65,36,64,73,36,79,64,75,63,33,37,33,\
+  63,72,34,72,67,35,66,66,98,09,00,00,00,00,00,00,00,00,00,00,00,00,dd,dd,ee,\
+  f4,f0,00,00,03,34,00,00,00,00,00,00,00,00,00,00,00,00,00,00,35,79,37,69,69,\
+  38,6f,70,b4,e7,b4,3d,e7,e7,70,3d,7e,b4,e7,3b,3d,e7,3b,7e,3d,b4,e7,7e,3d,b4,\
+  e7,7e,b4,3d,77,73,66,75,64,75,68,66,64,67,66,7e,7e,5b,5d,5b,73,64,66,67,6a,\
+  67,75,67,66,74,67,67,66,79,37,79,37,64,66,67,66,37,74,66,5d,5d,7e,b4,00,00,\
+  00,00,00,00,05,00,00,00,00,00,00,00,00,0f,00,00,00,00,00,00,00,05,00,00,00,\
+  00,00,00,00,05,f0,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,66,a6,02,00,00,00,00,00,cd,4c,\
+  05,00,00,00,00,00,a0,99,0a,00,00,00,00,00,38,33,15,00,00,00,00,00
+"sensibility"=dword:00000064
+"SMALLESTWIDTH"=dword:000002ee
+"speedofmovement"=dword:00000064
+"touchsensitivyty"=dword:00000102
+"X"=dword:00000320
+"Y"=dword:00000708
+"CPU"=dword:00000064
+"GPU"=dword:00000064
+"DPI"=dword:00000064
+"generalemulatorsensitivity"=dword:00000064
+"joystick"=dword:000003e8
+"Fov"=dword:000008fc
+"LEFTCLICK"=dword:000003e8
+"sensitivity"=dword:00000064
+"rightclicklifter"=dword:000003e8
+"RIGHTCLICK"=dword:000003e8
+"Mousespeed"=dword:00000064
+"MouseSensitivity"=dword:00000102
+"Headshot"=dword:001003e8
+"Fovhead"=dword:000003e8
+"FovAutoHeadshot"=dword:001003e8
+"AutoHeadshots"=dword:000003e8
+"AimSpeed"=dword:000003e8
+"AimLock"=dword:000003e8
+"AimHeadshot"=dword:000003e8
+"AimHead"=dword:000013e8
+"AimFov"=dword:000003e8
+"AimbotSpeed"=dword:000003e8
+"AimbotHeadshot"=dword:000003e8
+"AimbotHeadLeft"=dword:000003e8
+"Aimbot"=dword:000003e8
+"AimAssist"=dword:000003e8
+"AimHeadRightClick"=dword:000003e8
+"sensibility2"=dword:00000064
+"SMALLESTWIDTH2"=dword:000002ee
+"speedofmovement2"=dword:00000064
+"touchsensitivyty2"=dword:00000102
+"X2"=dword:00000320
+"Y2"=dword:00000708
+"CPU2"=dword:00000064
+"MouseSensitivity2"=dword:00000102
+"Headshot2"=dword:001003e8
+"Fovhead2"=dword:000003e8
+"FovAutoHeadshot2"=dword:001003e8
+"AutoHeadshots2"=dword:000003e8
+"AimLok2"=dword:000003e8
+"AimHeadshot2"=dword:000003e8
+"AimHead2"=dword:000013e8
+"AimFov2"=dword:000003e8
+"AimbotHeadshot2"=dword:000003e8
+"AimbotHeadLeft2"=dword:000003e8
+"Aimbot2"=dword:000003e8
+"AimAssist2"=dword:000003e8
+"AimHeadRightClick2"=dword:000003e8
+"Aim Bot2"="yes"
+"Aim Assist2"="yes"
+"Aim Head2"="yes"
+"Aim Headshots2"="yes"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\Guests\ProjectTitan\sensibility\1]
+"瞄準輔助"="䦴碩꿀䌰覴ꇹ礮䌰঴栯响䌰঴ఊ䌰鍨꽩䌯鍨젿戯䌯፨蹵㷎䌯卨䐰빺䌮卨킛疷䌮"
+"爆頭"=hex:39,32,31,38,38,36,38,34,33,37,32,32,37,34,30,35,33,31,32,65,ef,4f,d4,df,f0,77,69,90,36,37,35,36,35,39,36,39,36,\
+  36,2d,5b,70,34,35,72,34,35,74,72,79,65,72,72,67,6c,6f,7e,b4,5d,3d,5d,2d,5d,\
+  5b,6f,69,75,75,72,74,65,72,66,74,68,79,37,75,35,5d,5b,3d,2d,5d,f3,b4,7e,70,\
+  e7,6f,70,7e,e7,e7,f5,70,7e,e7,6c,e7,7e,70,b4,5d,5b,5d,2d,70,70,68,67,66,74,\
+  65,65,64,72,77,77,00,00,00,00,00,00,00,00,00,a0,00,00,00,00,00,00,00,40,\
+  01,00,00,00,00,00,00,80,02,00,00,00,00,00,00,00,05,00,00,00,00,00
+"史詩般的頭像"=hex:39,32,31,38,38,36,38,34,33,37,32,32,37,34,30,35,33,31,32,66,6f,76,33,35,33,65,36,64,73,36,79,64,75,63,33,37,33,\
+  63,72,34,72,67,35,66,66,98,09,00,00,00,00,00,00,00,00,00,00,00,00,dd,dd,ee,\
+  f4,f0,00,00,03,34,00,00,00,00,00,00,00,00,00,00,00,00,00,00,35,79,37,69,69,\
+  38,6f,70,b4,e7,b4,3d,e7,e7,70,3d,7e,b4,e7,3b,3d,e7,3b,7e,3d,b4,e7,7e,3d,b4,\
+  e7,7e,b4,3d,77,73,66,75,64,75,68,66,64,67,66,7e,7e,5b,5d,5b,73,64,66,67,6a,\
+  67,75,67,66,74,67,67,66,79,37,79,37,64,66,67,66,37,74,66,5d,5d,7e,b4,00,00,\
+  00,00,00,00,05,00,00,00,00,00,00,00,00,0f,00,00,00,00,00,00,00,05,00,00,00,\
+  00,00,00,00,05,f0,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,66,a6,02,00,00,00,00,00,cd,4c,\
+  05,00,00,00,00,00,a0,99,0a,00,00,00,00,00,38,33,15,00,00,00,00,00
+@=""
+"X"="Ǟ"
+"X2"="ǟ"
+"X3"="Ǡ"
+"X4"="ǚ"
+"X5"="Ǜ"
+"X6"="ź"
+"Y"="Ɔ"
+"Y2"="ſ"
+"Y3"="ŵ"
+"Y4"="ź"
+"Y5"="Ž"
+"Y6"="ž"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\SmartGaGa\ProjectTitan\sensibility]
+"tcp/5555"=dword:000015b3
+"tcp/6666"=dword:00001a0a
+"tcp/7777"=dword:00001e61
+"tcp/9999"=dword:0000270f
+"udp/12000"=dword:00002ee0
+@="Cao Quang Tuấn(Tyon)"
