@@ -441,6 +441,8 @@ app.post('/api/register', (req, res) => {
         db.users.push(newUser);
         writeDB(db);
 
+        await flushToGist(true); 
+
         res.json({
             success: true,
             message: 'Đăng ký thành công',
