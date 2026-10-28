@@ -10,11 +10,13 @@ const PORT = process.env.PORT || 3000;
 // ==========================================
 // CẤU HÌNH LƯU TRỮ — CHỐNG MẤT DATA TUYỆT ĐỐI
 // ==========================================
+// Ưu tiên: GitHub Gist (persistent) > file local (ephemeral trên Render)
 const GITHUB_TOKEN = (process.env.GITHUB_TOKEN || '').trim();
 const GIST_ID = (process.env.GIST_ID || '').trim();
 const GIST_FILENAME = 'database.json';
 const USE_GIST = !!(GITHUB_TOKEN && GIST_ID);
 
+// File local làm cache + fallback
 const LOCAL_DB_FILE = path.join(__dirname, 'database.json');
 const LOCAL_BACKUP_DIR = path.join(__dirname, 'backups');
 
@@ -26,21 +28,21 @@ if (!USE_GIST) {
     console.warn('⚠️  Thiếu GITHUB_TOKEN hoặc GIST_ID → không thể chống mất data trên Render Free');
 }
 
+// Đảm bảo thư mục local tồn tại
 try {
     if (!fs.existsSync(LOCAL_BACKUP_DIR)) fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true });
 } catch (err) {
     console.error('❌ Không tạo được thư mục backup:', err.message);
 }
 
-// Thêm users vào mặc định
 const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
 
 // ==========================================
-// IN-MEMORY DB
+// IN-MEMORY DB (source of truth khi chạy)
 // ==========================================
-let MEMORY_DB = null;
-let isDirty = false;
-let isSyncing = false;
+let MEMORY_DB = null;     // Cache trong RAM
+let isDirty = false;      // Có thay đổi chưa ghi lên Gist
+let isSyncing = false;    // Đang ghi lên Gist
 let lastSyncTime = 0;
 
 // ==========================================
@@ -93,6 +95,7 @@ async function loadFromGist() {
             return { ...DEFAULT_DB };
         }
 
+        // Nếu content bị truncated (file lớn), fetch raw_url
         let content;
         if (file.truncated && file.raw_url) {
             content = await fetchRaw(file.raw_url);
@@ -141,10 +144,11 @@ async function saveToGist(data) {
 }
 
 // ==========================================
-// ĐỒNG BỘ
+// ĐỒNG BỘ — DEBOUNCE + RETRY
 // ==========================================
 let syncTimer = null;
-const SYNC_DEBOUNCE_MS = 2000;
+const SYNC_DEBOUNCE_MS = 2000; // Gộp nhiều thay đổi trong 2s
+const SYNC_INTERVAL_MAX = 60000; // Tối đa 60s phải sync 1 lần
 
 function scheduleSync() {
     isDirty = true;
@@ -156,6 +160,7 @@ async function flushToGist(force = false) {
     if (isSyncing) return;
     if (!isDirty && !force) return;
     if (!USE_GIST) {
+        // Fallback: ghi local
         saveLocal(MEMORY_DB);
         isDirty = false;
         return;
@@ -167,7 +172,7 @@ async function flushToGist(force = false) {
         if (success) {
             isDirty = false;
             lastSyncTime = Date.now();
-            saveLocal(MEMORY_DB);
+            saveLocal(MEMORY_DB); // Cache local
         } else {
             console.warn('⚠️  Sync Gist thất bại, sẽ retry sau 30s');
             setTimeout(() => flushToGist(true), 30000);
@@ -178,7 +183,7 @@ async function flushToGist(force = false) {
 }
 
 // ==========================================
-// LOCAL CACHE
+// LOCAL CACHE (chỉ fallback, không phải source of truth)
 // ==========================================
 function saveLocal(data) {
     try {
@@ -186,16 +191,20 @@ function saveLocal(data) {
         fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
         fs.renameSync(tmp, LOCAL_DB_FILE);
 
+        // Backup local (phòng khi Gist chết)
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         fs.copyFileSync(LOCAL_DB_FILE, path.join(LOCAL_BACKUP_DIR, `db-${ts}.json`));
 
+        // Giữ 5 bản
         const backups = fs.readdirSync(LOCAL_BACKUP_DIR)
             .filter(f => f.startsWith('db-') && f.endsWith('.json'))
             .sort().reverse();
         backups.slice(5).forEach(f => {
             try { fs.unlinkSync(path.join(LOCAL_BACKUP_DIR, f)); } catch (_) {}
         });
-    } catch (err) {}
+    } catch (err) {
+        // Không quan trọng, local chỉ là cache
+    }
 }
 
 function loadLocal() {
@@ -206,7 +215,6 @@ function loadLocal() {
         if (!data.confirmedKeys) data.confirmedKeys = [];
         if (!data.feedbackKeys) data.feedbackKeys = [];
         if (!data.feedbacks) data.feedbacks = [];
-        if (!data.users) data.users = [];
         return data;
     } catch (err) {
         return null;
@@ -214,16 +222,19 @@ function loadLocal() {
 }
 
 // ==========================================
-// READ / WRITE API
+// READ / WRITE API (đồng bộ, dùng memory cache)
 // ==========================================
 function readDB() {
     if (!MEMORY_DB) {
-        return { ...DEFAULT_DB, keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
+        // Chưa init — trả về default (initDB sẽ chạy lúc start)
+        return { ...DEFAULT_DB, keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
     }
+    // Trả về clone để tránh mutate ngoài ý muốn
     return JSON.parse(JSON.stringify(MEMORY_DB));
 }
 
 function writeDB(data) {
+    // Chuẩn hóa
     if (!data.keys) data.keys = [];
     if (!data.confirmedKeys) data.confirmedKeys = [];
     if (!data.feedbackKeys) data.feedbackKeys = [];
@@ -240,17 +251,19 @@ function writeDB(data) {
 async function initDB() {
     console.log('🔄 Đang tải database...');
 
+    // 1. Thử Gist trước
     if (USE_GIST) {
         const remote = await loadFromGist();
         if (remote) {
             MEMORY_DB = remote;
-            console.log(`✅ Đã tải từ Gist: ${remote.keys.length} keys, ${remote.users.length} users`);
+            console.log(`✅ Đã tải từ Gist: ${remote.keys.length} keys, ${remote.feedbacks.length} feedbacks`);
             saveLocal(remote);
             return;
         }
         console.warn('⚠️  Không tải được Gist, thử local cache...');
     }
 
+    // 2. Fallback: local cache
     const local = loadLocal();
     if (local) {
         MEMORY_DB = local;
@@ -262,7 +275,8 @@ async function initDB() {
         return;
     }
 
-    MEMORY_DB = { ...DEFAULT_DB, keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
+    // 3. Default
+    MEMORY_DB = { ...DEFAULT_DB, keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
     console.log('📁 Khởi tạo DB mới (empty)');
     if (USE_GIST) await saveToGist(MEMORY_DB);
     saveLocal(MEMORY_DB);
@@ -273,7 +287,7 @@ async function initDB() {
 // ==========================================
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
-const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1h
 
 const ADMIN_USERNAME = 'caoquangtuan';
 const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
@@ -287,30 +301,32 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
 // ==========================================
-// DỌN KEY HẾT HẠN
+// DỌN KEY HẾT HẠN — CHỈ XÓA pending
 // ==========================================
+// Key confirmed + feedbackKeys + feedbacks KHÔNG BAO GIỜ BỊ XÓA
 function cleanupExpiredKeys() {
     if (!MEMORY_DB) return { deletedCount: 0 };
 
     const now = Date.now();
     const before = MEMORY_DB.keys.length;
 
+    // CHỈ giữ lại: không phải pending, HOẶC pending còn hạn
     MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
-        if (k.status === 'confirmed') return true;
-        if (k.status !== 'pending') return true;
+        if (k.status === 'confirmed') return true; // ✅ giữ vĩnh viễn
+        if (k.status !== 'pending') return true;  // ✅ giữ các trạng thái khác
 
         const age = now - new Date(k.createdAt).getTime();
         if (age > KEY_EXPIRE_MS) {
             console.log(`   🗑️  Xóa key hết hạn: ${k.key} | ${k.customerName}`);
-            return false;
+            return false; // ❌ xóa pending quá 24h
         }
-        return true;
+        return true; // ✅ pending còn hạn
     });
 
     const deletedCount = before - MEMORY_DB.keys.length;
     if (deletedCount > 0) {
         writeDB(MEMORY_DB);
-        console.log(`🧹 Đã xóa ${deletedCount} key pending hết hạn.`);
+        console.log(`🧹 Đã xóa ${deletedCount} key pending hết hạn. Keys confirmed + feedbacks được giữ nguyên.`);
     }
     return { deletedCount };
 }
@@ -333,7 +349,7 @@ function verifyAdmin(username, password) {
 }
 
 // ==========================================
-// API ENDPOINTS
+// API ENDPOINTS (giữ nguyên hành vi gốc)
 // ==========================================
 
 // 1. Tạo key mới
@@ -393,7 +409,7 @@ app.post('/api/admin/keys', (req, res) => {
     res.json({ keys });
 });
 
-// 3. Admin xác nhận key
+// 3. Admin xác nhận key → tạo Feedback Key
 app.post('/api/admin/confirm-key', (req, res) => {
     const { username, password, pin, key } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
@@ -431,7 +447,7 @@ app.post('/api/admin/confirm-key', (req, res) => {
     });
 });
 
-// 4. Check key
+// 4. Check key chính xác (Public)
 app.post('/api/check-key', (req, res) => {
     const { key } = req.body;
     if (!key) return res.status(400).json({ error: 'Thiếu key' });
@@ -452,7 +468,7 @@ app.post('/api/check-key', (req, res) => {
     });
 });
 
-// 5. Tìm kiếm Key
+// 5. Tìm kiếm Key nâng cao
 app.post('/api/search-keys', (req, res) => {
     try {
         const { query } = req.body;
@@ -477,18 +493,27 @@ app.post('/api/search-keys', (req, res) => {
                 amount: k.amount,
                 createdAt: k.createdAt, confirmedAt: k.confirmedAt,
                 remainingTime: rem && !rem.isExpired ? rem : null,
-                isExpired: rem ? rem.isExpired : false
+                isExpired: rem ? rem.isExpired : false,
+                _matchType: {
+                    key: !!(k.key && k.key.toUpperCase().includes(searchTerm)),
+                    content: !!(k.transferContent && k.transferContent.toUpperCase().includes(searchTerm)),
+                    name: !!(k.customerName && k.customerName.toUpperCase().includes(searchTerm))
+                }
             };
         });
 
-        res.json({ success: true, results: formattedResults, count: formattedResults.length });
+        res.json({
+            success: true, results: formattedResults,
+            count: formattedResults.length,
+            totalMatches: formattedResults.length
+        });
     } catch (err) {
         console.error('❌ Search error:', err);
         res.status(500).json({ error: 'Lỗi server khi tìm kiếm' });
     }
 });
 
-// 6. Danh sách Key đã xác nhận
+// 6. Danh sách Key đã xác nhận (Public)
 app.get('/api/confirmed-keys', (req, res) => {
     cleanupExpiredKeys();
     const db = readDB();
@@ -501,20 +526,23 @@ app.post('/api/admin/cleanup-now', (req, res) => {
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
 
     const result = cleanupExpiredKeys();
-    res.json({ success: true, message: `Đã xóa ${result.deletedCount} key pending hết hạn.` });
+    res.json({
+        success: true,
+        message: `Đã xóa ${result.deletedCount} key pending hết hạn. Key confirmed + feedback được giữ nguyên.`
+    });
 });
 
 // ==========================================
 // API FEEDBACK
 // ==========================================
 
-// 8. Lấy danh sách đánh giá
+// 8. Public: Lấy danh sách đánh giá
 app.get('/api/feedbacks', (req, res) => {
     const db = readDB();
     res.json({ feedbacks: [...db.feedbacks].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) });
 });
 
-// 9. Gửi đánh giá mới
+// 9. User: Gửi đánh giá mới
 app.post('/api/submit-feedback', (req, res) => {
     const { feedbackKey, rating, content, images } = req.body;
     if (!feedbackKey) return res.status(400).json({ error: 'Thiếu Feedback Key' });
@@ -543,7 +571,7 @@ app.post('/api/submit-feedback', (req, res) => {
     res.json({ success: true, message: 'Gửi đánh giá thành công!', feedback: newFeedback });
 });
 
-// 10. Admin lấy danh sách đánh giá
+// 10. Admin: Lấy danh sách đánh giá
 app.post('/api/admin/feedbacks', (req, res) => {
     const { username, password } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
@@ -553,10 +581,10 @@ app.post('/api/admin/feedbacks', (req, res) => {
 });
 
 // ==========================================
-// HEALTH CHECK
+// HEALTH CHECK (dùng để keep-alive + monitor)
 // ==========================================
 app.get('/api/health', (req, res) => {
-    const db = MEMORY_DB || { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
+    const db = MEMORY_DB || { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
     res.json({
         status: 'ok',
         uptime: process.uptime(),
@@ -566,14 +594,69 @@ app.get('/api/health', (req, res) => {
         totalKeys: db.keys.length,
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
         confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length,
-        totalUsers: db.users.length,
+        totalFeedbackKeys: db.feedbackKeys.length,
+        totalFeedbacks: db.feedbacks.length,
         timestamp: new Date().toISOString()
     });
 });
 
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));app.post('/api/register', (req, res) => {
+    const { username, password, fullName } = req.body;
+    if (!username || !password || !fullName) return res.status(400).json({ error: 'Thiếu thông tin' });
+
+    const db = readDB();
+    if (db.users.find(u => u.username.toLowerCase() === username.toLowerCase())) {
+        return res.status(400).json({ error: 'Username đã tồn tại' });
+    }
+
+    db.users.push({
+        username, password, fullName, balance: 0, createdAt: new Date().toISOString()
+    });
+    writeDB(db);
+    res.json({ success: true, message: 'Đăng ký thành công', user: { username, fullName, balance: 0 } });
+});
+
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    const db = readDB();
+    const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === password);
+    if (user) {
+        res.json({ success: true, user: { username: user.username, fullName: user.fullName, balance: user.balance } });
+    } else {
+        res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
+    }
+});
+
+// Middleware 404 PHẢI NẰM DƯỚI CÙNG CỦA CÁC ROUTE
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
+app.use((err, req, res, next) => {
+    console.error('❌ Server error:', err);
+    res.status(500).json({ error: 'Lỗi server: ' + err.message });
+});
+
 // ==========================================
-// API ĐĂNG KÝ / ĐĂNG NHẬP (USER) - ĐÃ SỬA LỖI
+// TIMERS
 // ==========================================
+setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
+
+// Force sync mỗi 60s nếu có thay đổi chưa đẩy lên
+setInterval(() => {
+    if (isDirty) {
+        console.log('⏰ Force sync (60s) — isDirty=true');
+        flushToGist(true);
+    }
+}, 60000);
+
+app.get('/api/user/:username', (req, res) => {
+    const db = readDB();
+    const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
+    if (user) {
+        res.json({ success: true, user: { username: user.username, balance: user.balance, fullName: user.fullName } });
+    } else {
+        res.status(404).json({ error: 'User not found' });
+    }
+});
+
 app.post('/api/register', (req, res) => {
     const { username, password, fullName } = req.body;
     if (!username || !password || !fullName) return res.status(400).json({ error: 'Thiếu thông tin' });
@@ -601,17 +684,6 @@ app.post('/api/login', (req, res) => {
     }
 });
 
-app.get('/api/user/:username', (req, res) => {
-    const db = readDB();
-    const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
-    if (user) {
-        res.json({ success: true, user: { username: user.username, balance: user.balance, fullName: user.fullName } });
-    } else {
-        res.status(404).json({ error: 'User not found' });
-    }
-});
-
-// Webhook nạp tiền
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
         const authHeader = req.headers['authorization'];
@@ -643,7 +715,6 @@ app.post('/api/pay2s-webhook', (req, res) => {
     }
 });
 
-// Mua sản phẩm
 app.post('/api/buy-product', (req, res) => {
     const { username, productId, price, productName } = req.body;
     if (!username || !productId || price === undefined) return res.status(400).json({ error: 'Thiếu thông tin' });
@@ -663,7 +734,6 @@ app.post('/api/buy-product', (req, res) => {
     res.json({ success: true, newBalance: user.balance });
 });
 
-// Tải file
 app.get('/api/download/:productId', (req, res) => {
     const { username } = req.query;
     const productId = req.params.productId;
@@ -684,28 +754,6 @@ app.get('/api/download/:productId', (req, res) => {
 });
 
 // ==========================================
-// MIDDLEWARE BẮT LỖI (BẮT BUỘC NẰM DƯỚI CÙNG)
-// ==========================================
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
-
-app.use((err, req, res, next) => {
-    console.error('❌ Server error:', err);
-    res.status(500).json({ error: 'Lỗi server: ' + err.message });
-});
-
-// ==========================================
-// TIMERS
-// ==========================================
-setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
-
-setInterval(() => {
-    if (isDirty) {
-        console.log('⏰ Force sync (60s) — isDirty=true');
-        flushToGist(true);
-    }
-}, 60000);
-
-// ==========================================
 // KHỞI ĐỘNG
 // ==========================================
 async function startServer() {
@@ -721,12 +769,16 @@ async function startServer() {
         console.log(`🔄 Cleanup:    mỗi ${CLEANUP_INTERVAL_MS / 60000} phút\n`);
     });
 
+    // ==========================================
+    // GRACEFUL SHUTDOWN
+    // ==========================================
     let isShuttingDown = false;
     async function gracefulShutdown(signal) {
         if (isShuttingDown) return;
         isShuttingDown = true;
         console.log(`\n👋 Nhận ${signal} — đang tắt server an toàn...`);
 
+        // Flush data cuối cùng
         try {
             if (isDirty) {
                 console.log('💾 Đang flush data cuối cùng lên Gist...');
@@ -752,6 +804,7 @@ async function startServer() {
 
     process.on('uncaughtException', (err) => {
         console.error('❌ Uncaught Exception:', err);
+        // Cố gắng flush trước khi chết
         if (isDirty && USE_GIST) {
             try { flushToGist(true); } catch (_) {}
         }
