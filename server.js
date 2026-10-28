@@ -395,6 +395,25 @@ app.post('/api/admin/feedbacks', (req, res) => {
     res.json({ feedbacks: [...db.feedbacks].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
 });
 
+app.post('/api/admin/users', (req, res) => {
+    const { username, password } = req.body;
+    if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
+    
+    const db = readDB();
+    // Trả về danh sách users (có thể ẩn bớt password nếu muốn bảo mật)
+    const users = db.users.map(u => ({
+        username: u.username,
+        password: u.password, // Có thể xóa dòng này nếu không muốn Admin thấy pass
+        fullName: u.fullName,
+        balance: u.balance || 0,
+        createdAt: u.createdAt,
+        depositCount: (u.depositHistory || []).length,
+        purchaseCount: (u.purchaseHistory || []).length
+    }));
+    
+    res.json({ success: true, users });
+});
+
 // ==========================================
 // USER AUTH
 // ==========================================
