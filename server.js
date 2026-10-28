@@ -3,12 +3,12 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const crypto = require('crypto'); // Thêm crypto để tạo chữ ký
+const crypto = require('crypto'); 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ⭐ KHAI BÁO DOMAIN FRONTEND (NƠI CHỨA INDEX.HTML CỦA BẠN)
+// ⭐ KHAI BÁO DOMAIN FRONTEND
 const FRONTEND_URL = 'https://buyoptimizertc.infinityfreeapp.com';
 
 // ==========================================
@@ -209,19 +209,30 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
 // ==========================================
-// CLEANUP & HELPERS
+// CLEANUP & HELPERS (CHỈ XÓA KEY CHƯA XÁC NHẬN)
 // ==========================================
 function cleanupExpiredKeys() {
     if (!MEMORY_DB) return { deletedCount: 0 };
     const now = Date.now();
     const before = MEMORY_DB.keys.length;
+
+    // CHỈ LỌC MẢNG keys, TUYỆT ĐỐI KHÔNG ĐỘNG VÀO MẢNG users
     MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
-        if (k.status === 'confirmed') return true;
-        if (k.status !== 'pending') return true;
-        return (now - new Date(k.createdAt).getTime()) <= KEY_EXPIRE_MS;
+        // Giữ lại tất cả các key đã xác nhận (confirmed)
+        if (k.status === 'confirmed') return true; 
+        // Giữ lại các key có trạng thái khác (nếu có)
+        if (k.status !== 'pending') return true; 
+
+        // Chỉ xóa các key 'pending' (chưa xác nhận) đã tạo quá 24h
+        const age = now - new Date(k.createdAt).getTime();
+        return age <= KEY_EXPIRE_MS; 
     });
+
     const deletedCount = before - MEMORY_DB.keys.length;
-    if (deletedCount > 0) writeDB(MEMORY_DB);
+    if (deletedCount > 0) {
+        writeDB(MEMORY_DB);
+        console.log(`🧹 Đã tự động xóa ${deletedCount} key pending hết hạn.`);
+    }
     return { deletedCount };
 }
 
@@ -350,7 +361,7 @@ app.post('/api/admin/cleanup-now', (req, res) => {
     const { username, password } = req.body;
     if (!verifyAdmin(username, password)) return res.status(401).json({ error: 'Sai tài khoản' });
     const result = cleanupExpiredKeys();
-    res.json({ success: true, message: `Đã xóa ${result.deletedCount} key hết hạn` });
+    res.json({ success: true, message: `Đã xóa ${result.deletedCount} key hết hạn. Các tài khoản người dùng được giữ nguyên.` });
 });
 
 // ==========================================
@@ -440,7 +451,7 @@ app.post('/api/login', (req, res) => {
 
         res.json({
             success: true,
-            user: { username: user.username, fullName: user.fullName, balance: user.balance }
+            user: { username: user.username, fullName: user.fullName, balance: user.balance, depositHistory: user.depositHistory || [], purchaseHistory: user.purchaseHistory || [] }
         });
     } catch (err) {
         res.status(500).json({ success: false, error: 'Lỗi server' });
@@ -469,7 +480,6 @@ app.post('/api/pay2s-create-order', async (req, res) => {
         const orderId = `NAP_${username}_${Date.now()}`;
         const requestId = Date.now().toString();
         const orderInfo = `NAP ${username}`; 
-        // Trỏ thẳng về API của Backend
         const redirectUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/payment-return`;
         const ipnUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/api/pay2s-webhook`;
 
@@ -720,10 +730,27 @@ app.get('/api/download/:productId', (req, res) => {
     if (!user) return res.status(404).send('Không tìm thấy user');
 
     const hasBought = (user.purchaseHistory || []).some(p => String(p.productId) === String(productId));
+    
     if (hasBought || String(productId) === '1') {
-        const filePath = path.join(__dirname, 'files', `${productId}.reg`);
-        if (fs.existsSync(filePath)) res.download(filePath, `TYON_${productId}.reg`);
-        else res.status(404).send('File không tồn tại.');
+        const filesDir = path.join(__dirname, 'files');
+        let filePath = '';
+        let originalFileName = '';
+
+        if (fs.existsSync(filesDir)) {
+            const filesInDir = fs.readdirSync(filesDir);
+            const foundFile = filesInDir.find(f => f.startsWith(`${productId}.`));
+            
+            if (foundFile) {
+                filePath = path.join(filesDir, foundFile);
+                originalFileName = foundFile; 
+            }
+        }
+
+        if (filePath && fs.existsSync(filePath)) {
+            res.download(filePath, `TYON_${originalFileName}`);
+        } else {
+            res.status(404).send('File không tồn tại trên server.');
+        }
     } else {
         res.status(403).send('Chưa mua sản phẩm.');
     }
@@ -757,12 +784,10 @@ app.get('/payment-return', (req, res) => {
                 <p>Cảm ơn bạn đã nạp tiền. Hệ thống sẽ tự động cộng tiền vào ví của bạn trong 1-2 phút.</p>
                 <p><strong>Trạng thái:</strong> ${message}</p>
                 
-                <!-- ⭐ TRỎ VỀ INFINITYFREE -->
                 <a href="${FRONTEND_URL}" class="btn">Quay lại trang chủ</a>
             </div>
             
             <script>
-                // ⭐ TỰ ĐỘNG CHUYỂN HƯỚNG VỀ INFINITYFREE SAU 5 GIÂY
                 setTimeout(() => { window.location.href = '${FRONTEND_URL}'; }, 5000);
             </script>
         </body>
