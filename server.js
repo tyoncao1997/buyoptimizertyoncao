@@ -8,6 +8,9 @@ const crypto = require('crypto'); // Thêm crypto để tạo chữ ký
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ⭐ KHAI BÁO DOMAIN FRONTEND (NƠI CHỨA INDEX.HTML CỦA BẠN)
+const FRONTEND_URL = 'https://buyoptimizertyoncao.infinityfreeapp.com';
+
 // ==========================================
 // CẤU HÌNH LƯU TRỮ
 // ==========================================
@@ -466,6 +469,7 @@ app.post('/api/pay2s-create-order', async (req, res) => {
         const orderId = `NAP_${username}_${Date.now()}`;
         const requestId = Date.now().toString();
         const orderInfo = `NAP ${username}`; 
+        // Trỏ thẳng về API của Backend
         const redirectUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/payment-return`;
         const ipnUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/api/pay2s-webhook`;
 
@@ -752,11 +756,14 @@ app.get('/payment-return', (req, res) => {
                 <h1>🎉 Thanh toán hoàn tất!</h1>
                 <p>Cảm ơn bạn đã nạp tiền. Hệ thống sẽ tự động cộng tiền vào ví của bạn trong 1-2 phút.</p>
                 <p><strong>Trạng thái:</strong> ${message}</p>
-                <a href="/" class="btn">Quay lại trang chủ</a>
+                
+                <!-- ⭐ TRỎ VỀ INFINITYFREE -->
+                <a href="${FRONTEND_URL}" class="btn">Quay lại trang chủ</a>
             </div>
             
             <script>
-                setTimeout(() => { window.location.href = '/'; }, 5000);
+                // ⭐ TỰ ĐỘNG CHUYỂN HƯỚNG VỀ INFINITYFREE SAU 5 GIÂY
+                setTimeout(() => { window.location.href = '${FRONTEND_URL}'; }, 5000);
             </script>
         </body>
         </html>
@@ -804,7 +811,7 @@ async function startServer() {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
         console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
         console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
-        console.log(`💳 WebHub: ${WEBHUB_WEBHOOK_TOKEN ? 'Đã cấu hình' : 'CHƯA cấu hình'}\n`);
+        console.log(`🌐 Frontend URL: ${FRONTEND_URL}\n`);
     });
 
     let shutting = false;
