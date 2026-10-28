@@ -493,6 +493,7 @@ app.post('/api/pay2s-create-order', async (req, res) => {
             .digest('hex');
 
         const payload = {
+            accessKey: PAY2S_ACCESS_KEY,
             partnerCode: PAY2S_PARTNER_CODE,
             partnerName: 'TYON Optimizer',
             requestId: requestId,
