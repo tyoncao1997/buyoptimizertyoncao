@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const archiver = require('archiver')
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -891,6 +892,65 @@ app.get('/api/download/:productId', (req, res) => {
     } else {
         res.status(403).send('Chưa mua sản phẩm.');
     }
+});
+
+app.get('/api/download-all', (req, res) => {
+    const { username } = req.query;
+    if (!username) return res.status(401).send('Chưa đăng nhập');
+
+    const db = readDB();
+    const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+    if (!user) return res.status(404).send('Không tìm thấy user');
+
+    // Lấy danh sách các productId đã mua (loại bỏ trùng lặp nếu có)
+    const purchasedIds = [...new Set((user.purchaseHistory || []).map(p => String(p.productId)))];
+
+    if (purchasedIds.length === 0) {
+        return res.status(403).send('Bạn chưa mua sản phẩm nào.');
+    }
+
+    const filesDir = path.join(__dirname, 'files');
+    if (!fs.existsSync(filesDir)) {
+        return res.status(404).send('Thư mục file không tồn tại trên server.');
+    }
+
+    const filesInDir = fs.readdirSync(filesDir);
+    const filesToZip = [];
+
+    // Tìm file thực tế trên ổ cứng dựa vào ID đã mua
+    purchasedIds.forEach(id => {
+        const foundFile = filesInDir.find(f => f.startsWith(`${id}.`));
+        if (foundFile) {
+            filesToZip.push({
+                path: path.join(filesDir, foundFile),
+                name: `TYON_${foundFile}`
+            });
+        }
+    });
+
+    if (filesToZip.length === 0) {
+        return res.status(404).send('Không tìm thấy file nào trên server cho các sản phẩm đã mua.');
+    }
+
+    // Bắt đầu nén file
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    
+    // Xử lý lỗi nén
+    archive.on('error', (err) => {
+        res.status(500).send('Lỗi khi nén file: ' + err.message);
+    });
+
+    // Thiết lập header để trình duyệt hiểu đây là file tải về
+    res.attachment(`TYON_All_Files_${username}.zip`);
+    archive.pipe(res);
+
+    // Thêm từng file vào file nén
+    filesToZip.forEach(file => {
+        archive.file(file.path, { name: file.name });
+    });
+
+    // Hoàn tất nén
+    archive.finalize();
 });
 
 // ==========================================
