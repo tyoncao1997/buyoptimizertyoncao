@@ -38,7 +38,7 @@ let isSyncing = false;
 let lastSyncTime = 0;
 
 // ==========================================
-// GITHUB GIST (Giữ nguyên)
+// GITHUB GIST
 // ==========================================
 function gistRequest(method, body) {
     return new Promise((resolve, reject) => {
@@ -190,20 +190,14 @@ const ADMIN_USERNAME = 'caoquangtuan';
 const ADMIN_PASSWORD = 'CaoQuangTuan@026209000010';
 const ADMIN_PIN = '997722';
 
-// ==========================================
-// CẤU HÌNH PAY2S (Lấy từ ảnh bạn cung cấp)
-// ==========================================
+// CẤU HÌNH PAY2S
 const PAY2S_PARTNER_CODE = process.env.PAY2S_PARTNER_CODE || 'PAY2SBB7A1S4XSJKIT8J';
-const PAY2S_ACCESS_KEY = process.env.PAY2S_ACCESS_KEY || '9fce013493559f0aff6385819e583c9308a9a922999fe8e2119ca3775637e9f6'; // Thay full key
-const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY || '653b08db2e03f9aa1499d4ce40c63e2c525cdd0f64a09b4ed37e5d5d40772dc0'; // Thay full key
+const PAY2S_ACCESS_KEY = process.env.PAY2S_ACCESS_KEY || '9fce013493559f0aff6385819e583c9308a9a922999fe8e2119ca3775637e9f6'; 
+const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY || '653b08db2e03f9aa1499d4ce40c63e2c525cdd0f64a09b4ed37e5d5d40772dc0'; 
 const PAY2S_API_URL = 'https://payment.pay2s.vn/v1/gateway/api/create';
-
-// Token nhận Webhook IPN từ Pay2S (Bạn cần lấy token này từ Dashboard Pay2S)
 const PAY2S_WEBHOOK_TOKEN = process.env.PAY2S_WEBHOOK_TOKEN || 'cc06a956bb11a0a175e6e1007218277bb3322903db0a1e05df';
 
-// ==========================================
 // WEBHUB CONFIG (Dự phòng)
-// ==========================================
 const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
 const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
 
@@ -460,7 +454,7 @@ app.get('/api/user/:username', (req, res) => {
 });
 
 // ==========================================
-// PAY2S: TẠO ĐƠN HÀNG (TÍCH HỢP MỚI)
+// PAY2S: TẠO ĐƠN HÀNG
 // ==========================================
 app.post('/api/pay2s-create-order', async (req, res) => {
     try {
@@ -469,14 +463,12 @@ app.post('/api/pay2s-create-order', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
         }
 
-        // Tạo mã đơn hàng duy nhất
         const orderId = `NAP_${username}_${Date.now()}`;
         const requestId = Date.now().toString();
-        const orderInfo = `NAP ${username}`; // Nội dung chuyển khoản (10-32 ký tự)
+        const orderInfo = `NAP ${username}`; 
         const redirectUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/payment-return`;
         const ipnUrl = `${process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com'}/api/pay2s-webhook`;
 
-        // Tạo chữ ký theo đúng thứ tự alphabet của Pay2S
         const rawSignature = `accessKey=${PAY2S_ACCESS_KEY}` +
             `&amount=${amount}` +
             `&bankAccounts=Array` +
@@ -538,11 +530,10 @@ app.post('/api/pay2s-create-order', async (req, res) => {
 });
 
 // ==========================================
-// PAY2S: WEBHOOK IPN (XÁC THỰC CHỮ KÝ)
+// PAY2S: WEBHOOK IPN
 // ==========================================
 app.post('/api/pay2s-webhook', (req, res) => {
     try {
-        // Xác thực token từ Header (nếu Pay2S gửi kèm)
         const authHeader = req.headers['authorization'];
         if (authHeader && !authHeader.includes(PAY2S_WEBHOOK_TOKEN)) {
             console.log('[Pay2S Webhook] Unauthorized - Token không khớp');
@@ -552,8 +543,6 @@ app.post('/api/pay2s-webhook', (req, res) => {
         const data = req.body;
         console.log('📥 Pay2S webhook:', JSON.stringify(data).substring(0, 500));
 
-        // Xác thực chữ ký m2signature (nếu có trong payload)
-        // Theo tài liệu, IPN của Pay2S có trường m2signature
         if (data.m2signature) {
             const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
             
@@ -567,7 +556,6 @@ app.post('/api/pay2s-webhook', (req, res) => {
             }
         }
 
-        // Xử lý cộng tiền
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.orderInfo || data.content || '').toUpperCase();
         const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
@@ -592,7 +580,6 @@ app.post('/api/pay2s-webhook', (req, res) => {
             }
         }
 
-        // Pay2S yêu cầu trả về HTTP 200 và {"success": true} để dừng retry
         res.status(200).json({ success: true });
 
     } catch (error) {
@@ -602,7 +589,7 @@ app.post('/api/pay2s-webhook', (req, res) => {
 });
 
 // ==========================================
-// WEBHUB: TẠO ĐƠN HÀNG (DỰ PHÒNG)
+// WEBHUB (DỰ PHÒNG)
 // ==========================================
 app.post('/api/webhub-create-order', async (req, res) => {
     try {
@@ -650,9 +637,6 @@ app.post('/api/webhub-create-order', async (req, res) => {
     }
 });
 
-// ==========================================
-// WEBHUB: WEBHOOK (DỰ PHÒNG)
-// ==========================================
 app.post('/api/webhub-webhook', (req, res) => {
     try {
         const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
@@ -739,6 +723,44 @@ app.get('/api/download/:productId', (req, res) => {
     } else {
         res.status(403).send('Chưa mua sản phẩm.');
     }
+});
+
+// ==========================================
+// TRANG THÔNG BÁO SAU KHI THANH TOÁN XONG
+// ==========================================
+app.get('/payment-return', (req, res) => {
+    const message = req.query.message || 'Giao dịch đã được xử lý.';
+    
+    res.send(`
+        <!DOCTYPE html>
+        <html lang="vi">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Kết quả thanh toán - TYON Optimizer</title>
+            <style>
+                body { font-family: sans-serif; background: #0f172a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; text-align: center; }
+                .box { background: #1e293b; padding: 40px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 400px; width: 90%; }
+                h1 { color: #22c55e; font-size: 24px; margin-bottom: 10px; }
+                p { color: #a0a5b5; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
+                .btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; transition: 0.3s; }
+                .btn:hover { background: #2563eb; }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <h1>🎉 Thanh toán hoàn tất!</h1>
+                <p>Cảm ơn bạn đã nạp tiền. Hệ thống sẽ tự động cộng tiền vào ví của bạn trong 1-2 phút.</p>
+                <p><strong>Trạng thái:</strong> ${message}</p>
+                <a href="/" class="btn">Quay lại trang chủ</a>
+            </div>
+            
+            <script>
+                setTimeout(() => { window.location.href = '/'; }, 5000);
+            </script>
+        </body>
+        </html>
+    `);
 });
 
 // ==========================================
