@@ -35,7 +35,7 @@ try {
     console.error('❌ Không tạo được thư mục backup:', err.message);
 }
 
-const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [] };
+const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
 
 // ==========================================
 // IN-MEMORY DB (source of truth khi chạy)
@@ -108,6 +108,7 @@ async function loadFromGist() {
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
         if (!parsed.feedbackKeys) parsed.feedbackKeys = [];
         if (!parsed.feedbacks) parsed.feedbacks = [];
+        if (!data.users) data.users = [];
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi load từ Gist:', err.message);
@@ -238,6 +239,7 @@ function writeDB(data) {
     if (!data.confirmedKeys) data.confirmedKeys = [];
     if (!data.feedbackKeys) data.feedbackKeys = [];
     if (!data.feedbacks) data.feedbacks = [];
+    if (!data.users) data.users = [];
 
     MEMORY_DB = data;
     scheduleSync();
