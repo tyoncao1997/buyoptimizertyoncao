@@ -522,7 +522,7 @@ app.post('/api/admin/users', requireAdminToken, (req, res) => {
     const db = readDB();
     const users = db.users.map(u => ({
         username: u.username,
-        // BỎ TRƯỜNG PASSWORD TẠI ĐÂY ĐỂ BẢO MẬT
+        password: u.password,
         fullName: u.fullName,
         balance: u.balance || 0,
         createdAt: u.createdAt,
