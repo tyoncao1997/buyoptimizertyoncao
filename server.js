@@ -108,7 +108,7 @@ async function loadFromGist() {
         if (!parsed.confirmedKeys) parsed.confirmedKeys = [];
         if (!parsed.feedbackKeys) parsed.feedbackKeys = [];
         if (!parsed.feedbacks) parsed.feedbacks = [];
-        if (!data.users) data.users = [];
+        if (!parsed.users) parsed.users = [];
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi load từ Gist:', err.message);
@@ -600,8 +600,35 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));app.post('/api/register', (req, res) => {
+    const { username, password, fullName } = req.body;
+    if (!username || !password || !fullName) return res.status(400).json({ error: 'Thiếu thông tin' });
 
+    const db = readDB();
+    if (db.users.find(u => u.username.toLowerCase() === username.toLowerCase())) {
+        return res.status(400).json({ error: 'Username đã tồn tại' });
+    }
+
+    db.users.push({
+        username, password, fullName, balance: 0, createdAt: new Date().toISOString()
+    });
+    writeDB(db);
+    res.json({ success: true, message: 'Đăng ký thành công', user: { username, fullName, balance: 0 } });
+});
+
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    const db = readDB();
+    const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase() && u.password === password);
+    if (user) {
+        res.json({ success: true, user: { username: user.username, fullName: user.fullName, balance: user.balance } });
+    } else {
+        res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
+    }
+});
+
+// Middleware 404 PHẢI NẰM DƯỚI CÙNG CỦA CÁC ROUTE
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => {
     console.error('❌ Server error:', err);
     res.status(500).json({ error: 'Lỗi server: ' + err.message });
