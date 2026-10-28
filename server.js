@@ -691,6 +691,41 @@ app.post('/api/buy-product', (req, res) => {
 });
 
 // ==========================================
+// API MỚI: TẢI FILE BẢO MẬT (CHỈ KHI ĐÃ MUA)
+// ==========================================
+app.get('/api/download/:productId', (req, res) => {
+    try {
+        const { username } = req.query;
+        const productId = req.params.productId;
+
+        if (!username) return res.status(401).send('Vui lòng đăng nhập để tải file.');
+
+        const db = readDB();
+        const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+
+        if (!user) return res.status(404).send('Không tìm thấy người dùng.');
+
+        // Kiểm tra lịch sử mua hàng
+        const hasBought = user.purchaseHistory && user.purchaseHistory.some(p => String(p.productId) === String(productId));
+
+        // Cho phép tải nếu đã mua HOẶC là sản phẩm miễn phí (id=1)
+        if (hasBought || String(productId) === '1') {
+            const filePath = path.join(__dirname, 'files', `${productId}.reg`);
+            if (fs.existsSync(filePath)) {
+                res.download(filePath, `TYON_${productId}.reg`);
+            } else {
+                res.status(404).send('File không tồn tại trên server.');
+            }
+        } else {
+            res.status(403).send('Bạn chưa mua sản phẩm này hoặc chưa thanh toán.');
+        }
+    } catch (error) {
+        console.error('Lỗi tải file:', error);
+        res.status(500).send('Lỗi server.');
+    }
+});
+
+// ==========================================
 // HEALTH CHECK
 // ==========================================
 app.get('/api/health', (req, res) => {
