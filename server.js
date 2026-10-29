@@ -13,8 +13,18 @@ const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const archiver = require('archiver');
+const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+pool.connect((err) => {
+    if (err) console.error('❌ Lỗi kết nối Supabase:', err.message);
+    else console.log('✅ Đã kết nối Supabase thành công!');
+});
 
 const app = express();
 app.set('trust proxy', 1);
@@ -222,12 +232,47 @@ function readDB() {
     return JSON.parse(JSON.stringify(MEMORY_DB));
 }
 
-function writeDB(data) {
+// ⭐ GHI DỮ LIỆU: Vừa lưu vào Gist/Local, vừa lưu vào Supabase
+async function writeDB(data) {
     for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'users'])
         if (!data[k]) data[k] = [];
+    
     MEMORY_DB = data;
-    scheduleSync();
+
+    // 1. Lưu dự phòng (Gist hoặc File Local) - Chạy ngầm
+    if (USE_GIST) {
+        saveToGist(MEMORY_DB).catch(err => console.error('Lỗi lưu Gist:', err.message));
+    } else {
+        saveLocal(MEMORY_DB);
+    }
+
+    // 2. Lưu vào Supabase - Chạy ngầm
+    if (pool) {
+        syncUsersToSupabase(MEMORY_DB.users).catch(err => console.error('Lỗi lưu Supabase:', err.message));
+    }
 }
+
+// ⭐ HÀM HỖ TRỢ ĐỒNG BỘ USER SANG SUPABASE
+async function syncUsersToSupabase(users) {
+    if (!pool) return;
+    try {
+        for (const u of users) {
+            await pool.query(`
+                INSERT INTO users (username, password, full_name, balance, purchase_history, deposit_history)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (username) DO UPDATE SET
+                password = EXCLUDED.password,
+                full_name = EXCLUDED.full_name,
+                balance = EXCLUDED.balance,
+                purchase_history = EXCLUDED.purchase_history,
+                deposit_history = EXCLUDED.deposit_history;
+            `, [u.username, u.password, u.fullName, u.balance, JSON.stringify(u.purchaseHistory || []), JSON.stringify(u.depositHistory || [])]);
+        }
+    } catch (err) {
+        console.error('❌ Lỗi đồng bộ Supabase:', err.message);
+    }
+}
+
 
 function migrateUsers(db) {
     if (!db.users) db.users = [];
@@ -253,36 +298,46 @@ function migrateUsers(db) {
 }
 
 async function initDB() {
-    // 1. Ưu tiên tải dữ liệu từ Gist (Mây) về trước
-    if (USE_GIST) {
-        const remote = await loadFromGist();
-        if (remote) {
-            MEMORY_DB = remote;
-            const migrated = migrateUsers(MEMORY_DB); // ⭐ MIGRATE
-            saveLocal(MEMORY_DB);
-            if (migrated && USE_GIST) {
-                console.log('☁️  Đang lưu dữ liệu đã migrate lên Gist...');
-                await saveToGist(MEMORY_DB);
+    // 1. Ưu tiên tải từ Supabase
+    if (pool) {
+        try {
+            const { rows } = await pool.query('SELECT * FROM users');
+            if (rows.length > 0) {
+                MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
+                MEMORY_DB.users = rows.map(u => ({
+                    username: u.username,
+                    password: u.password,
+                    fullName: u.full_name,
+                    balance: Number(u.balance),
+                    purchaseHistory: u.purchase_history || [],
+                    depositHistory: u.deposit_history || [],
+                    createdAt: u.created_at
+                }));
+                console.log('✅ Đã tải dữ liệu từ Supabase');
             }
-            console.log('✅ Đã tải dữ liệu từ GitHub Gist');
-            return;
+        } catch (err) {
+            console.error('❌ Lỗi đọc Supabase, chuyển sang dự phòng:', err.message);
         }
     }
 
-    // 2. Nếu không có Gist, thử tải từ file local
-    const local = loadLocal();
-    if (local) {
-        MEMORY_DB = local;
-        const migrated = migrateUsers(MEMORY_DB); // ⭐ MIGRATE
-        if (migrated && USE_GIST) await saveToGist(MEMORY_DB);
-        saveLocal(MEMORY_DB);
-        return;
+    // 2. Nếu Supabase lỗi hoặc rỗng, tải từ Gist/Local
+    if (!MEMORY_DB || !MEMORY_DB.users || MEMORY_DB.users.length === 0) {
+        if (USE_GIST) {
+            const remote = await loadFromGist();
+            if (remote) { MEMORY_DB = remote; console.log('✅ Đã tải từ Gist'); }
+        } else {
+            const local = loadLocal();
+            if (local) { MEMORY_DB = local; console.log('✅ Đã tải từ Local'); }
+        }
     }
 
-    // 3. Nếu cả 2 đều không có, tạo mới
-    MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
-    if (USE_GIST) await saveToGist(MEMORY_DB);
+    // 3. Nếu vẫn không có, tạo mới
+    if (!MEMORY_DB) MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
+
+    // 4. Chạy migrate và đồng bộ ngược lại
+    migrateUsers(MEMORY_DB);
     saveLocal(MEMORY_DB);
+    if (pool) syncUsersToSupabase(MEMORY_DB.users);
 }
 // ==========================================
 // CẤU HÌNH HỆ THỐNG & ADMIN BẢO MẬT
@@ -365,7 +420,7 @@ function requireAdminToken(req, res, next) {
 // ==========================================
 // CLEANUP & HELPERS (CHỈ XÓA KEY CHƯA XÁC NHẬN)
 // ==========================================
-function cleanupExpiredKeys() {
+async function cleanupExpiredKeys() {
     if (!MEMORY_DB) return { deletedCount: 0 };
     const now = Date.now();
     const before = MEMORY_DB.keys.length;
@@ -379,7 +434,7 @@ function cleanupExpiredKeys() {
 
     const deletedCount = before - MEMORY_DB.keys.length;
     if (deletedCount > 0) {
-        writeDB(MEMORY_DB);
+        await writeDB(MEMORY_DB);
         console.log(`🧹 Đã tự động xóa ${deletedCount} key pending hết hạn.`);
     }
     return { deletedCount };
@@ -432,10 +487,10 @@ app.post('/api/admin/verify-token', requireAdminToken, (req, res) => {
 // ==========================================
 // KEY ENDPOINTS
 // ==========================================
-app.post('/api/create-key', (req, res) => {
+app.post('/api/create-key', async (req, res) => { 
     const { plan, customerName, transferContent, amount } = req.body;
     if (!plan || !customerName) return res.status(400).json({ error: 'Thiếu thông tin' });
-    cleanupExpiredKeys();
+    await cleanupExpiredKeys();
     const db = readDB();
     const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
     const timestamp = Date.now().toString(36).toUpperCase();
@@ -447,14 +502,14 @@ app.post('/api/create-key', (req, res) => {
         expiresAt: new Date(Date.now() + KEY_EXPIRE_MS).toISOString()
     };
     db.keys.push(newKey);
-    writeDB(db);
+    await writeDB(db);
     res.json({ success: true, key, expiresAt: newKey.expiresAt,
         message: `Key đã tạo. Xác nhận trong ${KEY_EXPIRE_HOURS}h.` });
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
-app.post('/api/admin/keys', requireAdminToken, (req, res) => {
-    cleanupExpiredKeys();
+app.post('/api/admin/keys', requireAdminToken, async (req, res) => {
+    await cleanupExpiredKeys();
     const db = readDB();
     const keys = db.keys.map(k => {
         if (k.status === 'pending') {
@@ -471,7 +526,7 @@ app.post('/api/admin/keys', requireAdminToken, (req, res) => {
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
-app.post('/api/admin/confirm-key', requireAdminToken, (req, res) => {
+app.post('/api/admin/confirm-key', requireAdminToken, async (req, res) => {
     const { pin, key } = req.body;
     if (!verifyPin(pin)) return res.status(403).json({ error: 'Mã PIN không chính xác' });
     
@@ -492,7 +547,7 @@ app.post('/api/admin/confirm-key', requireAdminToken, (req, res) => {
         createdAt: new Date().toISOString()
     });
     
-    writeDB(db);
+    await writeDB(db);
     res.json({ success: true, message: 'OK', feedbackKey, keyData: db.keys[idx] });
 });
 
@@ -551,7 +606,7 @@ app.get('/api/feedbacks', (req, res) => {
     res.json({ feedbacks: [...db.feedbacks].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
 });
 
-app.post('/api/submit-feedback', (req, res) => {
+app.post('/api/submit-feedback', async (req, res) => {
     const { feedbackKey, rating, content, images } = req.body;
     if (!feedbackKey) return res.status(400).json({ error: 'Thiếu Feedback Key' });
     const db = readDB();
@@ -567,7 +622,7 @@ app.post('/api/submit-feedback', (req, res) => {
         images: images || [], createdAt: new Date().toISOString()
     };
     db.feedbacks.push(fb);
-    writeDB(db);
+    await writeDB(db);
     res.json({ success: true, message: 'OK', feedback: fb });
 });
 
@@ -593,7 +648,7 @@ app.post('/api/admin/users', requireAdminToken, (req, res) => {
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
-app.post('/api/admin/add-balance', requireAdminToken, (req, res) => {
+app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
     try {
         const { pin, targetUsername, amount, note } = req.body;
 
@@ -632,7 +687,7 @@ app.post('/api/admin/add-balance', requireAdminToken, (req, res) => {
             ip: req.ip // Log lại IP để truy vết nếu có biến
         });
 
-        writeDB(db);
+        await writeDB(db);
         console.log(`💰 [AUDIT] ${req.admin.username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${user.balance})`);
 
         res.json({
@@ -650,7 +705,7 @@ app.post('/api/admin/add-balance', requireAdminToken, (req, res) => {
 // ==========================================
 // USER AUTH & CHỨC NĂNG NGƯỜI DÙNG
 // ==========================================
-app.post('/api/register', (req, res) => {
+app.post('/api/register', async (req, res) => {
     try {
         const { username, password, fullName } = req.body;
         if (!username || !password || !fullName)
@@ -670,7 +725,7 @@ app.post('/api/register', (req, res) => {
             createdAt: new Date().toISOString()
         };
         db.users.push(newUser);
-        writeDB(db);
+        await writeDB(db);
 
         res.json({
             success: true,
@@ -723,7 +778,7 @@ app.get('/api/user/:username', (req, res) => {
     }});
 });
 
-app.post('/api/change-password', (req, res) => {
+app.post('/api/change-password', async (req, res) => {
     try {
         const { username, oldPassword, newPassword } = req.body;
         if (!username || !oldPassword || !newPassword) {
@@ -742,7 +797,7 @@ app.post('/api/change-password', (req, res) => {
         }
 
         db.users[idx].password = newPassword;
-        writeDB(db);
+        await writeDB(db);
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
         console.error('Change password error:', err);
@@ -792,7 +847,7 @@ app.post('/api/pay2s-create-order', async (req, res) => {
     }
 });
 
-app.post('/api/pay2s-webhook', (req, res) => {
+app.post('/api/pay2s-webhook', async (req, res) => {
     try {
         const authHeader = req.headers['authorization'];
         if (authHeader && !authHeader.includes(PAY2S_WEBHOOK_TOKEN)) {
@@ -831,7 +886,7 @@ app.post('/api/pay2s-webhook', (req, res) => {
                     amount, method: 'pay2s', content: data.orderInfo || data.content,
                     transactionId: transId, at: new Date().toISOString()
                 });
-                writeDB(db);
+                await writeDB(db);
             }
         }
         res.status(200).json({ success: true });
@@ -866,7 +921,7 @@ app.post('/api/webhub-create-order', async (req, res) => {
     }
 });
 
-app.post('/api/webhub-webhook', (req, res) => {
+app.post('/api/webhub-webhook', async (req, res) => {
     try {
         const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
         if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN))) {
@@ -887,7 +942,7 @@ app.post('/api/webhub-webhook', (req, res) => {
                     db.users[idx].balance += amount;
                     if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
                     db.users[idx].depositHistory.push({ amount, method: 'webhub', transactionId: data.transactionId || data.orderId, at: new Date().toISOString() });
-                    writeDB(db);
+                    await writeDB(db);
                 }
             }
         }
@@ -901,7 +956,7 @@ app.post('/api/webhub-webhook', (req, res) => {
 // ==========================================
 // MUA HÀNG / TẢI FILE
 // ==========================================
-app.post('/api/buy-product', (req, res) => {
+app.post('/api/buy-product', async (req, res) => {
     try {
         const { username, productId, price, productName } = req.body;
         if (!username || productId === undefined || price === undefined)
@@ -917,7 +972,7 @@ app.post('/api/buy-product', (req, res) => {
         user.balance -= price;
         if (!user.purchaseHistory) user.purchaseHistory = [];
         user.purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
-        writeDB(db);
+        await writeDB(db);
 
         res.json({ success: true, newBalance: user.balance, productId });
     } catch (err) {
