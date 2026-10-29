@@ -229,26 +229,56 @@ function writeDB(data) {
     scheduleSync();
 }
 
+function migrateUsers(db) {
+    if (!db.users) db.users = [];
+    let changed = false;
+
+    for (const user of db.users) {
+        if (user.balance === undefined || user.balance === null || isNaN(user.balance)) {
+            user.balance = 0;
+            changed = true;
+        }
+        if (!Array.isArray(user.purchaseHistory)) { user.purchaseHistory = []; changed = true; }
+        if (!Array.isArray(user.depositHistory)) { user.depositHistory = []; changed = true; }
+        if (!user.createdAt) { user.createdAt = new Date().toISOString(); changed = true; }
+        if (user.password === undefined || user.password === null) { user.password = ''; changed = true; }
+        if (!user.fullName) { user.fullName = user.username || 'Unknown'; changed = true; }
+        if (!user.username) { user.username = 'unknown_' + Date.now(); changed = true; }
+    }
+
+    if (changed) {
+        console.log(`🔧 [MIGRATE] Đã bổ sung field thiếu cho ${db.users.length} user`);
+    }
+    return changed;
+}
+
 async function initDB() {
     // 1. Ưu tiên tải dữ liệu từ Gist (Mây) về trước
     if (USE_GIST) {
         const remote = await loadFromGist();
-        if (remote) { 
-            MEMORY_DB = remote; 
-            saveLocal(remote); 
+        if (remote) {
+            MEMORY_DB = remote;
+            const migrated = migrateUsers(MEMORY_DB); // ⭐ MIGRATE
+            saveLocal(MEMORY_DB);
+            if (migrated && USE_GIST) {
+                console.log('☁️  Đang lưu dữ liệu đã migrate lên Gist...');
+                await saveToGist(MEMORY_DB);
+            }
             console.log('✅ Đã tải dữ liệu từ GitHub Gist');
-            return; 
+            return;
         }
     }
-    
+
     // 2. Nếu không có Gist, thử tải từ file local
     const local = loadLocal();
-    if (local) { 
-        MEMORY_DB = local; 
-        if (USE_GIST) await saveToGist(local); 
-        return; 
+    if (local) {
+        MEMORY_DB = local;
+        const migrated = migrateUsers(MEMORY_DB); // ⭐ MIGRATE
+        if (migrated && USE_GIST) await saveToGist(MEMORY_DB);
+        saveLocal(MEMORY_DB);
+        return;
     }
-    
+
     // 3. Nếu cả 2 đều không có, tạo mới
     MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
     if (USE_GIST) await saveToGist(MEMORY_DB);
