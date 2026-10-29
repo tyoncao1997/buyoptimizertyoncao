@@ -516,10 +516,6 @@ app.post('/api/admin/keys', requireAdminToken, async (req, res) => {
             const rem = calcRemainingTime(k.createdAt, k.status);
             return { ...k, remainingHours: rem.hours, remainingMinutes: rem.minutes };
         }
-        if (k.status === 'confirmed') {
-            const fbRecord = db.feedbackKeys.find(fk => fk.originalKey === k.key);
-            if (fbRecord) { k.feedbackKey = fbRecord.feedbackKey; k.isFeedbackUsed = fbRecord.isUsed; }
-        }
         return k;
     });
     res.json({ keys });
@@ -538,17 +534,10 @@ app.post('/api/admin/confirm-key', requireAdminToken, async (req, res) => {
     
     db.keys[idx].status = 'confirmed';
     db.keys[idx].confirmedAt = new Date().toISOString();
-    db.keys[idx].confirmedBy = req.admin.username; // Lấy từ token
-    
-    const feedbackKey = `FB-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-    db.feedbackKeys.push({
-        feedbackKey, originalKey: key,
-        customerName: db.keys[idx].customerName, isUsed: false,
-        createdAt: new Date().toISOString()
-    });
+    db.keys[idx].confirmedBy = req.admin.username;
     
     await writeDB(db);
-    res.json({ success: true, message: 'OK', feedbackKey, keyData: db.keys[idx] });
+    res.json({ success: true, message: 'Đã xác nhận Key thành công!', keyData: db.keys[idx] });
 });
 
 app.post('/api/check-key', (req, res) => {
@@ -607,23 +596,65 @@ app.get('/api/feedbacks', (req, res) => {
 });
 
 app.post('/api/submit-feedback', async (req, res) => {
-    const { feedbackKey, rating, content, images } = req.body;
-    if (!feedbackKey) return res.status(400).json({ error: 'Thiếu Feedback Key' });
-    const db = readDB();
-    const idx = db.feedbackKeys.findIndex(fk => fk.feedbackKey === feedbackKey);
-    if (idx === -1) return res.status(400).json({ error: 'Feedback Key không hợp lệ' });
-    if (db.feedbackKeys[idx].isUsed) return res.status(400).json({ error: 'Key đã sử dụng' });
-    db.feedbackKeys[idx].isUsed = true;
-    db.feedbackKeys[idx].usedAt = new Date().toISOString();
-    const fb = {
-        id: Date.now().toString(),
-        customerName: db.feedbackKeys[idx].customerName,
-        feedbackKey, rating: Number(rating), content,
-        images: images || [], createdAt: new Date().toISOString()
-    };
-    db.feedbacks.push(fb);
-    await writeDB(db);
-    res.json({ success: true, message: 'OK', feedback: fb });
+    try {
+        const { username, rating, content, images } = req.body;
+
+        // 1. Validate dữ liệu đầu vào
+        if (!username) {
+            return res.status(400).json({ error: 'Thiếu thông tin người dùng!' });
+        }
+        if (!rating || rating < 1 || rating > 5) {
+            return res.status(400).json({ error: 'Đánh giá phải từ 1 đến 5 sao!' });
+        }
+        if (!content || content.trim().length === 0) {
+            return res.status(400).json({ error: 'Nội dung đánh giá không được để trống!' });
+        }
+
+        const db = readDB();
+        
+        // 2. Tìm user trong database
+        const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+        if (!user) {
+            return res.status(404).json({ error: 'Không tìm thấy người dùng!' });
+        }
+
+        // 3. Tính tổng chi tiêu từ lịch sử mua hàng
+        const totalSpent = (user.purchaseHistory || []).reduce((sum, item) => sum + (item.price || 0), 0);
+
+        // 4. Kiểm tra điều kiện (>= 500.000 VNĐ)
+        if (totalSpent < 500000) {
+            return res.status(403).json({ 
+                error: `Bạn cần mua hàng tối thiểu 500.000đ để đánh giá. Tổng chi tiêu hiện tại: ${new Intl.NumberFormat('vi-VN').format(totalSpent)}đ` 
+            });
+        }
+
+        // 5. Kiểm tra xem user đã feedback chưa (Mỗi user chỉ được feedback 1 lần)
+        // Nếu bạn muốn cho feedback nhiều lần thì comment đoạn này lại
+        const existingFeedback = db.feedbacks.find(fb => fb.username && fb.username.toLowerCase() === username.toLowerCase());
+        if (existingFeedback) {
+            return res.status(400).json({ error: 'Bạn đã gửi đánh giá rồi. Cảm ơn bạn!' });
+        }
+
+        // 6. Lưu feedback mới
+        const newFeedback = {
+            id: Date.now().toString(),
+            username: user.username, // Lưu username để check trùng
+            customerName: user.fullName || user.username,
+            rating: Number(rating),
+            content: content.trim(),
+            images: images || [],
+            createdAt: new Date().toISOString()
+        };
+
+        db.feedbacks.push(newFeedback);
+        await writeDB(db);
+
+        res.json({ success: true, message: 'Cảm ơn bạn đã gửi đánh giá!', feedback: newFeedback });
+
+    } catch (err) {
+        console.error('Lỗi submit-feedback:', err);
+        res.status(500).json({ error: 'Lỗi server: ' + err.message });
+    }
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
