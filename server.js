@@ -31,6 +31,11 @@ const s3Client = new S3Client({
     },
 });
 
+async function streamToBuffer(stream) {
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+}
 
 // ==========================================
 // BẢO MẬT CƠ BẢN (HELMET + RATE LIMIT)
@@ -224,26 +229,56 @@ function writeDB(data) {
     scheduleSync();
 }
 
+function migrateUsers(db) {
+    if (!db.users) db.users = [];
+    let changed = false;
+
+    for (const user of db.users) {
+        if (user.balance === undefined || user.balance === null || isNaN(user.balance)) {
+            user.balance = 0;
+            changed = true;
+        }
+        if (!Array.isArray(user.purchaseHistory)) { user.purchaseHistory = []; changed = true; }
+        if (!Array.isArray(user.depositHistory)) { user.depositHistory = []; changed = true; }
+        if (!user.createdAt) { user.createdAt = new Date().toISOString(); changed = true; }
+        if (user.password === undefined || user.password === null) { user.password = ''; changed = true; }
+        if (!user.fullName) { user.fullName = user.username || 'Unknown'; changed = true; }
+        if (!user.username) { user.username = 'unknown_' + Date.now(); changed = true; }
+    }
+
+    if (changed) {
+        console.log(`🔧 [MIGRATE] Đã bổ sung field thiếu cho ${db.users.length} user`);
+    }
+    return changed;
+}
+
 async function initDB() {
     // 1. Ưu tiên tải dữ liệu từ Gist (Mây) về trước
     if (USE_GIST) {
         const remote = await loadFromGist();
-        if (remote) { 
-            MEMORY_DB = remote; 
-            saveLocal(remote); 
+        if (remote) {
+            MEMORY_DB = remote;
+            const migrated = migrateUsers(MEMORY_DB); // ⭐ MIGRATE
+            saveLocal(MEMORY_DB);
+            if (migrated && USE_GIST) {
+                console.log('☁️  Đang lưu dữ liệu đã migrate lên Gist...');
+                await saveToGist(MEMORY_DB);
+            }
             console.log('✅ Đã tải dữ liệu từ GitHub Gist');
-            return; 
+            return;
         }
     }
-    
+
     // 2. Nếu không có Gist, thử tải từ file local
     const local = loadLocal();
-    if (local) { 
-        MEMORY_DB = local; 
-        if (USE_GIST) await saveToGist(local); 
-        return; 
+    if (local) {
+        MEMORY_DB = local;
+        const migrated = migrateUsers(MEMORY_DB); // ⭐ MIGRATE
+        if (migrated && USE_GIST) await saveToGist(MEMORY_DB);
+        saveLocal(MEMORY_DB);
+        return;
     }
-    
+
     // 3. Nếu cả 2 đều không có, tạo mới
     MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
     if (USE_GIST) await saveToGist(MEMORY_DB);
@@ -902,23 +937,33 @@ app.get('/api/download/:productId', async (req, res) => {
     if (!user) return res.status(404).send('Không tìm thấy user');
 
     const hasBought = (user.purchaseHistory || []).some(p => String(p.productId) === String(productId));
-    
     if (!hasBought && String(productId) !== '1') {
         return res.status(403).send('Chưa mua sản phẩm.');
     }
 
     try {
-        // Lấy danh sách file trên R2 để tìm file khớp ID
+        // BƯỚC 1: Tìm file trên R2
         const listCommand = new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME });
         const listResponse = await s3Client.send(listCommand);
         const allR2Files = (listResponse.Contents || []).map(item => item.Key);
-        
+
         const foundFileName = allR2Files.find(f => f.startsWith(`${productId}.`));
         if (!foundFileName) {
             return res.status(404).send('File không tồn tại trên hệ thống lưu trữ.');
         }
 
-        // Tạo ZIP chỉ chứa 1 file
+        // BƯỚC 2: Tải file từ R2 → Buffer TRƯỚC khi pipe
+        const command = new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: foundFileName
+        });
+        const r2Response = await s3Client.send(command);
+        if (!r2Response.Body) {
+            return res.status(500).send('File rỗng hoặc không đọc được.');
+        }
+        const bodyBuffer = await streamToBuffer(r2Response.Body); // ⭐ FIX
+
+        // BƯỚC 3: Tạo ZIP và pipe
         const archive = archiver('zip', { zlib: { level: 9 } });
         res.attachment(`TYON_Product_${productId}.zip`);
         archive.pipe(res);
@@ -928,22 +973,18 @@ app.get('/api/download/:productId', async (req, res) => {
             if (!res.headersSent) res.status(500).send('Lỗi nén file');
         });
 
-        const command = new GetObjectCommand({
-            Bucket: process.env.R2_BUCKET_NAME,
-            Key: foundFileName
-        });
-        const response = await s3Client.send(command);
-        if (response.Body) {
-            archive.append(response.Body, { name: `TYON_${foundFileName}` });
-        }
-
+        archive.append(bodyBuffer, { name: `TYON_${foundFileName}` });
         await archive.finalize();
+
     } catch (err) {
         console.error('Lỗi tải file từ R2:', err);
         if (!res.headersSent) res.status(500).send('Lỗi kết nối server.');
     }
 });
 
+// ==========================================
+// TẢI NHIỀU FILE CHỈ ĐỊNH DƯỚI DẠNG ZIP
+// ==========================================
 app.get('/api/download-all', async (req, res) => {
     const { username, ids } = req.query;
     if (!username) return res.status(401).send('Chưa đăng nhập');
@@ -952,16 +993,12 @@ app.get('/api/download-all', async (req, res) => {
     const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
     if (!user) return res.status(404).send('Không tìm thấy user');
 
-    // Xác định danh sách ID cần tải
     let targetIds;
     if (ids) {
-        // Nếu có ids truyền vào → CHỈ tải các file đó (đã kiểm tra quyền sở hữu)
         const requestedIds = ids.split(',').map(s => s.trim()).filter(Boolean);
         const ownedIds = new Set((user.purchaseHistory || []).map(p => String(p.productId)));
-        // Cho phép ID=1 (file miễn phí) luôn tải được
         targetIds = requestedIds.filter(id => ownedIds.has(String(id)) || String(id) === '1');
     } else {
-        // Fallback: tải TẤT CẢ file đã mua (dùng cho lịch sử nếu cần)
         targetIds = [...new Set((user.purchaseHistory || []).map(p => String(p.productId)))];
     }
 
@@ -969,46 +1006,52 @@ app.get('/api/download-all', async (req, res) => {
         return res.status(403).send('Không có file nào để tải.');
     }
 
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    res.attachment(`TYON_Files_${username}_${Date.now()}.zip`);
-    archive.pipe(res);
-
-    archive.on('error', (err) => {
-        console.error('Lỗi nén file:', err);
-        if (!res.headersSent) res.status(500).send('Lỗi nén file');
-    });
-
     try {
+        // BƯỚC 1: Liệt kê file trên R2
         const listCommand = new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME });
         const listResponse = await s3Client.send(listCommand);
         const allR2Files = (listResponse.Contents || []).map(item => item.Key);
 
-        let addedCount = 0;
+        // BƯỚC 2: Tải TẤT CẢ file → Buffer TRƯỚC khi pipe
+        const filesData = [];
         for (const id of targetIds) {
             const foundFileName = allR2Files.find(f => f.startsWith(`${id}.`));
-            if (foundFileName) {
-                try {
-                    const command = new GetObjectCommand({
-                        Bucket: process.env.R2_BUCKET_NAME,
-                        Key: foundFileName
-                    });
-                    const response = await s3Client.send(command);
-                    if (response.Body) {
-                        archive.append(response.Body, { name: `TYON_${foundFileName}` });
-                        addedCount++;
-                    }
-                } catch (err) {
-                    console.log(`Lỗi tải file ${foundFileName} từ R2:`, err.message);
+            if (!foundFileName) continue;
+            try {
+                const command = new GetObjectCommand({
+                    Bucket: process.env.R2_BUCKET_NAME,
+                    Key: foundFileName
+                });
+                const r2Response = await s3Client.send(command);
+                if (r2Response.Body) {
+                    const buf = await streamToBuffer(r2Response.Body); // ⭐ FIX
+                    filesData.push({ fileName: foundFileName, buffer: buf });
                 }
+            } catch (err) {
+                console.log(`Lỗi tải file ${foundFileName} từ R2:`, err.message);
             }
         }
 
-        if (addedCount === 0) {
-            archive.abort();
+        if (filesData.length === 0) {
             return res.status(404).send('Không tìm thấy file nào trên hệ thống lưu trữ.');
         }
 
+        // BƯỚC 3: Tạo ZIP từ các Buffer đã có
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        res.attachment(`TYON_Files_${username}_${Date.now()}.zip`);
+        archive.pipe(res);
+
+        archive.on('error', (err) => {
+            console.error('Lỗi nén file:', err);
+            if (!res.headersSent) res.status(500).send('Lỗi nén file');
+        });
+
+        for (const { fileName, buffer } of filesData) {
+            archive.append(buffer, { name: `TYON_${fileName}` });
+        }
+
         await archive.finalize();
+
     } catch (error) {
         console.error('Lỗi hệ thống khi tải file:', error);
         if (!res.headersSent) res.status(500).send('Lỗi kết nối server.');
