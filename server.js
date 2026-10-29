@@ -884,13 +884,14 @@ app.post('/api/buy-product', (req, res) => {
         user.purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
         writeDB(db);
 
-        res.json({ success: true, newBalance: user.balance });
+        res.json({ success: true, newBalance: user.balance, productId });
     } catch (err) {
         console.error('Buy error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
+// ⭐ SỬA: Tải 1 file cụ thể dưới dạng ZIP
 app.get('/api/download/:productId', async (req, res) => {
     const { username } = req.query;
     const productId = req.params.productId;
@@ -902,51 +903,74 @@ app.get('/api/download/:productId', async (req, res) => {
 
     const hasBought = (user.purchaseHistory || []).some(p => String(p.productId) === String(productId));
     
-    if (hasBought || String(productId) === '1') {
-        // ⭐ LẤY FILE TỪ CLOUDFLARE R2
-        // Tên file trên R2 của bạn phải khớp với productId. VD: 1.zip, 2.zip
-        // Nếu bạn dùng đuôi khác (.rar, .txt), hãy sửa lại chữ .zip bên dưới
-        const fileNameOnR2 = `${productId}.zip`; 
+    if (!hasBought && String(productId) !== '1') {
+        return res.status(403).send('Chưa mua sản phẩm.');
+    }
 
-        try {
-            const command = new GetObjectCommand({
-                Bucket: process.env.R2_BUCKET_NAME,
-                Key: fileNameOnR2,
-                ResponseContentDisposition: `attachment; filename="TYON_${productId}.zip"`
-            });
-
-            // Tạo link tải có thời hạn 15 phút (900 giây) để bảo mật
-            const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 900 });
-            
-            // Chuyển hướng khách hàng sang link tải của R2
-            return res.redirect(signedUrl);
-        } catch (err) {
-            console.error('Lỗi tải file từ R2:', err);
+    try {
+        // Lấy danh sách file trên R2 để tìm file khớp ID
+        const listCommand = new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME });
+        const listResponse = await s3Client.send(listCommand);
+        const allR2Files = (listResponse.Contents || []).map(item => item.Key);
+        
+        const foundFileName = allR2Files.find(f => f.startsWith(`${productId}.`));
+        if (!foundFileName) {
             return res.status(404).send('File không tồn tại trên hệ thống lưu trữ.');
         }
-    } else {
-        res.status(403).send('Chưa mua sản phẩm.');
+
+        // Tạo ZIP chỉ chứa 1 file
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        res.attachment(`TYON_Product_${productId}.zip`);
+        archive.pipe(res);
+
+        archive.on('error', (err) => {
+            console.error('Lỗi nén file:', err);
+            if (!res.headersSent) res.status(500).send('Lỗi nén file');
+        });
+
+        const command = new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: foundFileName
+        });
+        const response = await s3Client.send(command);
+        if (response.Body) {
+            archive.append(response.Body, { name: `TYON_${foundFileName}` });
+        }
+
+        await archive.finalize();
+    } catch (err) {
+        console.error('Lỗi tải file từ R2:', err);
+        if (!res.headersSent) res.status(500).send('Lỗi kết nối server.');
     }
 });
 
 app.get('/api/download-all', async (req, res) => {
-    const { username } = req.query;
+    const { username, ids } = req.query;
     if (!username) return res.status(401).send('Chưa đăng nhập');
 
     const db = readDB();
     const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
     if (!user) return res.status(404).send('Không tìm thấy user');
 
-    const purchasedIds = [...new Set((user.purchaseHistory || []).map(p => String(p.productId)))];
-    if (purchasedIds.length === 0) {
-        return res.status(403).send('Bạn chưa mua sản phẩm nào.');
+    // Xác định danh sách ID cần tải
+    let targetIds;
+    if (ids) {
+        // Nếu có ids truyền vào → CHỈ tải các file đó (đã kiểm tra quyền sở hữu)
+        const requestedIds = ids.split(',').map(s => s.trim()).filter(Boolean);
+        const ownedIds = new Set((user.purchaseHistory || []).map(p => String(p.productId)));
+        // Cho phép ID=1 (file miễn phí) luôn tải được
+        targetIds = requestedIds.filter(id => ownedIds.has(String(id)) || String(id) === '1');
+    } else {
+        // Fallback: tải TẤT CẢ file đã mua (dùng cho lịch sử nếu cần)
+        targetIds = [...new Set((user.purchaseHistory || []).map(p => String(p.productId)))];
     }
 
-    // Khởi tạo bộ nén ZIP
+    if (targetIds.length === 0) {
+        return res.status(403).send('Không có file nào để tải.');
+    }
+
     const archive = archiver('zip', { zlib: { level: 9 } });
-    
-    // Thiết lập header để trình duyệt tự động tải file ZIP
-    res.attachment(`TYON_All_Files_${username}.zip`);
+    res.attachment(`TYON_Files_${username}_${Date.now()}.zip`);
     archive.pipe(res);
 
     archive.on('error', (err) => {
@@ -955,27 +979,20 @@ app.get('/api/download-all', async (req, res) => {
     });
 
     try {
-        // Lấy toàn bộ danh sách file trên Cloudflare R2 (1 lần duy nhất)
         const listCommand = new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME });
         const listResponse = await s3Client.send(listCommand);
         const allR2Files = (listResponse.Contents || []).map(item => item.Key);
-        
+
         let addedCount = 0;
-
-        // Lặp qua từng file khách đã mua
-        for (const id of purchasedIds) {
-            // Tự động tìm file khớp với ID (VD: "6.reg", "6.rar", "6.zip")
+        for (const id of targetIds) {
             const foundFileName = allR2Files.find(f => f.startsWith(`${id}.`));
-
             if (foundFileName) {
                 try {
                     const command = new GetObjectCommand({
                         Bucket: process.env.R2_BUCKET_NAME,
                         Key: foundFileName
                     });
-                    
                     const response = await s3Client.send(command);
-                    
                     if (response.Body) {
                         archive.append(response.Body, { name: `TYON_${foundFileName}` });
                         addedCount++;
@@ -983,8 +1000,6 @@ app.get('/api/download-all', async (req, res) => {
                 } catch (err) {
                     console.log(`Lỗi tải file ${foundFileName} từ R2:`, err.message);
                 }
-            } else {
-                console.log(`Không tìm thấy file cho ID ${id} trên R2.`);
             }
         }
 
@@ -993,9 +1008,7 @@ app.get('/api/download-all', async (req, res) => {
             return res.status(404).send('Không tìm thấy file nào trên hệ thống lưu trữ.');
         }
 
-        // Hoàn tất nén và gửi về cho khách
         await archive.finalize();
-        
     } catch (error) {
         console.error('Lỗi hệ thống khi tải file:', error);
         if (!res.headersSent) res.status(500).send('Lỗi kết nối server.');
