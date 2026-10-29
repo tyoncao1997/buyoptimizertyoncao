@@ -12,7 +12,9 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
-const archiver = require('archiver')
+const archiver = require('archiver');
+const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -20,6 +22,15 @@ const PORT = process.env.PORT || 3000;
 
 // ⭐ KHAI BÁO DOMAIN FRONTEND
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
+const s3Client = new S3Client({
+    region: 'auto',
+    endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    credentials: {
+        accessKeyId: process.env.R2_ACCESS_KEY_ID,
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    },
+});
+
 
 // ==========================================
 // BẢO MẬT CƠ BẢN (HELMET + RATE LIMIT)
@@ -880,7 +891,7 @@ app.post('/api/buy-product', (req, res) => {
     }
 });
 
-app.get('/api/download/:productId', (req, res) => {
+app.get('/api/download/:productId', async (req, res) => {
     const { username } = req.query;
     const productId = req.params.productId;
     if (!username) return res.status(401).send('Chưa đăng nhập');
@@ -892,23 +903,33 @@ app.get('/api/download/:productId', (req, res) => {
     const hasBought = (user.purchaseHistory || []).some(p => String(p.productId) === String(productId));
     
     if (hasBought || String(productId) === '1') {
-        const filesDir = path.join(__dirname, 'files');
-        let filePath = ''; let originalFileName = '';
+        // ⭐ LẤY FILE TỪ CLOUDFLARE R2
+        // Tên file trên R2 của bạn phải khớp với productId. VD: 1.zip, 2.zip
+        // Nếu bạn dùng đuôi khác (.rar, .txt), hãy sửa lại chữ .zip bên dưới
+        const fileNameOnR2 = `${productId}.zip`; 
 
-        if (fs.existsSync(filesDir)) {
-            const filesInDir = fs.readdirSync(filesDir);
-            const foundFile = filesInDir.find(f => f.startsWith(`${productId}.`));
-            if (foundFile) { filePath = path.join(filesDir, foundFile); originalFileName = foundFile; }
+        try {
+            const command = new GetObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: fileNameOnR2,
+                ResponseContentDisposition: `attachment; filename="TYON_${productId}.zip"`
+            });
+
+            // Tạo link tải có thời hạn 15 phút (900 giây) để bảo mật
+            const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 900 });
+            
+            // Chuyển hướng khách hàng sang link tải của R2
+            return res.redirect(signedUrl);
+        } catch (err) {
+            console.error('Lỗi tải file từ R2:', err);
+            return res.status(404).send('File không tồn tại trên hệ thống lưu trữ.');
         }
-
-        if (filePath && fs.existsSync(filePath)) res.download(filePath, `TYON_${originalFileName}`);
-        else res.status(404).send('File không tồn tại trên server.');
     } else {
         res.status(403).send('Chưa mua sản phẩm.');
     }
 });
 
-app.get('/api/download-all', (req, res) => {
+app.get('/api/download-all', async (req, res) => {
     const { username } = req.query;
     if (!username) return res.status(401).send('Chưa đăng nhập');
 
@@ -916,55 +937,69 @@ app.get('/api/download-all', (req, res) => {
     const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
     if (!user) return res.status(404).send('Không tìm thấy user');
 
-    // Lấy danh sách các productId đã mua (loại bỏ trùng lặp nếu có)
     const purchasedIds = [...new Set((user.purchaseHistory || []).map(p => String(p.productId)))];
-
     if (purchasedIds.length === 0) {
         return res.status(403).send('Bạn chưa mua sản phẩm nào.');
     }
 
-    const filesDir = path.join(__dirname, 'files');
-    if (!fs.existsSync(filesDir)) {
-        return res.status(404).send('Thư mục file không tồn tại trên server.');
-    }
-
-    const filesInDir = fs.readdirSync(filesDir);
-    const filesToZip = [];
-
-    // Tìm file thực tế trên ổ cứng dựa vào ID đã mua
-    purchasedIds.forEach(id => {
-        const foundFile = filesInDir.find(f => f.startsWith(`${id}.`));
-        if (foundFile) {
-            filesToZip.push({
-                path: path.join(filesDir, foundFile),
-                name: `TYON_${foundFile}`
-            });
-        }
-    });
-
-    if (filesToZip.length === 0) {
-        return res.status(404).send('Không tìm thấy file nào trên server cho các sản phẩm đã mua.');
-    }
-
-    // Bắt đầu nén file
+    // Khởi tạo bộ nén ZIP
     const archive = archiver('zip', { zlib: { level: 9 } });
     
-    // Xử lý lỗi nén
-    archive.on('error', (err) => {
-        res.status(500).send('Lỗi khi nén file: ' + err.message);
-    });
-
-    // Thiết lập header để trình duyệt hiểu đây là file tải về
+    // Thiết lập header để trình duyệt tự động tải file ZIP
     res.attachment(`TYON_All_Files_${username}.zip`);
     archive.pipe(res);
 
-    // Thêm từng file vào file nén
-    filesToZip.forEach(file => {
-        archive.file(file.path, { name: file.name });
+    archive.on('error', (err) => {
+        console.error('Lỗi nén file:', err);
+        if (!res.headersSent) res.status(500).send('Lỗi nén file');
     });
 
-    // Hoàn tất nén
-    archive.finalize();
+    try {
+        // Lấy toàn bộ danh sách file trên Cloudflare R2 (1 lần duy nhất)
+        const listCommand = new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME });
+        const listResponse = await s3Client.send(listCommand);
+        const allR2Files = (listResponse.Contents || []).map(item => item.Key);
+        
+        let addedCount = 0;
+
+        // Lặp qua từng file khách đã mua
+        for (const id of purchasedIds) {
+            // Tự động tìm file khớp với ID (VD: "6.reg", "6.rar", "6.zip")
+            const foundFileName = allR2Files.find(f => f.startsWith(`${id}.`));
+
+            if (foundFileName) {
+                try {
+                    const command = new GetObjectCommand({
+                        Bucket: process.env.R2_BUCKET_NAME,
+                        Key: foundFileName
+                    });
+                    
+                    const response = await s3Client.send(command);
+                    
+                    if (response.Body) {
+                        archive.append(response.Body, { name: `TYON_${foundFileName}` });
+                        addedCount++;
+                    }
+                } catch (err) {
+                    console.log(`Lỗi tải file ${foundFileName} từ R2:`, err.message);
+                }
+            } else {
+                console.log(`Không tìm thấy file cho ID ${id} trên R2.`);
+            }
+        }
+
+        if (addedCount === 0) {
+            archive.abort();
+            return res.status(404).send('Không tìm thấy file nào trên hệ thống lưu trữ.');
+        }
+
+        // Hoàn tất nén và gửi về cho khách
+        await archive.finalize();
+        
+    } catch (error) {
+        console.error('Lỗi hệ thống khi tải file:', error);
+        if (!res.headersSent) res.status(500).send('Lỗi kết nối server.');
+    }
 });
 
 // ==========================================
