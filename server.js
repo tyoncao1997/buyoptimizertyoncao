@@ -854,7 +854,7 @@ app.post('/api/create-order', async (req, res) => {
         if (!MEMORY_DB.orders) MEMORY_DB.orders = [];
         MEMORY_DB.orders.push(newOrder);
 
-        const qrContent = orderCode;
+        const qrContent = `SEVQR ${orderCode}`;
         const qrUrl = `https://img.vietqr.io/image/${SEPAY_BANK_CODE}-${SEPAY_BANK_ACCOUNT}-compact2.png?amount=${amount}&addInfo=${encodeURIComponent(qrContent)}&accountName=${encodeURIComponent(SEPAY_ACCOUNT_HOLDER)}`;
 
         res.json({
@@ -949,7 +949,7 @@ async function handleSePayWebhook(req, res) {
         }
 
         const amount = parseInt(data.transferAmount);
-        const content = (data.content || '').toUpperCase().trim();
+        const content = (data.content || '').toUpperCase().replace(/SEVQR\s*/g, '').trim();
         const transactionId = data.id || data.referenceCode || 'N/A';
 
         // --- 3. TÌM ĐƠN HÀNG ---
