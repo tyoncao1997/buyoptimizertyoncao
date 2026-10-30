@@ -1304,15 +1304,15 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Số tiền cộng tối đa 100.000.000đ' });
         }
 
-        const db = readDB();
-        const idx = db.users.findIndex(u => 
+        // ⭐ Tìm trực tiếp trong MEMORY_DB (RAM)
+        const idx = MEMORY_DB.users.findIndex(u => 
             u.username.toLowerCase() === targetUsername.toLowerCase().trim()
         );
         if (idx === -1) {
             return res.status(404).json({ success: false, error: 'Không tìm thấy user: ' + targetUsername });
         }
 
-        const user = db.users[idx];
+        const user = MEMORY_DB.users[idx];
         const oldBalance = user.balance || 0;
         user.balance = oldBalance + addAmount;
 
@@ -1324,7 +1324,7 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
             transactionId: 'ADMIN_' + Date.now(),
             at: new Date().toISOString(),
             addedBy: req.admin.username,
-            ip: req.ip // Log lại IP để truy vết nếu có biến
+            ip: req.ip
         });
 
         await syncUsersToSupabase([user]);
@@ -1341,7 +1341,6 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
         res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
     }
 });
-
 // ==========================================
 // USER AUTH & CHỨC NĂNG NGƯỜI DÙNG
 // ==========================================
@@ -1355,18 +1354,22 @@ app.post('/api/register', async (req, res) => {
         if (password.length < 6)
             return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥6 ký tự' });
 
-        const db = readDB();
-        if (db.users.find(u => u.username.toLowerCase() === username.toLowerCase()))
+        // ⭐ Kiểm tra trực tiếp trong MEMORY_DB (RAM)
+        if (MEMORY_DB.users.find(u => u.username.toLowerCase() === username.toLowerCase()))
             return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
 
         const newUser = {
             username,
-            password: password,
+            password: password, // ⭐ Lưu chữ thường
             fullName,
             balance: 0, purchaseHistory: [], depositHistory: [],
             createdAt: new Date().toISOString()
         };
-        db.users.push(newUser);
+
+        // ⭐ 1. Push vào RAM
+        MEMORY_DB.users.push(newUser);
+        
+        // ⭐ 2. Lưu lên Supabase
         await syncUsersToSupabase([newUser]);
 
         res.json({
@@ -1386,13 +1389,13 @@ app.post('/api/login', async (req, res) => {
         if (!username || !password)
             return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
 
-        const db = readDB();
-        const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+        // ⭐ Tìm trực tiếp trong MEMORY_DB
+        const user = MEMORY_DB.users.find(u => u.username.toLowerCase() === username.toLowerCase());
 
         if (!user) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
 
-        // ⭐ SO SÁNH HASH
-if (password !== user.password) {
+        // ⭐ SO SÁNH CHỮ THƯỜNG
+        if (password !== user.password) {
             return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
         }
 
@@ -1413,8 +1416,7 @@ if (password !== user.password) {
 });
 
 app.get('/api/user/:username', (req, res) => {
-    const db = readDB();
-    const user = db.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
+    const user = MEMORY_DB.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
     if (!user) return res.status(404).json({ success: false, error: 'User not found' });
     res.json({ success: true, user: {
         username: user.username, 
@@ -1435,23 +1437,24 @@ app.post('/api/change-password', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Mật khẩu mới phải có ít nhất 6 ký tự' });
         }
 
-        const db = readDB();
-        const idx = db.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+        // ⭐ Tìm trực tiếp trong MEMORY_DB
+        const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
         if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
 
-if (oldPassword !== db.users[idx].password) {
+        if (oldPassword !== MEMORY_DB.users[idx].password) {
             return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
         }
 
-        db.users[idx].password = newPassword;
-await syncUsersToSupabase([db.users[idx]]);
+        // ⭐ Cập nhật cả RAM và Supabase
+        MEMORY_DB.users[idx].password = newPassword;
+        await syncUsersToSupabase([MEMORY_DB.users[idx]]);
+
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
         console.error('Change password error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
-
 // ==========================================
 // PAY2S & WEBHUB (THANH TOÁN)
 // ==========================================
@@ -1519,21 +1522,20 @@ app.post('/api/pay2s-webhook', async (req, res) => {
 
         if (match && match[1] && amount > 0) {
             const username = match[1].toLowerCase();
-            const db = readDB();
-            const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
+            const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username);
 
             if (idx !== -1) {
                 const transId = data.transId || data.transactionNumber;
-                const isDuplicate = (db.users[idx].depositHistory || []).some(d => d.transactionId === transId);
+                const isDuplicate = (MEMORY_DB.users[idx].depositHistory || []).some(d => d.transactionId === transId);
                 if (isDuplicate) return res.status(200).json({ success: true });
 
-                db.users[idx].balance += amount;
-                if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
-                db.users[idx].depositHistory.push({
+                MEMORY_DB.users[idx].balance += amount;
+                if (!MEMORY_DB.users[idx].depositHistory) MEMORY_DB.users[idx].depositHistory = [];
+                MEMORY_DB.users[idx].depositHistory.push({
                     amount, method: 'pay2s', content: data.orderInfo || data.content,
                     transactionId: transId, at: new Date().toISOString()
                 });
-                await syncUsersToSupabase([db.users[idx]]);
+                await syncUsersToSupabase([MEMORY_DB.users[idx]]);
             }
         }
         res.status(200).json({ success: true });
@@ -1583,13 +1585,12 @@ app.post('/api/webhub-webhook', async (req, res) => {
             const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
             if (match && match[1]) {
                 const username = match[1].toLowerCase();
-                const db = readDB();
-                const idx = db.users.findIndex(u => u.username.toLowerCase() === username);
+                const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username);
                 if (idx !== -1 && amount > 0) {
-                    db.users[idx].balance += amount;
-                    if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
-                    db.users[idx].depositHistory.push({ amount, method: 'webhub', transactionId: data.transactionId || data.orderId, at: new Date().toISOString() });
-                    await syncUsersToSupabase([db.users[idx]]);
+                    MEMORY_DB.users[idx].balance += amount;
+                    if (!MEMORY_DB.users[idx].depositHistory) MEMORY_DB.users[idx].depositHistory = [];
+                    MEMORY_DB.users[idx].depositHistory.push({ amount, method: 'webhub', transactionId: data.transactionId || data.orderId, at: new Date().toISOString() });
+                    await syncUsersToSupabase([MEMORY_DB.users[idx]]);
                 }
             }
         }
@@ -1609,11 +1610,10 @@ app.post('/api/buy-product', async (req, res) => {
         if (!username || productId === undefined || price === undefined)
             return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
 
-        const db = readDB();
-        const idx = db.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+        const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
         if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
 
-        const user = db.users[idx];
+        const user = MEMORY_DB.users[idx];
         if (user.balance < price) return res.status(400).json({ success: false, error: 'Số dư không đủ' });
 
         user.balance -= price;
