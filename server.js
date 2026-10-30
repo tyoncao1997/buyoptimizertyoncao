@@ -1273,18 +1273,28 @@ app.post('/api/admin/feedbacks', requireAdminToken, (req, res) => {
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE & ẨN PASSWORD USER
-app.post('/api/admin/users', requireAdminToken, (req, res) => {
-    const db = readDB();
-    const users = db.users.map(u => ({
-        username: u.username,
-        password: u.password,
-        fullName: u.fullName,
-        balance: u.balance || 0,
-        createdAt: u.createdAt,
-        depositCount: (u.depositHistory || []).length,
-        purchaseCount: (u.purchaseHistory || []).length
-    }));
-    res.json({ success: true, users });
+app.post('/api/admin/users', requireAdminToken, async (req, res) => {
+    try {
+        if (!pool) return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
+        
+        // ⭐ Truy vấn trực tiếp Supabase
+        const { rows } = await pool.query('SELECT * FROM users ORDER BY created_at DESC');
+        
+        const users = rows.map(u => ({
+            username: u.username,
+            password: u.password,
+            fullName: u.full_name,
+            balance: Number(u.balance) || 0,
+            createdAt: u.created_at,
+            depositCount: (u.deposit_history || []).length,
+            purchaseCount: (u.purchase_history || []).length
+        }));
+        
+        res.json({ success: true, users });
+    } catch (err) {
+        console.error('Admin get users error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
@@ -1304,20 +1314,22 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Số tiền cộng tối đa 100.000.000đ' });
         }
 
-        // ⭐ Tìm trực tiếp trong MEMORY_DB (RAM)
-        const idx = MEMORY_DB.users.findIndex(u => 
-            u.username.toLowerCase() === targetUsername.toLowerCase().trim()
+        // ⭐ Truy vấn trực tiếp Supabase
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
+            [targetUsername.trim()]
         );
-        if (idx === -1) {
+        
+        if (rows.length === 0) {
             return res.status(404).json({ success: false, error: 'Không tìm thấy user: ' + targetUsername });
         }
 
-        const user = MEMORY_DB.users[idx];
-        const oldBalance = user.balance || 0;
-        user.balance = oldBalance + addAmount;
-
-        if (!user.depositHistory) user.depositHistory = [];
-        user.depositHistory.push({
+        const dbUser = rows[0];
+        const oldBalance = Number(dbUser.balance) || 0;
+        const newBalance = oldBalance + addAmount;
+        
+        const depositHistory = dbUser.deposit_history || [];
+        depositHistory.push({
             amount: addAmount,
             method: 'admin_manual',
             content: note || `Admin cộng tiền thủ công`,
@@ -1327,13 +1339,19 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
             ip: req.ip
         });
 
-        await syncUsersToSupabase([user]);
-        console.log(`💰 [AUDIT] ${req.admin.username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${user.balance})`);
+        // ⭐ Cập nhật Supabase
+        await pool.query(`
+            UPDATE users 
+            SET balance = $1, deposit_history = $2 
+            WHERE username = $3
+        `, [newBalance, JSON.stringify(depositHistory), dbUser.username]);
+
+        console.log(`💰 [AUDIT] ${req.admin.username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${newBalance})`);
 
         res.json({
             success: true,
             message: `Đã cộng ${addAmount.toLocaleString('vi-VN')}đ cho ${targetUsername}`,
-            data: { username: user.username, fullName: user.fullName, oldBalance, newBalance: user.balance, addedAmount: addAmount }
+            data: { username: dbUser.username, fullName: dbUser.full_name, oldBalance, newBalance, addedAmount: addAmount }
         });
 
     } catch (err) {
@@ -1389,25 +1407,46 @@ app.post('/api/login', async (req, res) => {
         if (!username || !password)
             return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
 
-        // ⭐ Tìm trực tiếp trong MEMORY_DB
-        const user = MEMORY_DB.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+        // ⭐ LUÔN TRUY VẤN TRỰC TIẾP TỪ SUPABASE ĐỂ LẤY PASS MỚI NHẤT
+        if (!pool) {
+            return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
+        }
+        
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
+            [username.trim()]
+        );
 
-        if (!user) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
-
-        // ⭐ SO SÁNH CHỮ THƯỜNG
-        if (password !== user.password) {
+        if (rows.length === 0) {
             return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+        }
+
+        const dbUser = rows[0];
+
+        // ⭐ So sánh mật khẩu (có trim để tránh dư dấu cách)
+        if (password.trim() !== dbUser.password.trim()) {
+            return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+        }
+
+        // Cập nhật lại MEMORY_DB để đồng bộ (nếu cần dùng cho các API khác)
+        const memIdx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+        const userData = {
+            username: dbUser.username,
+            fullName: dbUser.full_name,
+            balance: Number(dbUser.balance),
+            depositHistory: dbUser.deposit_history || [],
+            purchaseHistory: dbUser.purchase_history || []
+        };
+
+        if (memIdx !== -1) {
+            MEMORY_DB.users[memIdx] = { ...MEMORY_DB.users[memIdx], ...userData };
+        } else {
+            MEMORY_DB.users.push({ ...userData, password: dbUser.password });
         }
 
         res.json({
             success: true,
-            user: {
-                username: user.username,
-                fullName: user.fullName,
-                balance: user.balance,
-                depositHistory: user.depositHistory || [],
-                purchaseHistory: user.purchaseHistory || []
-            }
+            user: userData
         });
     } catch (err) {
         console.error('Login error:', err);
@@ -1415,16 +1454,31 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.get('/api/user/:username', (req, res) => {
-    const user = MEMORY_DB.users.find(u => u.username.toLowerCase() === req.params.username.toLowerCase());
-    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
-    res.json({ success: true, user: {
-        username: user.username, 
-        balance: user.balance, 
-        fullName: user.fullName,
-        depositHistory: user.depositHistory || [],
-        purchaseHistory: user.purchaseHistory || []
-    }});
+app.get('/api/user/:username', async (req, res) => {
+    try {
+        if (!pool) return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
+        
+        // ⭐ Truy vấn trực tiếp Supabase để lấy số dư mới nhất
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
+            [req.params.username.trim()]
+        );
+
+        if (rows.length === 0) return res.status(404).json({ success: false, error: 'User not found' });
+        
+        const dbUser = rows[0];
+        
+        res.json({ success: true, user: {
+            username: dbUser.username, 
+            balance: Number(dbUser.balance), 
+            fullName: dbUser.full_name,
+            depositHistory: dbUser.deposit_history || [],
+            purchaseHistory: dbUser.purchase_history || []
+        }});
+    } catch (err) {
+        console.error('Get user error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
 });
 
 app.post('/api/change-password', async (req, res) => {
@@ -1437,17 +1491,29 @@ app.post('/api/change-password', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Mật khẩu mới phải có ít nhất 6 ký tự' });
         }
 
-        // ⭐ Tìm trực tiếp trong MEMORY_DB
-        const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
-        if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+        // ⭐ Truy vấn trực tiếp từ Supabase để lấy pass cũ
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
+            [username.trim()]
+        );
 
-        if (oldPassword !== MEMORY_DB.users[idx].password) {
+        if (rows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+
+        if (oldPassword.trim() !== rows[0].password.trim()) {
             return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
         }
 
-        // ⭐ Cập nhật cả RAM và Supabase
-        MEMORY_DB.users[idx].password = newPassword;
-        await syncUsersToSupabase([MEMORY_DB.users[idx]]);
+        // ⭐ Cập nhật lên Supabase
+        await pool.query(
+            'UPDATE users SET password = $1 WHERE LOWER(username) = LOWER($2)',
+            [newPassword, username.trim()]
+        );
+
+        // Cập nhật lại RAM
+        const memIdx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+        if (memIdx !== -1) {
+            MEMORY_DB.users[memIdx].password = newPassword;
+        }
 
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
@@ -1522,20 +1588,37 @@ app.post('/api/pay2s-webhook', async (req, res) => {
 
         if (match && match[1] && amount > 0) {
             const username = match[1].toLowerCase();
-            const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username);
+            
+            // ⭐ Truy vấn Supabase để lấy thông tin user
+            const { rows } = await pool.query(
+                'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
+                [username]
+            );
 
-            if (idx !== -1) {
+            if (rows.length > 0) {
+                const dbUser = rows[0];
                 const transId = data.transId || data.transactionNumber;
-                const isDuplicate = (MEMORY_DB.users[idx].depositHistory || []).some(d => d.transactionId === transId);
+                const depositHistory = dbUser.deposit_history || [];
+
+                // Kiểm tra trùng lặp
+                const isDuplicate = depositHistory.some(d => d.transactionId === transId);
                 if (isDuplicate) return res.status(200).json({ success: true });
 
-                MEMORY_DB.users[idx].balance += amount;
-                if (!MEMORY_DB.users[idx].depositHistory) MEMORY_DB.users[idx].depositHistory = [];
-                MEMORY_DB.users[idx].depositHistory.push({
+                // Cộng tiền và lưu lịch sử
+                const newBalance = Number(dbUser.balance) + amount;
+                depositHistory.push({
                     amount, method: 'pay2s', content: data.orderInfo || data.content,
                     transactionId: transId, at: new Date().toISOString()
                 });
-                await syncUsersToSupabase([MEMORY_DB.users[idx]]);
+
+                // ⭐ Cập nhật trực tiếp Supabase
+                await pool.query(`
+                    UPDATE users 
+                    SET balance = $1, deposit_history = $2 
+                    WHERE username = $3
+                `, [newBalance, JSON.stringify(depositHistory), dbUser.username]);
+
+                console.log(`💰 Đã cộng ${amount}đ cho ${username} qua Pay2S`);
             }
         }
         res.status(200).json({ success: true });
@@ -1570,27 +1653,34 @@ app.post('/api/webhub-create-order', async (req, res) => {
     }
 });
 
-app.post('/api/webhub-webhook', async (req, res) => {
-    try {
-        const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
-        if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN))) {
-            return res.status(401).json({ success: false, message: 'Unauthorized' });
-        }
-        const data = req.body;
-        const status = data.status || data.transactionStatus;
-        const amount = parseInt(data.amount || data.transferAmount || 0);
-        const content = (data.description || data.content || '').toUpperCase();
-
         if (status === 'success' || status === 'completed' || data.transferType === 'IN') {
             const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
             if (match && match[1]) {
                 const username = match[1].toLowerCase();
-                const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username);
-                if (idx !== -1 && amount > 0) {
-                    MEMORY_DB.users[idx].balance += amount;
-                    if (!MEMORY_DB.users[idx].depositHistory) MEMORY_DB.users[idx].depositHistory = [];
-                    MEMORY_DB.users[idx].depositHistory.push({ amount, method: 'webhub', transactionId: data.transactionId || data.orderId, at: new Date().toISOString() });
-                    await syncUsersToSupabase([MEMORY_DB.users[idx]]);
+                
+                const { rows } = await pool.query(
+                    'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
+                    [username]
+                );
+
+                if (rows.length > 0 && amount > 0) {
+                    const dbUser = rows[0];
+                    const depositHistory = dbUser.deposit_history || [];
+                    const transId = data.transactionId || data.orderId;
+
+                    const isDuplicate = depositHistory.some(d => d.transactionId === transId);
+                    if (!isDuplicate) {
+                        const newBalance = Number(dbUser.balance) + amount;
+                        depositHistory.push({ amount, method: 'webhub', transactionId: transId, at: new Date().toISOString() });
+
+                        await pool.query(`
+                            UPDATE users 
+                            SET balance = $1, deposit_history = $2 
+                            WHERE username = $3
+                        `, [newBalance, JSON.stringify(depositHistory), dbUser.username]);
+                        
+                        console.log(`💰 Đã cộng ${amount}đ cho ${username} qua WebHub`);
+                    }
                 }
             }
         }
@@ -1634,11 +1724,11 @@ app.get('/api/download/:productId', async (req, res) => {
     const productId = req.params.productId;
     if (!username) return res.status(401).send('Chưa đăng nhập');
 
-    const db = readDB();
-    const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
-    if (!user) return res.status(404).send('Không tìm thấy user');
-
-    const hasBought = (user.purchaseHistory || []).some(p => String(p.productId) === String(productId));
+    const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+    if (rows.length === 0) return res.status(404).send('Không tìm thấy user');
+    const user = rows[0];
+    const purchaseHistory = user.purchase_history || [];
+    const hasBought = purchaseHistory.some(p => String(p.productId) === String(productId));
     if (!hasBought && String(productId) !== '1') {
         return res.status(403).send('Chưa mua sản phẩm.');
     }
