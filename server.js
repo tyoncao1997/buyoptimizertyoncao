@@ -16,6 +16,8 @@ const archiver = require('archiver');
 const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const bcrypt = require('bcrypt');
+const BCRYPT_ROUNDS = 10;
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
@@ -102,7 +104,7 @@ try {
     console.error('❌ Không tạo được thư mục backup:', err.message);
 }
 
-const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [] };
+const DEFAULT_DB = { keys: [], confirmedKeys: [], feedbackKeys: [], feedbacks: [], users: [], orders: [] };
 
 let MEMORY_DB = null;
 let isDirty = false;
@@ -205,9 +207,9 @@ async function loadFromGist() {
         if (file.truncated && file.raw_url) content = await fetchRaw(file.raw_url);
         else content = file.content;
         const parsed = JSON.parse(content || '{}');
-        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks'])
-    if (!parsed[k]) parsed[k] = [];
-parsed.users = [];
+        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'orders'])
+            if (!parsed[k]) parsed[k] = [];
+        parsed.users = [];
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi load Gist:', err.message);
@@ -230,7 +232,8 @@ function buildGistData(db) {
         keys: db.keys || [],
         confirmedKeys: db.confirmedKeys || [],
         feedbackKeys: db.feedbackKeys || [],
-        feedbacks: db.feedbacks || []
+        feedbacks: db.feedbacks || [],
+        orders: db.orders || []
     };
 }
 
@@ -288,7 +291,7 @@ function loadLocal() {
     try {
         if (!fs.existsSync(LOCAL_DB_FILE)) return null;
         const data = JSON.parse(fs.readFileSync(LOCAL_DB_FILE, 'utf8'));
-        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks'])
+        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'orders'])
             if (!data[k]) data[k] = [];
         data.users = [];
         return data;
@@ -298,6 +301,28 @@ function loadLocal() {
 function readDB() {
     if (!MEMORY_DB) return JSON.parse(JSON.stringify(DEFAULT_DB));
     return JSON.parse(JSON.stringify(MEMORY_DB));
+}
+
+async function writeDB(db) {
+    if (!db) return;
+    
+    // Cập nhật MEMORY_DB
+    MEMORY_DB = JSON.parse(JSON.stringify(db));
+    isDirty = true;
+    
+    // Sync users sang Supabase nếu có
+    if (pool && db.users && db.users.length > 0) {
+        try {
+            await syncUsersToSupabase(db.users);
+        } catch (err) {
+            console.error('Lỗi sync users:', err.message);
+        }
+    }
+    
+    // Flush lên Gist / Local
+    await flushToGist(true);
+    
+    return true;
 }
 
 async function writeFeedbackToGist(feedbacksArray) {
@@ -496,7 +521,21 @@ const PAY2S_WEBHOOK_TOKEN = process.env.PAY2S_WEBHOOK_TOKEN;
 const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
 const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
 
-app.use(cors());
+app.use(cors({
+    origin: [
+        FRONTEND_URL,
+        'https://buyoptimizertc.infinityfreeapp.com',
+        'https://buyoptimizertyoncao.onrender.com',
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:5500',
+        'http://127.0.0.1:5500'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.post('/api/sepay-webhook', express.raw({ type: 'application/json' }), handleSePayWebhook);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
@@ -549,16 +588,33 @@ function requireAdminToken(req, res, next) {
 async function cleanupExpiredKeys() {
     if (!MEMORY_DB) return { deletedCount: 0 };
     const now = Date.now();
-    const before = MEMORY_DB.keys.length;
+    let deletedCount = 0;
 
-    MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
-        if (k.status === 'confirmed') return true; 
-        if (k.status !== 'pending') return true; 
-        const age = now - new Date(k.createdAt).getTime();
-        return age <= KEY_EXPIRE_MS; 
-    });
+    // Dọn keys cũ
+    if (MEMORY_DB.keys) {
+        const before = MEMORY_DB.keys.length;
+        MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
+            if (k.status === 'confirmed') return true; 
+            if (k.status !== 'pending') return true; 
+            const age = now - new Date(k.createdAt).getTime();
+            return age <= KEY_EXPIRE_MS; 
+        });
+        deletedCount += before - MEMORY_DB.keys.length;
+    }
 
-    const deletedCount = before - MEMORY_DB.keys.length;
+    // ⭐ Dọn orders pending quá 24h → đánh dấu expired
+    if (MEMORY_DB.orders) {
+        MEMORY_DB.orders.forEach(o => {
+            if (o.status === 'pending') {
+                const age = now - new Date(o.createdAt).getTime();
+                if (age > KEY_EXPIRE_MS) {
+                    o.status = 'expired';
+                    o.note = (o.note || '') + ' | Tự động hết hạn sau 24h';
+                }
+            }
+        });
+    }
+
     if (deletedCount > 0) {
         await writeDB(MEMORY_DB);
         console.log(`🧹 Đã tự động xóa ${deletedCount} key pending hết hạn.`);
@@ -608,6 +664,248 @@ app.post('/api/admin/login', loginLimiter, (req, res) => {
 
 app.post('/api/admin/verify-token', requireAdminToken, (req, res) => {
     res.json({ success: true, admin: { username: req.admin.username }, valid: true });
+});
+
+const SEPAY_WEBHOOK_SECRET = process.env.SEPAY_WEBHOOK_SECRET;
+const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT;
+const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE;
+const SEPAY_ACCOUNT_HOLDER = process.env.SEPAY_ACCOUNT_HOLDER;
+
+if (!SEPAY_WEBHOOK_SECRET) {
+    console.warn('⚠️ Thiếu SEPAY_WEBHOOK_SECRET trong .env - Webhook SePay sẽ không hoạt động!');
+}
+
+function generateOrderCode() {
+    const random = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const timestamp = Date.now().toString(36).toUpperCase().slice(-6);
+    return `TYON${random}${timestamp}`;
+}
+
+// ⭐ API TẠO ĐƠN HÀNG (Frontend gọi khi khách chọn gói)
+app.post('/api/create-order', async (req, res) => {
+    try {
+        const { plan, customerName, planName, amount } = req.body;
+        
+        if (!plan || !customerName || !amount) {
+            return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
+        }
+
+        const db = readDB();
+        const orderCode = generateOrderCode();
+        
+        // Tạo key (nhưng chưa kích hoạt)
+        const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const key = `TYON-${plan.toUpperCase()}-${randomPart}-${orderCode.slice(-6)}`;
+
+        const newOrder = {
+            orderCode: orderCode,
+            key: key,
+            plan: plan,
+            planName: planName || plan.toUpperCase(),
+            customerName: customerName,
+            amount: parseInt(amount),
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            paidAt: null,
+            paidAmount: 0,
+            transactionId: null,
+            sepayTransactionId: null,
+            note: ''
+        };
+
+        if (!db.orders) db.orders = [];
+        db.orders.push(newOrder);
+        await writeDB(db);
+
+        // Tạo QR URL VietQR
+        const qrContent = orderCode;
+        const qrUrl = `https://img.vietqr.io/image/${SEPAY_BANK_CODE}-${SEPAY_BANK_ACCOUNT}-compact2.png?amount=${amount}&addInfo=${encodeURIComponent(qrContent)}&accountName=${encodeURIComponent(SEPAY_ACCOUNT_HOLDER)}`;
+
+        res.json({
+            success: true,
+            orderCode: orderCode,
+            key: key,
+            amount: parseInt(amount),
+            qrContent: qrContent,
+            qrUrl: qrUrl,
+            bankInfo: {
+                bankCode: SEPAY_BANK_CODE,
+                accountNumber: SEPAY_BANK_ACCOUNT,
+                accountHolder: SEPAY_ACCOUNT_HOLDER
+            }
+        });
+
+    } catch (err) {
+        console.error('Lỗi tạo đơn hàng:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+// ⭐ API KIỂM TRA TRẠNG THÁI ĐƠN (Frontend polling)
+app.get('/api/order-status/:orderCode', async (req, res) => {
+    try {
+        const { orderCode } = req.params;
+        const db = readDB();
+        const order = (db.orders || []).find(o => o.orderCode === orderCode);
+
+        if (!order) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+        }
+
+        res.json({
+            success: true,
+            orderCode: order.orderCode,
+            status: order.status,
+            key: order.status === 'paid' ? order.key : null,
+            amount: order.amount,
+            paidAmount: order.paidAmount || 0,
+            paidAt: order.paidAt,
+            planName: order.planName
+        });
+    } catch (err) {
+        console.error('Lỗi check order:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+// ⭐ HÀM XỬ LÝ WEBHOOK SEPAY (được gọi từ route raw body ở trên)
+async function handleSePayWebhook(req, res) {
+    try {
+        // --- 1. XÁC THỰC CHỮ KÝ HMAC-SHA256 ---
+        const signature = req.headers['x-sepay-signature'];
+        const timestamp = req.headers['x-sepay-timestamp'];
+        
+        if (!signature || !timestamp) {
+            console.error('❌ Webhook thiếu header signature/timestamp');
+            return res.status(401).json({ success: false, error: 'Missing signature' });
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+        if (Math.abs(now - parseInt(timestamp)) > 300) {
+            console.error('❌ Webhook timestamp quá cũ');
+            return res.status(401).json({ success: false, error: 'Request expired' });
+        }
+
+        const rawBody = req.body.toString('utf8');
+        const expectedSignature = 'sha256=' + crypto
+            .createHmac('sha256', SEPAY_WEBHOOK_SECRET)
+            .update(timestamp + '.' + rawBody)
+            .digest('hex');
+
+        if (signature !== expectedSignature) {
+            console.error('❌ Chữ ký Webhook không khớp!');
+            return res.status(401).json({ success: false, error: 'Invalid signature' });
+        }
+
+        // --- 2. PARSE DỮ LIỆU ---
+        const data = JSON.parse(rawBody);
+        console.log('✅ SePay Webhook:', JSON.stringify(data, null, 2));
+
+        if (data.transferType !== 'in') {
+            return res.status(200).json({ success: true, message: 'Ignored (not incoming)' });
+        }
+
+        const amount = parseInt(data.transferAmount);
+        const content = (data.content || '').toUpperCase().trim();
+        const transactionId = data.id || data.referenceCode || 'N/A';
+
+        // --- 3. TÌM ĐƠN HÀNG ---
+        const db = readDB();
+        if (!db.orders) db.orders = [];
+
+        let matchedOrder = null;
+        for (const order of db.orders) {
+            if (order.status === 'pending' && content.includes(order.orderCode.toUpperCase())) {
+                matchedOrder = order;
+                break;
+            }
+        }
+
+        if (!matchedOrder) {
+            console.log(`⚠️ Không tìm thấy đơn pending khớp nội dung: "${content}"`);
+            return res.status(200).json({ success: true, message: 'No matching order' });
+        }
+
+        // --- 4. KIỂM TRA SỐ TIỀN ---
+        const requiredAmount = matchedOrder.amount;
+        
+        if (amount >= requiredAmount) {
+            matchedOrder.status = 'paid';
+            matchedOrder.paidAt = new Date().toISOString();
+            matchedOrder.paidAmount = amount;
+            matchedOrder.transactionId = transactionId;
+            matchedOrder.sepayTransactionId = data.referenceCode || data.id;
+            
+            await writeDB(db);
+            
+            console.log(`✅ ĐƠN ${matchedOrder.orderCode} ĐÃ THANH TOÁN! Key: ${matchedOrder.key}`);
+        } else {
+            matchedOrder.status = 'underpaid';
+            matchedOrder.paidAmount = amount;
+            matchedOrder.transactionId = transactionId;
+            matchedOrder.note = `Thanh toán thiếu: cần ${requiredAmount}đ, nhận ${amount}đ`;
+            
+            await writeDB(db);
+            
+            console.log(`⚠️ ĐƠN ${matchedOrder.orderCode} THIẾU TIỀN! Cần ${requiredAmount}đ, nhận ${amount}đ`);
+        }
+
+        return res.status(200).json({ success: true });
+
+    } catch (error) {
+        console.error('❌ Lỗi Webhook SePay:', error);
+        return res.status(500).json({ success: false, error: 'Internal error' });
+    }
+}
+
+// ⭐ API ADMIN: DANH SÁCH ĐƠN HÀNG
+app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
+    try {
+        const db = readDB();
+        res.json({ success: true, orders: db.orders || [] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+// ⭐ API ADMIN: XÁC NHẬN THỦ CÔNG
+app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, orderCode } = req.body;
+        
+        if (!verifyPin(pin)) {
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
+
+        const db = readDB();
+        const order = (db.orders || []).find(o => o.orderCode === orderCode);
+        
+        if (!order) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+        }
+
+        if (order.status === 'paid') {
+            return res.status(400).json({ success: false, error: 'Đơn này đã xác nhận rồi' });
+        }
+
+        order.status = 'paid';
+        order.paidAt = new Date().toISOString();
+        order.confirmedBy = req.admin.username;
+        order.note = (order.note || '') + ' | Admin xác nhận thủ công';
+        
+        await writeDB(db);
+        
+        console.log(`✅ [ADMIN] ${req.admin.username} xác nhận đơn ${orderCode}`);
+        
+        res.json({
+            success: true,
+            message: `Đã xác nhận đơn ${orderCode}. Key đã kích hoạt!`,
+            order: order
+        });
+    } catch (err) {
+        console.error('Admin confirm order error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
 });
 
 // ==========================================
@@ -771,6 +1069,7 @@ app.post('/api/submit-feedback', async (req, res) => {
             createdAt: new Date().toISOString()
         };
 
+if (!MEMORY_DB.feedbacks) MEMORY_DB.feedbacks = [];
 MEMORY_DB.feedbacks.push(newFeedback);
 await writeFeedbackToGist(MEMORY_DB.feedbacks);
 
@@ -875,13 +1174,18 @@ app.post('/api/register', async (req, res) => {
         if (db.users.find(u => u.username.toLowerCase() === username.toLowerCase()))
             return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
 
+        // ⭐ HASH PASSWORD
+        const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
         const newUser = {
-            username, password, fullName,
+            username,
+            password: hashedPassword,  // ✅ Lưu hash
+            fullName,
             balance: 0, purchaseHistory: [], depositHistory: [],
             createdAt: new Date().toISOString()
         };
-db.users.push(newUser);
-await syncUsersToSupabase([newUser]);
+        db.users.push(newUser);
+        await syncUsersToSupabase([newUser]);
 
         res.json({
             success: true,
@@ -894,29 +1198,33 @@ await syncUsersToSupabase([newUser]);
     }
 });
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         if (!username || !password)
             return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
 
         const db = readDB();
-        const user = db.users.find(u =>
-            u.username.toLowerCase() === username.toLowerCase() && u.password === password);
+        const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
 
         if (!user) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
 
+        // ⭐ SO SÁNH HASH
+        const match = await bcrypt.compare(password, user.password);
+        if (!match) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+
         res.json({
             success: true,
-            user: { 
-                username: user.username, 
-                fullName: user.fullName, 
-                balance: user.balance, 
-                depositHistory: user.depositHistory || [], 
-                purchaseHistory: user.purchaseHistory || [] 
+            user: {
+                username: user.username,
+                fullName: user.fullName,
+                balance: user.balance,
+                depositHistory: user.depositHistory || [],
+                purchaseHistory: user.purchaseHistory || []
             }
         });
     } catch (err) {
+        console.error('Login error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -948,12 +1256,13 @@ app.post('/api/change-password', async (req, res) => {
         const idx = db.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
         if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
 
-        if (db.users[idx].password !== oldPassword) {
-            return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
-        }
+        const match = await bcrypt.compare(oldPassword, db.users[idx].password);
+if (!match) {
+    return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
+}
 
-        db.users[idx].password = newPassword;
-        await syncUsersToSupabase([db.users[idx]]);
+db.users[idx].password = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+await syncUsersToSupabase([db.users[idx]]);
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
         console.error('Change password error:', err);
@@ -1284,14 +1593,22 @@ app.get('/payment-return', (req, res) => {
 // ==========================================
 app.get('/api/health', (req, res) => {
     const db = MEMORY_DB || DEFAULT_DB;
+    const orders = db.orders || [];
     res.json({
         status: 'ok', uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
         pay2sConfigured: !!PAY2S_PARTNER_CODE,
         webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
+        sepayConfigured: !!SEPAY_WEBHOOK_SECRET,
         isDirty, totalUsers: (db.users || []).length,
-        totalKeys: db.keys.length, pendingKeys: db.keys.filter(k => k.status === 'pending').length,
-        confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length, totalFeedbacks: db.feedbacks.length
+        totalKeys: db.keys.length, 
+        pendingKeys: db.keys.filter(k => k.status === 'pending').length,
+        confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length, 
+        totalFeedbacks: db.feedbacks.length,
+        totalOrders: orders.length,
+        pendingOrders: orders.filter(o => o.status === 'pending').length,
+        paidOrders: orders.filter(o => o.status === 'paid').length,
+        underpaidOrders: orders.filter(o => o.status === 'underpaid').length
     });
 });
 
@@ -1316,6 +1633,8 @@ async function startServer() {
         console.log(`🗄️  Lưu Users: Supabase`);
         console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
         console.log(`🌐 Frontend URL: ${FRONTEND_URL}\n`);
+        console.log(`💳 SePay Webhook: ${SEPAY_WEBHOOK_SECRET ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
+        console.log(`🏦 Bank: ${SEPAY_BANK_CODE} - ${SEPAY_BANK_ACCOUNT} (${SEPAY_ACCOUNT_HOLDER})`);
     });
 
     let shutting = false;
