@@ -1359,9 +1359,6 @@ app.post('/api/register', async (req, res) => {
         if (db.users.find(u => u.username.toLowerCase() === username.toLowerCase()))
             return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
 
-        // ⭐ HASH PASSWORD
-        const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
-
         const newUser = {
             username,
             password: password,
