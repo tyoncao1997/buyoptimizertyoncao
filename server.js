@@ -389,30 +389,35 @@ async function upsertOrderToSupabase(order) {
     }
 }
 
-async function writeFeedbackToGist(feedbacksArray) {
-    if (!USE_GIST) {
-        console.log('⚠️ Không có Gist, không thể lưu Feedback.');
-        return;
-    }
-    try {
-        // ⭐ Dùng MEMORY_DB (RAM) — luôn là bản mới nhất, không mất keys vừa tạo
-        const newData = buildGistData({
-            keys: MEMORY_DB.keys || [],
-            confirmedKeys: MEMORY_DB.confirmedKeys || [],
-            feedbackKeys: MEMORY_DB.feedbackKeys || [],
-            feedbacks: feedbacksArray
-        });
+let feedbackWriteLock = Promise.resolve();
 
-        await gistRequest('PATCH', {
-            files: { [GIST_FILENAME]: { content: JSON.stringify(newData, null, 2) } }
-        });
-        console.log('✅ Đã lưu Feedback lên Gist.');
-        // KHÔNG set isDirty = false — để flushToGist xử lý
-    } catch (err) {
-        console.error('❌ Lỗi lưu Feedback lên Gist:', err.message);
-        isDirty = true;
-    }
+async function writeFeedbackToGist(feedbacksArray) {
+    // Xếp hàng: chỉ 1 lần ghi tại 1 thời điểm
+    feedbackWriteLock = feedbackWriteLock.then(async () => {
+        if (!USE_GIST) {
+            console.log('⚠️ Không có Gist, không thể lưu Feedback.');
+            return;
+        }
+        try {
+            const newData = buildGistData({
+                keys: MEMORY_DB.keys || [],
+                confirmedKeys: MEMORY_DB.confirmedKeys || [],
+                feedbackKeys: MEMORY_DB.feedbackKeys || [],
+                feedbacks: feedbacksArray
+            });
+
+            await gistRequest('PATCH', {
+                files: { [GIST_FILENAME]: { content: JSON.stringify(newData, null, 2) } }
+            });
+            console.log(`✅ Đã lưu ${feedbacksArray.length} feedback lên Gist.`);
+        } catch (err) {
+            console.error('❌ Lỗi lưu Feedback lên Gist:', err.message);
+            isDirty = true;
+        }
+    });
+    return feedbackWriteLock;
 }
+
 
 // ⭐ HÀM HỖ TRỢ ĐỒNG BỘ USER SANG SUPABASE
 async function syncUsersToSupabase(users) {
@@ -1199,101 +1204,208 @@ app.post('/api/admin/cleanup-now', requireAdminToken, (req, res) => {
 // ==========================================
 // FEEDBACK
 // ==========================================
-app.get('/api/feedbacks', (req, res) => {
-    res.json({ feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
+app.get('/api/feedbacks', async (req, res) => {
+    try {
+        // ⭐ Đọc trực tiếp từ Gist (nguồn chính thức)
+        if (USE_GIST) {
+            const gistData = await loadFromGist();
+            
+            // Nếu loadFromGist trả về null → Gist lỗi → fallback RAM
+            if (!gistData) {
+                console.log('⚠️ [FEEDBACK] Gist lỗi, dùng RAM cache');
+                return res.json({
+                    feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a, b) =>
+                        new Date(b.createdAt) - new Date(a.createdAt)
+                    ),
+                    fallback: true,
+                    message: 'Đang hiển thị dữ liệu tạm. Vui lòng thử lại sau 1 tiếng!'
+                });
+            }
+            
+            const feedbacks = gistData.feedbacks || [];
+            return res.json({
+                feedbacks: [...feedbacks].sort((a, b) =>
+                    new Date(b.createdAt) - new Date(a.createdAt)
+                )
+            });
+        }
+        // Fallback: đọc từ RAM nếu không có Gist
+        res.json({
+            feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a, b) =>
+                new Date(b.createdAt) - new Date(a.createdAt)
+            )
+        });
+    } catch (err) {
+        console.error('❌ Lỗi load feedbacks từ Gist:', err);
+        // ⭐ KHÔNG trả 500 nữa — trả mảng rỗng + thông báo bảo trì
+        res.json({
+            feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a, b) =>
+                new Date(b.createdAt) - new Date(a.createdAt)
+            ),
+            maintenance: true,
+            error: 'Hệ thống đang bảo trì phần đánh giá. Vui lòng quay lại sau 1 tiếng!',
+            retryAfter: 3600
+        });
+    }
 });
 
 app.post('/api/submit-feedback', async (req, res) => {
     try {
         const { username, rating, content, images } = req.body;
 
-        // 1. Validate dữ liệu đầu vào
-        if (!username) {
+        if (!username)
             return res.status(400).json({ error: 'Thiếu thông tin người dùng!' });
-        }
-        if (!rating || rating < 1 || rating > 5) {
+        if (!rating || rating < 1 || rating > 5)
             return res.status(400).json({ error: 'Đánh giá phải từ 1 đến 5 sao!' });
-        }
-        if (!content || content.trim().length === 0) {
+        if (!content || content.trim().length === 0)
             return res.status(400).json({ error: 'Nội dung đánh giá không được để trống!' });
-        }
+        if (!pool) return res.status(500).json({ error: 'DB chưa sẵn sàng' });
 
-        const db = readDB();
-        
-        // 2. Tìm user trong database
-        const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
-        if (!user) {
+        // 1. Query user từ Supabase
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username.trim()]
+        );
+        if (rows.length === 0)
             return res.status(404).json({ error: 'Không tìm thấy người dùng!' });
-        }
+        const user = rows[0];
 
-        // 3. Tính tổng chi tiêu từ lịch sử mua hàng
-        const totalSpent = (user.purchaseHistory || []).reduce((sum, item) => sum + (item.price || 0), 0);
+        // 2. Check tổng chi tiêu
+        const purchaseHistory = user.purchase_history || [];
+        const totalSpent = purchaseHistory.reduce((sum, item) => sum + (item.price || 0), 0);
 
-        // 4. Kiểm tra điều kiện (>= 500.000 VNĐ)
         if (totalSpent < 500000) {
-            return res.status(403).json({ 
-                error: `Bạn cần mua hàng tối thiểu 500.000đ để đánh giá. Tổng chi tiêu hiện tại: ${new Intl.NumberFormat('vi-VN').format(totalSpent)}đ` 
+            return res.status(403).json({
+                error: `Bạn cần mua hàng tối thiểu 500.000đ để đánh giá. Tổng chi tiêu hiện tại: ${new Intl.NumberFormat('vi-VN').format(totalSpent)}đ`
             });
         }
 
-        // 5. Kiểm tra xem user đã feedback chưa (Mỗi user chỉ được feedback 1 lần)
-        // Nếu bạn muốn cho feedback nhiều lần thì comment đoạn này lại
-        const existingFeedback = db.feedbacks.find(fb => fb.username && fb.username.toLowerCase() === username.toLowerCase());
+        // 3. ⭐ Đọc feedbacks hiện tại từ Gist — NẾU LỖI → BẢO TRÌ
+        let currentFeedbacks = [];
+        if (USE_GIST) {
+            const gistData = await loadFromGist();
+            
+            // ⭐ Gist lỗi → báo bảo trì, không cho submit
+            if (!gistData) {
+                console.log('⚠️ [FEEDBACK] Gist lỗi, không thể submit');
+                return res.status(503).json({
+                    success: false,
+                    maintenance: true,
+                    error: 'Hệ thống đang bảo trì phần đánh giá. Vui lòng quay lại sau 1 tiếng!',
+                    retryAfter: 3600
+                });
+            }
+            
+            currentFeedbacks = gistData.feedbacks || [];
+        } else {
+            currentFeedbacks = MEMORY_DB.feedbacks || [];
+        }
+
+        // 4. Check trùng trên dữ liệu Gist mới nhất
+        const existingFeedback = currentFeedbacks.find(
+            fb => fb.username && fb.username.toLowerCase() === username.toLowerCase()
+        );
         if (existingFeedback) {
             return res.status(400).json({ error: 'Bạn đã gửi đánh giá rồi. Cảm ơn bạn!' });
         }
 
-        // 6. Lưu feedback mới
+        // 5. Tạo feedback mới
         const newFeedback = {
             id: Date.now().toString(),
-            username: user.username, // Lưu username để check trùng
-            customerName: user.fullName || user.username,
+            username: user.username,
+            customerName: user.full_name || user.username,
             rating: Number(rating),
             content: content.trim(),
             images: images || [],
             createdAt: new Date().toISOString()
         };
 
-if (!MEMORY_DB.feedbacks) MEMORY_DB.feedbacks = [];
-MEMORY_DB.feedbacks.push(newFeedback);
-await writeFeedbackToGist(MEMORY_DB.feedbacks);
+        currentFeedbacks.push(newFeedback);
 
-        res.json({ success: true, message: 'Cảm ơn bạn đã gửi đánh giá!', feedback: newFeedback });
+        // 6. ⭐ Ghi lên Gist — kiểm tra kết quả
+        if (USE_GIST) {
+            try {
+                await writeFeedbackToGist(currentFeedbacks);
+            } catch (writeErr) {
+                console.error('❌ Lỗi ghi feedback lên Gist:', writeErr);
+                return res.status(503).json({
+                    success: false,
+                    maintenance: true,
+                    error: 'Không thể lưu đánh giá lúc này. Vui lòng quay lại sau 1 tiếng!',
+                    retryAfter: 3600
+                });
+            }
+        } else {
+            console.log('⚠️ Không có Gist, không thể lưu feedback!');
+            return res.status(503).json({
+                success: false,
+                maintenance: true,
+                error: 'Hệ thống đánh giá chưa sẵn sàng. Vui lòng quay lại sau 1 tiếng!',
+                retryAfter: 3600
+            });
+        }
+
+        // 7. Đồng bộ vào RAM (cache)
+        MEMORY_DB.feedbacks = currentFeedbacks;
+
+        res.json({
+            success: true,
+            message: 'Cảm ơn bạn đã gửi đánh giá!',
+            feedback: newFeedback
+        });
 
     } catch (err) {
-        console.error('Lỗi submit-feedback:', err);
-        res.status(500).json({ error: 'Lỗi server: ' + err.message });
+        console.error('❌ Lỗi submit-feedback:', err);
+        // ⭐ KHÔNG trả 500 nữa — trả 503 với thông báo bảo trì
+        res.status(503).json({
+            success: false,
+            maintenance: true,
+            error: 'Hệ thống đang bảo trì phần đánh giá. Vui lòng quay lại sau 1 tiếng!',
+            retryAfter: 3600
+        });
     }
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
-app.post('/api/admin/feedbacks', requireAdminToken, (req, res) => {
-    const db = readDB();
-    res.json({ feedbacks: [...db.feedbacks].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
-});
-
-// ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE & ẨN PASSWORD USER
-app.post('/api/admin/users', requireAdminToken, async (req, res) => {
+app.post('/api/admin/feedbacks', requireAdminToken, async (req, res) => {
     try {
-        if (!pool) return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
-        
-        // ⭐ Truy vấn trực tiếp Supabase
-        const { rows } = await pool.query('SELECT * FROM users ORDER BY created_at DESC');
-        
-        const users = rows.map(u => ({
-            username: u.username,
-            password: u.password,
-            fullName: u.full_name,
-            balance: Number(u.balance) || 0,
-            createdAt: u.created_at,
-            depositCount: (u.deposit_history || []).length,
-            purchaseCount: (u.purchase_history || []).length
-        }));
-        
-        res.json({ success: true, users });
+        if (USE_GIST) {
+            const gistData = await loadFromGist();
+            
+            // ⭐ Gist lỗi → fallback RAM (admin vẫn xem được)
+            if (!gistData) {
+                console.log('⚠️ [ADMIN FEEDBACK] Gist lỗi, dùng RAM cache');
+                return res.json({
+                    feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a, b) =>
+                        new Date(b.createdAt) - new Date(a.createdAt)
+                    ),
+                    fallback: true,
+                    message: 'Đang hiển thị dữ liệu tạm từ RAM. Vui lòng thử lại sau 1 tiếng!'
+                });
+            }
+            
+            const feedbacks = gistData.feedbacks || [];
+            return res.json({
+                feedbacks: [...feedbacks].sort((a, b) =>
+                    new Date(b.createdAt) - new Date(a.createdAt)
+                )
+            });
+        }
+        res.json({
+            feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a, b) =>
+                new Date(b.createdAt) - new Date(a.createdAt)
+            )
+        });
     } catch (err) {
-        console.error('Admin get users error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
+        console.error('❌ Lỗi load feedbacks admin:', err);
+        // ⭐ Fallback RAM thay vì 500
+        res.json({
+            feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a, b) =>
+                new Date(b.createdAt) - new Date(a.createdAt)
+            ),
+            maintenance: true,
+            error: 'Hệ thống đang bảo trì phần đánh giá. Vui lòng quay lại sau 1 tiếng!',
+            retryAfter: 3600
+        });
     }
 });
 
@@ -1371,24 +1483,34 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Username không hợp lệ (≥4 ký tự, chỉ chữ/số/_)' });
         if (password.length < 6)
             return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥6 ký tự' });
+        if (!pool) return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
 
-        // ⭐ Kiểm tra trực tiếp trong MEMORY_DB (RAM)
-        if (MEMORY_DB.users.find(u => u.username.toLowerCase() === username.toLowerCase()))
+        // ⭐ Check trùng TRỰC TIẾP trên Supabase
+        const { rows: dup } = await pool.query(
+            'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)', [username.trim()]
+        );
+        if (dup.length > 0)
             return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
 
         const newUser = {
-            username,
-            password: password, // ⭐ Lưu chữ thường
-            fullName,
+            username: username.trim(),
+            password: password,
+            fullName: fullName.trim(),
             balance: 0, purchaseHistory: [], depositHistory: [],
             createdAt: new Date().toISOString()
         };
 
-        // ⭐ 1. Push vào RAM
+        // ⭐ Ghi thẳng lên Supabase (nguồn chính)
+        await pool.query(`
+            INSERT INTO users (username, password, full_name, balance, purchase_history, deposit_history)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [
+            newUser.username, newUser.password, newUser.fullName,
+            newUser.balance, JSON.stringify([]), JSON.stringify([])
+        ]);
+
+        // ⭐ Đồng bộ vào RAM (cache, tuỳ chọn)
         MEMORY_DB.users.push(newUser);
-        
-        // ⭐ 2. Lưu lên Supabase
-        await syncUsersToSupabase([newUser]);
 
         res.json({
             success: true,
@@ -1397,6 +1519,9 @@ app.post('/api/register', async (req, res) => {
         });
     } catch (err) {
         console.error('Register error:', err);
+        // Bắt lỗi UNIQUE constraint nếu có race condition
+        if (err.code === '23505')
+            return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -1653,11 +1778,23 @@ app.post('/api/webhub-create-order', async (req, res) => {
     }
 });
 
+app.post('/api/webhub-webhook', async (req, res) => {
+    try {
+        const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'];
+        if (WEBHUB_WEBHOOK_TOKEN && (!authHeader || !authHeader.includes(WEBHUB_WEBHOOK_TOKEN))) {
+            return res.status(401).json({ success: false, message: 'Unauthorized' });
+        }
+        const data = req.body;
+        const status = data.status || data.transactionStatus;
+        const amount = parseInt(data.amount || data.transferAmount || 0);
+        const content = (data.description || data.content || '').toUpperCase();
+
         if (status === 'success' || status === 'completed' || data.transferType === 'IN') {
             const match = content.match(/NAP[_\s]?([A-Z0-9_]+)/);
             if (match && match[1]) {
                 const username = match[1].toLowerCase();
                 
+                // Truy vấn Supabase để lấy thông tin user
                 const { rows } = await pool.query(
                     'SELECT * FROM users WHERE LOWER(username) = LOWER($1)',
                     [username]
@@ -1671,7 +1808,12 @@ app.post('/api/webhub-create-order', async (req, res) => {
                     const isDuplicate = depositHistory.some(d => d.transactionId === transId);
                     if (!isDuplicate) {
                         const newBalance = Number(dbUser.balance) + amount;
-                        depositHistory.push({ amount, method: 'webhub', transactionId: transId, at: new Date().toISOString() });
+                        depositHistory.push({ 
+                            amount, 
+                            method: 'webhub', 
+                            transactionId: transId, 
+                            at: new Date().toISOString() 
+                        });
 
                         await pool.query(`
                             UPDATE users 
@@ -1690,7 +1832,6 @@ app.post('/api/webhub-create-order', async (req, res) => {
         res.status(500).json({ success: false });
     }
 });
-
 // ==========================================
 // MUA HÀNG / TẢI FILE
 // ==========================================
@@ -1699,19 +1840,34 @@ app.post('/api/buy-product', async (req, res) => {
         const { username, productId, price, productName } = req.body;
         if (!username || productId === undefined || price === undefined)
             return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
+        if (!pool) return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
 
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username.trim()]
+        );
+        if (rows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
+
+        const dbUser = rows[0];
+        const balance = Number(dbUser.balance);
+        if (balance < price) return res.status(400).json({ success: false, error: 'Số dư không đủ' });
+
+        const newBalance = balance - price;
+        const purchaseHistory = dbUser.purchase_history || [];
+        purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
+
+        await pool.query(
+            'UPDATE users SET balance = $1, purchase_history = $2 WHERE username = $3',
+            [newBalance, JSON.stringify(purchaseHistory), dbUser.username]
+        );
+
+        // đồng bộ cache RAM (tuỳ chọn)
         const idx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
-        if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
+        if (idx !== -1) {
+            MEMORY_DB.users[idx].balance = newBalance;
+            MEMORY_DB.users[idx].purchaseHistory = purchaseHistory;
+        }
 
-        const user = MEMORY_DB.users[idx];
-        if (user.balance < price) return res.status(400).json({ success: false, error: 'Số dư không đủ' });
-
-        user.balance -= price;
-        if (!user.purchaseHistory) user.purchaseHistory = [];
-        user.purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
-        await syncUsersToSupabase([user]);
-
-        res.json({ success: true, newBalance: user.balance, productId });
+        res.json({ success: true, newBalance, productId });
     } catch (err) {
         console.error('Buy error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
@@ -1723,12 +1879,16 @@ app.get('/api/download/:productId', async (req, res) => {
     const { username } = req.query;
     const productId = req.params.productId;
     if (!username) return res.status(401).send('Chưa đăng nhập');
+    if (!pool) return res.status(500).send('DB chưa sẵn sàng');
 
-    const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+    const { rows } = await pool.query(
+        'SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username.trim()]
+    );
     if (rows.length === 0) return res.status(404).send('Không tìm thấy user');
-    const user = rows[0];
-    const purchaseHistory = user.purchase_history || [];
-    const hasBought = purchaseHistory.some(p => String(p.productId) === String(productId));
+    const purchaseHistory = rows[0].purchase_history || [];
+    const ownedIds = new Set(purchaseHistory.map(p => String(p.productId)));
+    const hasBought = ownedIds.has(String(productId));
+
     if (!hasBought && String(productId) !== '1') {
         return res.status(403).send('Chưa mua sản phẩm.');
     }
@@ -1753,7 +1913,7 @@ app.get('/api/download/:productId', async (req, res) => {
         if (!r2Response.Body) {
             return res.status(500).send('File rỗng hoặc không đọc được.');
         }
-        const bodyBuffer = await streamToBuffer(r2Response.Body); // ⭐ FIX
+        const bodyBuffer = await streamToBuffer(r2Response.Body);
 
         // BƯỚC 3: Tạo ZIP và pipe
         const archive = archiver('zip', { zlib: { level: 9 } });
@@ -1780,18 +1940,22 @@ app.get('/api/download/:productId', async (req, res) => {
 app.get('/api/download-all', async (req, res) => {
     const { username, ids } = req.query;
     if (!username) return res.status(401).send('Chưa đăng nhập');
+    if (!pool) return res.status(500).send('DB chưa sẵn sàng');
 
-    const db = readDB();
-    const user = db.users.find(u => u.username.toLowerCase() === username.toLowerCase());
-    if (!user) return res.status(404).send('Không tìm thấy user');
+    // ⭐ Query Supabase trực tiếp
+    const { rows } = await pool.query(
+        'SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username.trim()]
+    );
+    if (rows.length === 0) return res.status(404).send('Không tìm thấy user');
+    const purchaseHistory = rows[0].purchase_history || [];
 
     let targetIds;
     if (ids) {
         const requestedIds = ids.split(',').map(s => s.trim()).filter(Boolean);
-        const ownedIds = new Set((user.purchaseHistory || []).map(p => String(p.productId)));
+        const ownedIds = new Set(purchaseHistory.map(p => String(p.productId)));
         targetIds = requestedIds.filter(id => ownedIds.has(String(id)) || String(id) === '1');
     } else {
-        targetIds = [...new Set((user.purchaseHistory || []).map(p => String(p.productId)))];
+        targetIds = [...new Set(purchaseHistory.map(p => String(p.productId)))];
     }
 
     if (targetIds.length === 0) {
@@ -1816,7 +1980,7 @@ app.get('/api/download-all', async (req, res) => {
                 });
                 const r2Response = await s3Client.send(command);
                 if (r2Response.Body) {
-                    const buf = await streamToBuffer(r2Response.Body); // ⭐ FIX
+                    const buf = await streamToBuffer(r2Response.Body);
                     filesData.push({ fileName: foundFileName, buffer: buf });
                 }
             } catch (err) {
