@@ -132,42 +132,30 @@ async function pushToSupabaseQueue(action, payload) {
     }
 }
 
-// ⭐ THÊM MỚI: Hàm đồng bộ ngược từ Supabase lên Gist sau 1 tiếng
 async function syncSupabaseToGist() {
     if (!USE_GIST || !pool) return;
-    console.log('🔄 Đang kiểm tra hàng đợi Supabase để đồng bộ lên Gist...');
-    
     try {
-        const { rows } = await pool.query('SELECT * FROM pending_sync ORDER BY created_at ASC');
+        const { rows } = await pool.query(
+            'SELECT * FROM pending_sync ORDER BY created_at ASC'
+        );
         if (rows.length === 0) return;
-
         console.log(`🔄 Phát hiện ${rows.length} bản ghi đang chờ. Bắt đầu đồng bộ...`);
-        
-        let db = await loadFromGist() || JSON.parse(JSON.stringify(DEFAULT_DB));
 
+        let db = await loadFromGist() || JSON.parse(JSON.stringify(DEFAULT_DB));
         for (const row of rows) {
             const payload = row.payload;
-            const action = row.action;
-
-            // Xử lý từng loại dữ liệu (Tùy theo cách bạn muốn gộp)
-            if (action === 'BULK_UPDATE' && payload.fullData) {
-    db = buildGistData(payload.fullData); 
-}
+            if (row.action === 'BULK_UPDATE' && payload.fullData) {
+                db = buildGistData(payload.fullData);
+            }
         }
 
-        // Ghi đè lên Gist
         const success = await saveToGist(db);
         if (success) {
-            console.log('✅ Đã đồng bộ thành công Supabase -> Gist!');
-            await pool.query('DELETE FROM pending_sync'); // Xóa hàng đợi
-            console.log('🧹 Đã dọn dẹp sạch sẽ hàng đợi trên Supabase.');
-            MEMORY_DB = db; // Cập nhật lại bộ nhớ
-        } else {
-            console.error('❌ Đồng bộ thất bại. Gist vẫn đang quá tải, sẽ thử lại sau 1 giờ.');
+            await pool.query('DELETE FROM pending_sync');
+            console.log('✅ Đã đồng bộ Supabase → Gist & dọn hàng đợi.');
         }
-
     } catch (err) {
-        console.error('❌ Lỗi đồng bộ Supabase -> Gist:', err.message);
+        console.error('❌ Lỗi syncSupabaseToGist:', err.message);
     }
 }
 
@@ -215,9 +203,11 @@ async function loadFromGist() {
         if (file.truncated && file.raw_url) content = await fetchRaw(file.raw_url);
         else content = file.content;
         const parsed = JSON.parse(content || '{}');
-        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'orders'])
+        // ⭐ Chỉ load các field không phải orders
+        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks'])
             if (!parsed[k]) parsed[k] = [];
         parsed.users = [];
+        parsed.orders = [];
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi load Gist:', err.message);
@@ -241,7 +231,6 @@ function buildGistData(db) {
         confirmedKeys: db.confirmedKeys || [],
         feedbackKeys: db.feedbackKeys || [],
         feedbacks: db.feedbacks || [],
-        orders: db.orders || []
     };
 }
 
@@ -333,6 +322,73 @@ async function writeDB(db) {
     return true;
 }
 
+async function getOrdersFromSupabase() {
+    if (!pool) return [];
+    try {
+        const { rows } = await pool.query(
+            'SELECT * FROM orders ORDER BY created_at DESC'
+        );
+        return rows.map(o => ({
+            orderCode: o.order_code,
+            key: o.key,
+            plan: o.plan,
+            planName: o.plan_name,
+            customerName: o.customer_name,
+            amount: Number(o.amount),
+            status: o.status,
+            createdAt: o.created_at,
+            paidAt: o.paid_at,
+            paidAmount: Number(o.paid_amount || 0),
+            transactionId: o.transaction_id,
+            sepayTransactionId: o.sepay_transaction_id,
+            confirmedBy: o.confirmed_by,
+            note: o.note || ''
+        }));
+    } catch (err) {
+        console.error('❌ Lỗi đọc orders từ Supabase:', err.message);
+        return [];
+    }
+}
+
+async function upsertOrderToSupabase(order) {
+    if (!pool) return false;
+    try {
+        await pool.query(`
+            INSERT INTO orders (order_code, key, plan, plan_name, customer_name, amount,
+                                status, created_at, paid_at, paid_amount, transaction_id,
+                                sepay_transaction_id, confirmed_by, note)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            ON CONFLICT (order_code) DO UPDATE SET
+                status = EXCLUDED.status,
+                paid_at = EXCLUDED.paid_at,
+                paid_amount = EXCLUDED.paid_amount,
+                transaction_id = EXCLUDED.transaction_id,
+                sepay_transaction_id = EXCLUDED.sepay_transaction_id,
+                confirmed_by = EXCLUDED.confirmed_by,
+                note = EXCLUDED.note;
+        `, [
+            order.orderCode,
+            order.key,
+            order.plan,
+            order.planName || null,
+            order.customerName || null,
+            order.amount,
+            order.status || 'pending',
+            order.createdAt || new Date().toISOString(),
+            order.paidAt || null,
+            order.paidAmount || 0,
+            order.transactionId || null,
+            order.sepayTransactionId || null,
+            order.confirmedBy || null,
+            order.note || ''
+        ]);
+        return true;
+    } catch (err) {
+        console.error('❌ Lỗi upsert order:', err.message);
+        return false;
+    }
+}
+
 async function writeFeedbackToGist(feedbacksArray) {
     if (!USE_GIST) {
         console.log('⚠️ Không có Gist, không thể lưu Feedback.');
@@ -402,6 +458,7 @@ function migrateUsers(db) {
     }
     return changed;
 }
+
 
 async function initDB() {
     let supabaseUsers = [];
@@ -487,17 +544,45 @@ async function initDB() {
         }
     }
 
-    // ⭐ Users LUÔN nạp từ Supabase (không bao giờ từ Gist)
     MEMORY_DB.users = supabaseUsers;
 
-    // 4. Migrate và lưu
+    // ⭐ MIGRATE ORDERS CŨ TỪ GIST → SUPABASE (chạy 1 lần, an toàn nếu lặp)
+    if (pool && USE_GIST) {
+        try {
+            const gist = await gistRequest('GET');
+            const file = gist.files && gist.files[GIST_FILENAME];
+            if (file) {
+                const content = file.truncated && file.raw_url
+                    ? await fetchRaw(file.raw_url) : file.content;
+                const oldData = JSON.parse(content || '{}');
+                if (Array.isArray(oldData.orders) && oldData.orders.length > 0) {
+                    console.log(`🔄 Migrate ${oldData.orders.length} orders cũ từ Gist → Supabase...`);
+                    for (const o of oldData.orders) {
+                        await upsertOrderToSupabase(o);
+                    }
+                    console.log('✅ Migrate orders hoàn tất.');
+                }
+            }
+        } catch (e) {
+            console.error('❌ Lỗi migrate orders:', e.message);
+        }
+    }
+
+    // ⭐ ORDERS LUÔN nạp từ Supabase
+    if (pool) {
+        MEMORY_DB.orders = await getOrdersFromSupabase();
+        console.log(`✅ Đã tải ${MEMORY_DB.orders.length} orders từ Supabase`);
+    } else {
+        MEMORY_DB.orders = [];
+    }
+
     migrateUsers(MEMORY_DB);
     saveLocal(MEMORY_DB);
 
     if (pool && MEMORY_DB.users.length > 0) {
         syncUsersToSupabase(MEMORY_DB.users);
     }
-}
+} 
 
 async function migratePlaintextPasswords() {
     if (!pool) {
@@ -633,7 +718,7 @@ async function cleanupExpiredKeys() {
     const now = Date.now();
     let deletedCount = 0;
 
-    // Dọn keys cũ
+    // Dọn keys cũ (giữ nguyên)
     if (MEMORY_DB.keys) {
         const before = MEMORY_DB.keys.length;
         MEMORY_DB.keys = MEMORY_DB.keys.filter(k => {
@@ -645,21 +730,27 @@ async function cleanupExpiredKeys() {
         deletedCount += before - MEMORY_DB.keys.length;
     }
 
-    // ⭐ Dọn orders pending quá 24h → đánh dấu expired
-    if (MEMORY_DB.orders) {
-        MEMORY_DB.orders.forEach(o => {
-            if (o.status === 'pending') {
-                const age = now - new Date(o.createdAt).getTime();
-                if (age > KEY_EXPIRE_MS) {
-                    o.status = 'expired';
-                    o.note = (o.note || '') + ' | Tự động hết hạn sau 24h';
-                }
+    // ⭐ Dọn orders pending quá 24h → TRÊN SUPABASE
+    if (pool) {
+        try {
+            const expireBefore = new Date(now - KEY_EXPIRE_MS).toISOString();
+            const { rowCount } = await pool.query(`
+                UPDATE orders SET
+                    status = 'expired',
+                    note = COALESCE(note, '') || ' | Tự động hết hạn sau 24h'
+                WHERE status = 'pending' AND created_at < $1
+            `, [expireBefore]);
+            if (rowCount > 0) {
+                console.log(`🧹 Đã expire ${rowCount} orders pending trên Supabase.`);
             }
-        });
+        } catch (err) {
+            console.error('❌ Lỗi expire orders:', err.message);
+        }
     }
 
     if (deletedCount > 0) {
-        await writeDB(MEMORY_DB);
+        isDirty = true;
+        await flushToGist(true);
         console.log(`🧹 Đã tự động xóa ${deletedCount} key pending hết hạn.`);
     }
     return { deletedCount };
@@ -733,10 +824,7 @@ app.post('/api/create-order', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
         }
 
-        const db = readDB();
         const orderCode = generateOrderCode();
-        
-        // Tạo key (nhưng chưa kích hoạt)
         const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
         const key = `TYON-${plan.toUpperCase()}-${randomPart}-${orderCode.slice(-6)}`;
 
@@ -756,11 +844,16 @@ app.post('/api/create-order', async (req, res) => {
             note: ''
         };
 
-        if (!db.orders) db.orders = [];
-        db.orders.push(newOrder);
-        await writeDB(db);
+        // ⭐ Lưu thẳng lên Supabase
+        const saved = await upsertOrderToSupabase(newOrder);
+        if (!saved) {
+            return res.status(500).json({ success: false, error: 'Không lưu được đơn hàng' });
+        }
 
-        // Tạo QR URL VietQR
+        // Cập nhật cache RAM để đọc nhanh
+        if (!MEMORY_DB.orders) MEMORY_DB.orders = [];
+        MEMORY_DB.orders.push(newOrder);
+
         const qrContent = orderCode;
         const qrUrl = `https://img.vietqr.io/image/${SEPAY_BANK_CODE}-${SEPAY_BANK_ACCOUNT}-compact2.png?amount=${amount}&addInfo=${encodeURIComponent(qrContent)}&accountName=${encodeURIComponent(SEPAY_ACCOUNT_HOLDER)}`;
 
@@ -788,22 +881,29 @@ app.post('/api/create-order', async (req, res) => {
 app.get('/api/order-status/:orderCode', async (req, res) => {
     try {
         const { orderCode } = req.params;
-        const db = readDB();
-        const order = (db.orders || []).find(o => o.orderCode === orderCode);
-
-        if (!order) {
+        
+        // ⭐ Đọc từ Supabase (luôn chính xác nhất)
+        if (!pool) {
+            return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
+        }
+        const { rows } = await pool.query(
+            'SELECT * FROM orders WHERE order_code = $1',
+            [orderCode]
+        );
+        if (rows.length === 0) {
             return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
         }
+        const o = rows[0];
 
         res.json({
             success: true,
-            orderCode: order.orderCode,
-            status: order.status,
-            key: order.status === 'paid' ? order.key : null,
-            amount: order.amount,
-            paidAmount: order.paidAmount || 0,
-            paidAt: order.paidAt,
-            planName: order.planName
+            orderCode: o.order_code,
+            status: o.status,
+            key: o.status === 'paid' ? o.key : null,
+            amount: Number(o.amount),
+            paidAmount: Number(o.paid_amount || 0),
+            paidAt: o.paid_at,
+            planName: o.plan_name
         });
     } catch (err) {
         console.error('Lỗi check order:', err);
@@ -857,10 +957,23 @@ async function handleSePayWebhook(req, res) {
         if (!db.orders) db.orders = [];
 
         let matchedOrder = null;
-        for (const order of db.orders) {
-            if (order.status === 'pending' && content.includes(order.orderCode.toUpperCase())) {
-                matchedOrder = order;
-                break;
+        if (pool) {
+            const { rows } = await pool.query(
+                `SELECT * FROM orders 
+                 WHERE status = 'pending' 
+                   AND UPPER($1) LIKE '%' || UPPER(order_code) || '%'
+                 LIMIT 1`,
+                [content]
+            );
+            if (rows.length > 0) {
+                const o = rows[0];
+                matchedOrder = {
+                    orderCode: o.order_code,
+                    key: o.key,
+                    amount: Number(o.amount),
+                    status: o.status,
+                    note: o.note || ''
+                };
             }
         }
 
@@ -873,24 +986,43 @@ async function handleSePayWebhook(req, res) {
         const requiredAmount = matchedOrder.amount;
         
         if (amount >= requiredAmount) {
-            matchedOrder.status = 'paid';
-            matchedOrder.paidAt = new Date().toISOString();
-            matchedOrder.paidAmount = amount;
-            matchedOrder.transactionId = transactionId;
-            matchedOrder.sepayTransactionId = data.referenceCode || data.id;
-            
-            await writeDB(db);
-            
+            await pool.query(`
+                UPDATE orders SET
+                    status = 'paid',
+                    paid_at = $1,
+                    paid_amount = $2,
+                    transaction_id = $3,
+                    sepay_transaction_id = $4
+                WHERE order_code = $5
+            `, [
+                new Date().toISOString(),
+                amount,
+                transactionId,
+                data.referenceCode || data.id,
+                matchedOrder.orderCode
+            ]);
+
+            // Cập nhật cache RAM
+            const cachedOrder = (MEMORY_DB.orders || []).find(o => o.orderCode === matchedOrder.orderCode);
+            if (cachedOrder) {
+                cachedOrder.status = 'paid';
+                cachedOrder.paidAt = new Date().toISOString();
+                cachedOrder.paidAmount = amount;
+            }
+
             console.log(`✅ ĐƠN ${matchedOrder.orderCode} ĐÃ THANH TOÁN! Key: ${matchedOrder.key}`);
         } else {
-            matchedOrder.status = 'underpaid';
-            matchedOrder.paidAmount = amount;
-            matchedOrder.transactionId = transactionId;
-            matchedOrder.note = `Thanh toán thiếu: cần ${requiredAmount}đ, nhận ${amount}đ`;
-            
-            await writeDB(db);
-            
-            console.log(`⚠️ ĐƠN ${matchedOrder.orderCode} THIẾU TIỀN! Cần ${requiredAmount}đ, nhận ${amount}đ`);
+            const note = `Thanh toán thiếu: cần ${requiredAmount}đ, nhận ${amount}đ`;
+            await pool.query(`
+                UPDATE orders SET
+                    status = 'underpaid',
+                    paid_amount = $1,
+                    transaction_id = $2,
+                    note = $3
+                WHERE order_code = $4
+            `, [amount, transactionId, note, matchedOrder.orderCode]);
+
+            console.log(`⚠️ ĐƠN ${matchedOrder.orderCode} THIẾU TIỀN!`);
         }
 
         return res.status(200).json({ success: true });
@@ -904,8 +1036,8 @@ async function handleSePayWebhook(req, res) {
 // ⭐ API ADMIN: DANH SÁCH ĐƠN HÀNG
 app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
     try {
-        const db = readDB();
-        res.json({ success: true, orders: db.orders || [] });
+        const orders = await getOrdersFromSupabase();
+        res.json({ success: true, orders });
     } catch (err) {
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
@@ -920,30 +1052,40 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
         }
 
-        const db = readDB();
-        const order = (db.orders || []).find(o => o.orderCode === orderCode);
-        
-        if (!order) {
+        const { rows } = await pool.query(
+            'SELECT * FROM orders WHERE order_code = $1',
+            [orderCode]
+        );
+        if (rows.length === 0) {
             return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
         }
-
-        if (order.status === 'paid') {
+        if (rows[0].status === 'paid') {
             return res.status(400).json({ success: false, error: 'Đơn này đã xác nhận rồi' });
         }
 
-        order.status = 'paid';
-        order.paidAt = new Date().toISOString();
-        order.confirmedBy = req.admin.username;
-        order.note = (order.note || '') + ' | Admin xác nhận thủ công';
-        
-        await writeDB(db);
-        
+        const note = (rows[0].note || '') + ' | Admin xác nhận thủ công';
+        await pool.query(`
+            UPDATE orders SET
+                status = 'paid',
+                paid_at = $1,
+                confirmed_by = $2,
+                note = $3
+            WHERE order_code = $4
+        `, [new Date().toISOString(), req.admin.username, note, orderCode]);
+
+        // Cập nhật cache
+        const cached = (MEMORY_DB.orders || []).find(o => o.orderCode === orderCode);
+        if (cached) {
+            cached.status = 'paid';
+            cached.paidAt = new Date().toISOString();
+            cached.confirmedBy = req.admin.username;
+        }
+
         console.log(`✅ [ADMIN] ${req.admin.username} xác nhận đơn ${orderCode}`);
         
         res.json({
             success: true,
-            message: `Đã xác nhận đơn ${orderCode}. Key đã kích hoạt!`,
-            order: order
+            message: `Đã xác nhận đơn ${orderCode}. Key đã kích hoạt!`
         });
     } catch (err) {
         console.error('Admin confirm order error:', err);
@@ -1634,9 +1776,25 @@ app.get('/payment-return', (req, res) => {
 // ==========================================
 // HEALTH + ERROR HANDLERS
 // ==========================================
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
     const db = MEMORY_DB || DEFAULT_DB;
-    const orders = db.orders || [];
+    
+    // ⭐ Đếm orders từ Supabase
+    let orderStats = { total: 0, pending: 0, paid: 0, underpaid: 0 };
+    if (pool) {
+        try {
+            const { rows } = await pool.query(`
+                SELECT status, COUNT(*) as count FROM orders GROUP BY status
+            `);
+            rows.forEach(r => {
+                orderStats.total += Number(r.count);
+                orderStats[r.status] = Number(r.count);
+            });
+        } catch (err) {
+            console.error('Lỗi health orders:', err.message);
+        }
+    }
+
     res.json({
         status: 'ok', uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
@@ -1648,10 +1806,10 @@ app.get('/api/health', (req, res) => {
         pendingKeys: db.keys.filter(k => k.status === 'pending').length,
         confirmedKeys: db.keys.filter(k => k.status === 'confirmed').length, 
         totalFeedbacks: db.feedbacks.length,
-        totalOrders: orders.length,
-        pendingOrders: orders.filter(o => o.status === 'pending').length,
-        paidOrders: orders.filter(o => o.status === 'paid').length,
-        underpaidOrders: orders.filter(o => o.status === 'underpaid').length
+        totalOrders: orderStats.total,
+        pendingOrders: orderStats.pending || 0,
+        paidOrders: orderStats.paid || 0,
+        underpaidOrders: orderStats.underpaid || 0
     });
 });
 
