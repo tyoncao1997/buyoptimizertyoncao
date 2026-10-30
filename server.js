@@ -16,7 +16,7 @@ const archiver = require('archiver');
 const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const BCRYPT_ROUNDS = 10;
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -79,8 +79,16 @@ const loginLimiter = rateLimit({
     message: { error: 'Sai mật khẩu quá 5 lần. Vui lòng thử lại sau 15 phút.' }
 });
 
-app.use('/api/', globalLimiter);
+const pollingLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500,
+    message: { error: 'Quá nhiều request. Vui lòng thử lại sau.' }
+});
+
+// ⭐ THỨ TỰ QUAN TRỌNG: cụ thể trước, chung sau
+app.use('/api/order-status/', pollingLimiter);
 app.use('/api/admin/', adminLimiter);
+app.use('/api/', globalLimiter);
 
 // ==========================================
 // CẤU HÌNH LƯU TRỮ
@@ -490,6 +498,41 @@ async function initDB() {
         syncUsersToSupabase(MEMORY_DB.users);
     }
 }
+
+async function migratePlaintextPasswords() {
+    if (!pool) {
+        console.log('⚠️ Không có Supabase, bỏ qua migrate password');
+        return;
+    }
+    try {
+        const { rows } = await pool.query('SELECT username, password FROM users');
+        let count = 0;
+        for (const row of rows) {
+            // Password bcrypt luôn bắt đầu bằng $2a$ / $2b$ / $2y$
+            if (row.password && !row.password.startsWith('$2')) {
+                try {
+                    const hashed = await bcrypt.hash(row.password, BCRYPT_ROUNDS);
+                    await pool.query(
+                        'UPDATE users SET password = $1 WHERE username = $2',
+                        [hashed, row.username]
+                    );
+                    count++;
+                    console.log(`  🔐 Đã hash password cho user: ${row.username}`);
+                } catch (e) {
+                    console.error(`  ❌ Lỗi hash user ${row.username}:`, e.message);
+                }
+            }
+        }
+        if (count > 0) {
+            console.log(`🔐 [MIGRATE] Đã hash ${count} mật khẩu plaintext cũ`);
+        } else {
+            console.log('🔐 [MIGRATE] Không có password plaintext nào cần migrate');
+        }
+    } catch (err) {
+        console.error('❌ Lỗi migrate password:', err.message);
+    }
+}
+
 // ==========================================
 // CẤU HÌNH HỆ THỐNG & ADMIN BẢO MẬT
 // ==========================================
@@ -1624,6 +1667,7 @@ setInterval(() => { syncSupabaseToGist(); }, 60 * 60 * 1000);
 
 async function startServer() {
     await initDB();
+    await migratePlaintextPasswords();
     syncSupabaseToGist();
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER BẢO MẬT chạy tại http://localhost:${PORT}`);
