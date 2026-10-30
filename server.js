@@ -109,6 +109,59 @@ let isDirty = false;
 let isSyncing = false;
 let lastSyncTime = 0;
 
+async function pushToSupabaseQueue(action, payload) {
+    if (!pool) return;
+    try {
+        await pool.query(`
+            INSERT INTO pending_sync (action, payload, created_at) 
+            VALUES ($1, $2, $3)
+        `, [action, JSON.stringify(payload), new Date().toISOString()]);
+        console.log(`📥 Đã lưu tạm [${action}] vào Supabase Queue.`);
+    } catch (err) {
+        console.error('❌ Lỗi lưu tạm vào Supabase:', err.message);
+    }
+}
+
+// ⭐ THÊM MỚI: Hàm đồng bộ ngược từ Supabase lên Gist sau 1 tiếng
+async function syncSupabaseToGist() {
+    if (!USE_GIST || !pool) return;
+    console.log('🔄 Đang kiểm tra hàng đợi Supabase để đồng bộ lên Gist...');
+    
+    try {
+        const { rows } = await pool.query('SELECT * FROM pending_sync ORDER BY created_at ASC');
+        if (rows.length === 0) return;
+
+        console.log(`🔄 Phát hiện ${rows.length} bản ghi đang chờ. Bắt đầu đồng bộ...`);
+        
+        let db = await loadFromGist() || JSON.parse(JSON.stringify(DEFAULT_DB));
+
+        for (const row of rows) {
+            const payload = row.payload;
+            const action = row.action;
+
+            // Xử lý từng loại dữ liệu (Tùy theo cách bạn muốn gộp)
+            if (action === 'BULK_UPDATE' && payload.fullData) {
+                // Ghi đè toàn bộ dữ liệu mới nhất
+                db = payload.fullData;
+            }
+        }
+
+        // Ghi đè lên Gist
+        const success = await saveToGist(db);
+        if (success) {
+            console.log('✅ Đã đồng bộ thành công Supabase -> Gist!');
+            await pool.query('DELETE FROM pending_sync'); // Xóa hàng đợi
+            console.log('🧹 Đã dọn dẹp sạch sẽ hàng đợi trên Supabase.');
+            MEMORY_DB = db; // Cập nhật lại bộ nhớ
+        } else {
+            console.error('❌ Đồng bộ thất bại. Gist vẫn đang quá tải, sẽ thử lại sau 1 giờ.');
+        }
+
+    } catch (err) {
+        console.error('❌ Lỗi đồng bộ Supabase -> Gist:', err.message);
+    }
+}
+
 // ==========================================
 // GITHUB GIST API
 // ==========================================
@@ -239,11 +292,21 @@ async function writeDB(data) {
     
     MEMORY_DB = data;
 
-    // 1. Lưu dự phòng (Gist hoặc File Local) - Chạy ngầm
+    // 1. Lưu dự phòng (Gist hoặc File Local) - CHỜ LƯU XONG MỚI TRẢ VỀ
     if (USE_GIST) {
-        saveToGist(MEMORY_DB).catch(err => console.error('Lỗi lưu Gist:', err.message));
+        const success = await saveToGist(MEMORY_DB);
+        if (success) {
+            isDirty = false;
+            saveLocal(MEMORY_DB);
+        } else {
+            isDirty = true;
+            console.error('❌ Không thể lưu lên Gist! Đang chuyển sang lưu tạm Supabase...');
+            // ⭐ GỌI HÀM LƯU TẠM VÀO SUPABASE
+            await pushToSupabaseQueue('BULK_UPDATE', { fullData: MEMORY_DB });
+        }
     } else {
         saveLocal(MEMORY_DB);
+        isDirty = false;
     }
 
     // 2. Lưu vào Supabase - Chạy ngầm
@@ -298,13 +361,14 @@ function migrateUsers(db) {
 }
 
 async function initDB() {
-    // 1. Ưu tiên tải từ Supabase
+    let supabaseUsers = [];
+    
+    // 1. Tải users từ Supabase (nếu có)
     if (pool) {
         try {
             const { rows } = await pool.query('SELECT * FROM users');
             if (rows.length > 0) {
-                MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
-                MEMORY_DB.users = rows.map(u => ({
+                supabaseUsers = rows.map(u => ({
                     username: u.username,
                     password: u.password,
                     fullName: u.full_name,
@@ -313,31 +377,47 @@ async function initDB() {
                     depositHistory: u.deposit_history || [],
                     createdAt: u.created_at
                 }));
-                console.log('✅ Đã tải dữ liệu từ Supabase');
+                console.log('✅ Đã tải dữ liệu users từ Supabase');
             }
         } catch (err) {
-            console.error('❌ Lỗi đọc Supabase, chuyển sang dự phòng:', err.message);
+            console.error('❌ Lỗi đọc Supabase:', err.message);
         }
     }
 
-    // 2. Nếu Supabase lỗi hoặc rỗng, tải từ Gist/Local
-    if (!MEMORY_DB || !MEMORY_DB.users || MEMORY_DB.users.length === 0) {
-        if (USE_GIST) {
-            const remote = await loadFromGist();
-            if (remote) { MEMORY_DB = remote; console.log('✅ Đã tải từ Gist'); }
-        } else {
-            const local = loadLocal();
-            if (local) { MEMORY_DB = local; console.log('✅ Đã tải từ Local'); }
-        }
+    // 2. Tải dữ liệu Feedback/Keys từ Gist hoặc Local (để không bị mất)
+    let localData = null;
+    if (USE_GIST) {
+        localData = await loadFromGist();
+        if (localData) console.log('✅ Đã tải feedback/keys từ Gist');
+    } else {
+        localData = loadLocal();
+        if (localData) console.log('✅ Đã tải feedback/keys từ Local');
     }
 
-    // 3. Nếu vẫn không có, tạo mới
-    if (!MEMORY_DB) MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
+    // 3. Gộp dữ liệu: Users từ Supabase, Feedback/Keys từ Gist/Local
+    MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
+    
+    if (localData) {
+        MEMORY_DB.feedbacks = localData.feedbacks || [];
+        MEMORY_DB.keys = localData.keys || [];
+        MEMORY_DB.confirmedKeys = localData.confirmedKeys || [];
+        MEMORY_DB.feedbackKeys = localData.feedbackKeys || [];
+    }
 
-    // 4. Chạy migrate và đồng bộ ngược lại
+    // Ưu tiên users từ Supabase, nếu không có thì lấy từ Local
+    if (supabaseUsers.length > 0) {
+        MEMORY_DB.users = supabaseUsers;
+    } else if (localData && localData.users) {
+        MEMORY_DB.users = localData.users;
+    }
+
+    // 4. Chạy migrate và lưu lại
     migrateUsers(MEMORY_DB);
     saveLocal(MEMORY_DB);
-    if (pool) syncUsersToSupabase(MEMORY_DB.users);
+    
+    if (pool && MEMORY_DB.users.length > 0) {
+        syncUsersToSupabase(MEMORY_DB.users);
+    }
 }
 // ==========================================
 // CẤU HÌNH HỆ THỐNG & ADMIN BẢO MẬT
@@ -1177,10 +1257,12 @@ app.use((err, req, res, next) => { console.error('❌ Server error:', err); res.
 // TIMERS & START
 // ==========================================
 setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
-setInterval(() => { if (isDirty) flushToGist(true); }, 60000);
+setInterval(() => { flushToGist(true).catch(console.error); }, 60000);
+setInterval(() => { syncSupabaseToGist(); }, 60 * 60 * 1000);
 
 async function startServer() {
     await initDB();
+    syncSupabaseToGist();
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER BẢO MẬT chạy tại http://localhost:${PORT}`);
         console.log(`🔐 JWT Security: BẬT`);
