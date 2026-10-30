@@ -1293,6 +1293,7 @@ async function startServer() {
         console.log(`🔐 JWT Security: BẬT`);
         console.log(`🛡️ Rate Limit: BẬT`);
         console.log(`☁️  Storage: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
+        console.log(`🗄️  Lưu Users: Supabase`);
         console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
         console.log(`🌐 Frontend URL: ${FRONTEND_URL}\n`);
     });
