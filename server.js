@@ -141,9 +141,8 @@ async function syncSupabaseToGist() {
 
             // Xử lý từng loại dữ liệu (Tùy theo cách bạn muốn gộp)
             if (action === 'BULK_UPDATE' && payload.fullData) {
-                // Ghi đè toàn bộ dữ liệu mới nhất
-                db = payload.fullData;
-            }
+    db = buildGistData(payload.fullData); 
+}
         }
 
         // Ghi đè lên Gist
@@ -206,8 +205,9 @@ async function loadFromGist() {
         if (file.truncated && file.raw_url) content = await fetchRaw(file.raw_url);
         else content = file.content;
         const parsed = JSON.parse(content || '{}');
-        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'users'])
-            if (!parsed[k]) parsed[k] = [];
+        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks'])
+    if (!parsed[k]) parsed[k] = [];
+parsed.users = [];
         return parsed;
     } catch (err) {
         console.error('❌ Lỗi load Gist:', err.message);
@@ -225,11 +225,25 @@ function fetchRaw(url) {
     });
 }
 
+function buildGistData(db) {
+    return {
+        keys: db.keys || [],
+        confirmedKeys: db.confirmedKeys || [],
+        feedbackKeys: db.feedbackKeys || [],
+        feedbacks: db.feedbacks || []
+    };
+}
+
 async function saveToGist(data) {
     if (!USE_GIST) return false;
     try {
+        if (data.users && data.users.length > 0) {
+            console.warn(`🚨 [SECURITY] Phát hiện ${data.users.length} users trong payload Gist → Đã lọc bỏ!`);
+        }
+        
+        const gistData = buildGistData(data);
         await gistRequest('PATCH', {
-            files: { [GIST_FILENAME]: { content: JSON.stringify(data, null, 2) } }
+            files: { [GIST_FILENAME]: { content: JSON.stringify(gistData, null, 2) } }
         });
         return true;
     } catch (err) {
@@ -251,7 +265,7 @@ async function flushToGist(force = false) {
     if (!USE_GIST) { saveLocal(MEMORY_DB); isDirty = false; return; }
     isSyncing = true;
     try {
-        const success = await saveToGist(MEMORY_DB);
+        const success = await saveToGist(buildGistData(MEMORY_DB));
         if (success) { isDirty = false; lastSyncTime = Date.now(); saveLocal(MEMORY_DB); }
         else setTimeout(() => flushToGist(true), 30000);
     } finally { isSyncing = false; }
@@ -274,8 +288,9 @@ function loadLocal() {
     try {
         if (!fs.existsSync(LOCAL_DB_FILE)) return null;
         const data = JSON.parse(fs.readFileSync(LOCAL_DB_FILE, 'utf8'));
-        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'users'])
+        for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks'])
             if (!data[k]) data[k] = [];
+        data.users = [];
         return data;
     } catch { return null; }
 }
@@ -290,21 +305,20 @@ async function writeFeedbackToGist(feedbacksArray) {
         console.log('⚠️ Không có Gist, không thể lưu Feedback.');
         return;
     }
-
     try {
-        const newData = {
-            keys: [],
-            confirmedKeys: [],
-            feedbackKeys: [],
-            feedbacks: feedbacksArray,
-            users: [] // Luôn để trống users
-        };
+        // ⭐ Dùng MEMORY_DB (RAM) — luôn là bản mới nhất, không mất keys vừa tạo
+        const newData = buildGistData({
+            keys: MEMORY_DB.keys || [],
+            confirmedKeys: MEMORY_DB.confirmedKeys || [],
+            feedbackKeys: MEMORY_DB.feedbackKeys || [],
+            feedbacks: feedbacksArray
+        });
 
         await gistRequest('PATCH', {
             files: { [GIST_FILENAME]: { content: JSON.stringify(newData, null, 2) } }
         });
         console.log('✅ Đã lưu Feedback lên Gist.');
-        isDirty = false;
+        // KHÔNG set isDirty = false — để flushToGist xử lý
     } catch (err) {
         console.error('❌ Lỗi lưu Feedback lên Gist:', err.message);
         isDirty = true;
@@ -358,7 +372,7 @@ function migrateUsers(db) {
 
 async function initDB() {
     let supabaseUsers = [];
-    
+
     // 1. Tải users từ Supabase (nếu có)
     if (pool) {
         try {
@@ -380,7 +394,7 @@ async function initDB() {
         }
     }
 
-    // 2. Tải dữ liệu cũ từ Gist (bao gồm cả feedback và users cũ)
+    // 2. Tải dữ liệu cũ từ Gist / Local (keys + feedbacks)
     let localData = null;
     if (USE_GIST) {
         localData = await loadFromGist();
@@ -390,57 +404,63 @@ async function initDB() {
         if (localData) console.log('✅ Đã tải dữ liệu cũ từ Local');
     }
 
-    // 3. Gộp dữ liệu
+    // 3. Gộp keys/feedbacks vào RAM
     MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
 
     if (localData) {
-        // Lấy feedbacks và keys (nếu có)
-        MEMORY_DB.feedbacks = localData.feedbacks || [];
-        MEMORY_DB.keys = localData.keys || [];
+        MEMORY_DB.feedbacks     = localData.feedbacks || [];
+        MEMORY_DB.keys          = localData.keys || [];
         MEMORY_DB.confirmedKeys = localData.confirmedKeys || [];
-        MEMORY_DB.feedbackKeys = localData.feedbackKeys || [];
+        MEMORY_DB.feedbackKeys  = localData.feedbackKeys || [];
+    }   // ← ĐÓNG if (localData) TẠI ĐÂY — quan trọng!
 
-        // ⭐ Nếu có users cũ trên Gist, chuyển sang Supabase
-        if (localData.users && localData.users.length > 0) {
-            console.log(`🔄 Phát hiện ${localData.users.length} users cũ, đang chuyển sang Supabase...`);
-            for (const u of localData.users) {
-                // Thêm vào Supabase (nếu chưa có)
-                if (!supabaseUsers.some(su => su.username === u.username)) {
+    // ⭐ Migrate users cũ từ Gist → Supabase (nếu có)
+    if (pool && localData && localData.users && localData.users.length > 0) {
+        console.log(`🔄 Phát hiện ${localData.users.length} users cũ trên Gist, đang chuyển sang Supabase...`);
+        for (const u of localData.users) {
+            if (!u || !u.username) continue;
+            if (!supabaseUsers.some(su => su.username === u.username)) {
+                try {
                     await pool.query(`
                         INSERT INTO users (username, password, full_name, balance, purchase_history, deposit_history)
                         VALUES ($1, $2, $3, $4, $5, $6)
                         ON CONFLICT (username) DO NOTHING;
-                    `, [u.username, u.password || '', u.fullName || u.username, u.balance || 0, JSON.stringify(u.purchaseHistory || []), JSON.stringify(u.depositHistory || [])]);
+                    `, [
+                        u.username,
+                        u.password || '',
+                        u.fullName || u.username,
+                        u.balance || 0,
+                        JSON.stringify(u.purchaseHistory || []),
+                        JSON.stringify(u.depositHistory || [])
+                    ]);
+                } catch (e) {
+                    console.error(`❌ Lỗi migrate user ${u.username}:`, e.message);
                 }
             }
-            console.log('✅ Đã chuyển xong users cũ sang Supabase.');
+        }
+        console.log('✅ Đã migrate xong users cũ sang Supabase.');
+    }
 
-            // ⭐ Xóa users cũ khỏi Gist
-            const newGistData = {
-                keys: MEMORY_DB.keys,
-                confirmedKeys: MEMORY_DB.confirmedKeys,
-                feedbackKeys: MEMORY_DB.feedbackKeys,
-                feedbacks: MEMORY_DB.feedbacks,
-                users: [] // Xóa trắng users
-            };
+    // ⭐ LUÔN dọn sạch users khỏi Gist (chỉ 1 lần, sau khi migrate xong)
+    if (USE_GIST && localData) {
+        try {
+            const clean = buildGistData(localData);
             await gistRequest('PATCH', {
-                files: { [GIST_FILENAME]: { content: JSON.stringify(newGistData, null, 2) } }
+                files: { [GIST_FILENAME]: { content: JSON.stringify(clean, null, 2) } }
             });
-            console.log('🧹 Đã xóa users cũ khỏi Gist.');
-            
-            MEMORY_DB.users = []; // Cập nhật lại RAM
+            console.log('🧹 Đã đảm bảo Gist KHÔNG còn users.');
+        } catch (e) {
+            console.error('❌ Lỗi dọn users khỏi Gist:', e.message);
         }
     }
 
-    // Nếu Supabase không có users, lấy từ Gist (nếu còn)
-    if (MEMORY_DB.users.length === 0 && supabaseUsers.length > 0) {
-        MEMORY_DB.users = supabaseUsers;
-    }
+    // ⭐ Users LUÔN nạp từ Supabase (không bao giờ từ Gist)
+    MEMORY_DB.users = supabaseUsers;
 
     // 4. Migrate và lưu
     migrateUsers(MEMORY_DB);
     saveLocal(MEMORY_DB);
-    
+
     if (pool && MEMORY_DB.users.length > 0) {
         syncUsersToSupabase(MEMORY_DB.users);
     }
