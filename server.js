@@ -285,39 +285,29 @@ function readDB() {
     return JSON.parse(JSON.stringify(MEMORY_DB));
 }
 
-// ⭐ GHI DỮ LIỆU: Vừa lưu vào Gist/Local, vừa lưu vào Supabase
-async function writeDB(data) {
-    // data bây giờ có thể là một mảng feedback hoặc object
-    let feedbacksArray = Array.isArray(data) ? data : (data.feedbacks || []);
-
-    if (USE_GIST) {
-        try {
-            // Tạo cấu trúc mới: chỉ giữ feedbacks, xóa sạch users/keys
-            const newData = {
-                keys: [],
-                confirmedKeys: [],
-                feedbackKeys: [],
-                feedbacks: feedbacksArray,
-                users: [] // ⭐ Xóa trắng users trên file Gist cũ
-            };
-
-            await gistRequest('PATCH', {
-                files: { [GIST_FILENAME]: { content: JSON.stringify(newData, null, 2) } }
-            });
-            console.log('✅ Đã cập nhật Feedback lên Gist (đã xóa users cũ).');
-            isDirty = false;
-        } catch (err) {
-            console.error('❌ Lỗi lưu Gist:', err.message);
-            isDirty = true;
-        }
-    } else {
-        saveLocal(data);
-        isDirty = false;
+async function writeFeedbackToGist(feedbacksArray) {
+    if (!USE_GIST) {
+        console.log('⚠️ Không có Gist, không thể lưu Feedback.');
+        return;
     }
 
-    // Lưu Supabase (nếu có thay đổi) - chạy ngầm
-    if (pool) {
-        syncUsersToSupabase(data.users || []).catch(err => console.error('Lỗi lưu Supabase:', err.message));
+    try {
+        const newData = {
+            keys: [],
+            confirmedKeys: [],
+            feedbackKeys: [],
+            feedbacks: feedbacksArray,
+            users: [] // Luôn để trống users
+        };
+
+        await gistRequest('PATCH', {
+            files: { [GIST_FILENAME]: { content: JSON.stringify(newData, null, 2) } }
+        });
+        console.log('✅ Đã lưu Feedback lên Gist.');
+        isDirty = false;
+    } catch (err) {
+        console.error('❌ Lỗi lưu Feedback lên Gist:', err.message);
+        isDirty = true;
     }
 }
 
@@ -761,8 +751,8 @@ app.post('/api/submit-feedback', async (req, res) => {
             createdAt: new Date().toISOString()
         };
 
-        MEMORY_DB.feedbacks.push(newFeedback);
-        await writeDB(MEMORY_DB);
+MEMORY_DB.feedbacks.push(newFeedback);
+await writeFeedbackToGist(MEMORY_DB.feedbacks);
 
         res.json({ success: true, message: 'Cảm ơn bạn đã gửi đánh giá!', feedback: newFeedback });
 
@@ -833,7 +823,7 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
             ip: req.ip // Log lại IP để truy vết nếu có biến
         });
 
-        await writeDB(db);
+        await syncUsersToSupabase([user]);
         console.log(`💰 [AUDIT] ${req.admin.username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${user.balance})`);
 
         res.json({
@@ -870,8 +860,8 @@ app.post('/api/register', async (req, res) => {
             balance: 0, purchaseHistory: [], depositHistory: [],
             createdAt: new Date().toISOString()
         };
-        db.users.push(newUser);
-        await writeDB(db);
+db.users.push(newUser);
+await syncUsersToSupabase([newUser]);
 
         res.json({
             success: true,
@@ -943,7 +933,7 @@ app.post('/api/change-password', async (req, res) => {
         }
 
         db.users[idx].password = newPassword;
-        await writeDB(db);
+        await syncUsersToSupabase([db.users[idx]]);
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
         console.error('Change password error:', err);
@@ -1032,7 +1022,7 @@ app.post('/api/pay2s-webhook', async (req, res) => {
                     amount, method: 'pay2s', content: data.orderInfo || data.content,
                     transactionId: transId, at: new Date().toISOString()
                 });
-                await writeDB(db);
+                await syncUsersToSupabase([db.users[idx]]);
             }
         }
         res.status(200).json({ success: true });
@@ -1088,7 +1078,7 @@ app.post('/api/webhub-webhook', async (req, res) => {
                     db.users[idx].balance += amount;
                     if (!db.users[idx].depositHistory) db.users[idx].depositHistory = [];
                     db.users[idx].depositHistory.push({ amount, method: 'webhub', transactionId: data.transactionId || data.orderId, at: new Date().toISOString() });
-                    await writeDB(db);
+                    await syncUsersToSupabase([db.users[idx]]);
                 }
             }
         }
@@ -1118,7 +1108,7 @@ app.post('/api/buy-product', async (req, res) => {
         user.balance -= price;
         if (!user.purchaseHistory) user.purchaseHistory = [];
         user.purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
-        await writeDB(db);
+        await syncUsersToSupabase([user]);
 
         res.json({ success: true, newBalance: user.balance, productId });
     } catch (err) {
