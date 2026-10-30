@@ -287,31 +287,37 @@ function readDB() {
 
 // ⭐ GHI DỮ LIỆU: Vừa lưu vào Gist/Local, vừa lưu vào Supabase
 async function writeDB(data) {
-    for (const k of ['keys', 'confirmedKeys', 'feedbackKeys', 'feedbacks', 'users'])
-        if (!data[k]) data[k] = [];
-    
-    MEMORY_DB = data;
+    // data bây giờ có thể là một mảng feedback hoặc object
+    let feedbacksArray = Array.isArray(data) ? data : (data.feedbacks || []);
 
-    // 1. Lưu dự phòng (Gist hoặc File Local) - CHỜ LƯU XONG MỚI TRẢ VỀ
     if (USE_GIST) {
-        const success = await saveToGist(MEMORY_DB);
-        if (success) {
+        try {
+            // Tạo cấu trúc mới: chỉ giữ feedbacks, xóa sạch users/keys
+            const newData = {
+                keys: [],
+                confirmedKeys: [],
+                feedbackKeys: [],
+                feedbacks: feedbacksArray,
+                users: [] // ⭐ Xóa trắng users trên file Gist cũ
+            };
+
+            await gistRequest('PATCH', {
+                files: { [GIST_FILENAME]: { content: JSON.stringify(newData, null, 2) } }
+            });
+            console.log('✅ Đã cập nhật Feedback lên Gist (đã xóa users cũ).');
             isDirty = false;
-            saveLocal(MEMORY_DB);
-        } else {
+        } catch (err) {
+            console.error('❌ Lỗi lưu Gist:', err.message);
             isDirty = true;
-            console.error('❌ Không thể lưu lên Gist! Đang chuyển sang lưu tạm Supabase...');
-            // ⭐ GỌI HÀM LƯU TẠM VÀO SUPABASE
-            await pushToSupabaseQueue('BULK_UPDATE', { fullData: MEMORY_DB });
         }
     } else {
-        saveLocal(MEMORY_DB);
+        saveLocal(data);
         isDirty = false;
     }
 
-    // 2. Lưu vào Supabase - Chạy ngầm
+    // Lưu Supabase (nếu có thay đổi) - chạy ngầm
     if (pool) {
-        syncUsersToSupabase(MEMORY_DB.users).catch(err => console.error('Lỗi lưu Supabase:', err.message));
+        syncUsersToSupabase(data.users || []).catch(err => console.error('Lỗi lưu Supabase:', err.message));
     }
 }
 
@@ -384,34 +390,64 @@ async function initDB() {
         }
     }
 
-    // 2. Tải dữ liệu Feedback/Keys từ Gist hoặc Local (để không bị mất)
+    // 2. Tải dữ liệu cũ từ Gist (bao gồm cả feedback và users cũ)
     let localData = null;
     if (USE_GIST) {
         localData = await loadFromGist();
-        if (localData) console.log('✅ Đã tải feedback/keys từ Gist');
+        if (localData) console.log('✅ Đã tải dữ liệu cũ từ Gist');
     } else {
         localData = loadLocal();
-        if (localData) console.log('✅ Đã tải feedback/keys từ Local');
+        if (localData) console.log('✅ Đã tải dữ liệu cũ từ Local');
     }
 
-    // 3. Gộp dữ liệu: Users từ Supabase, Feedback/Keys từ Gist/Local
+    // 3. Gộp dữ liệu
     MEMORY_DB = JSON.parse(JSON.stringify(DEFAULT_DB));
-    
+
     if (localData) {
+        // Lấy feedbacks và keys (nếu có)
         MEMORY_DB.feedbacks = localData.feedbacks || [];
         MEMORY_DB.keys = localData.keys || [];
         MEMORY_DB.confirmedKeys = localData.confirmedKeys || [];
         MEMORY_DB.feedbackKeys = localData.feedbackKeys || [];
+
+        // ⭐ Nếu có users cũ trên Gist, chuyển sang Supabase
+        if (localData.users && localData.users.length > 0) {
+            console.log(`🔄 Phát hiện ${localData.users.length} users cũ, đang chuyển sang Supabase...`);
+            for (const u of localData.users) {
+                // Thêm vào Supabase (nếu chưa có)
+                if (!supabaseUsers.some(su => su.username === u.username)) {
+                    await pool.query(`
+                        INSERT INTO users (username, password, full_name, balance, purchase_history, deposit_history)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (username) DO NOTHING;
+                    `, [u.username, u.password || '', u.fullName || u.username, u.balance || 0, JSON.stringify(u.purchaseHistory || []), JSON.stringify(u.depositHistory || [])]);
+                }
+            }
+            console.log('✅ Đã chuyển xong users cũ sang Supabase.');
+
+            // ⭐ Xóa users cũ khỏi Gist
+            const newGistData = {
+                keys: MEMORY_DB.keys,
+                confirmedKeys: MEMORY_DB.confirmedKeys,
+                feedbackKeys: MEMORY_DB.feedbackKeys,
+                feedbacks: MEMORY_DB.feedbacks,
+                users: [] // Xóa trắng users
+            };
+            await gistRequest('PATCH', {
+                files: { [GIST_FILENAME]: { content: JSON.stringify(newGistData, null, 2) } }
+            });
+            console.log('🧹 Đã xóa users cũ khỏi Gist.');
+            
+            MEMORY_DB.users = []; // Cập nhật lại RAM
+        }
     }
 
-    // Ưu tiên users từ Supabase, nếu không có thì lấy từ Local
-    if (supabaseUsers.length > 0) {
+    // Nếu Supabase không có users, lấy từ Gist (nếu còn)
+    if (MEMORY_DB.users.length === 0 && supabaseUsers.length > 0) {
         MEMORY_DB.users = supabaseUsers;
-    } else if (localData && localData.users) {
-        MEMORY_DB.users = localData.users;
     }
 
-    // 4. Chạy migrate và lưu lại
+    // 4. Migrate và lưu
     migrateUsers(MEMORY_DB);
     saveLocal(MEMORY_DB);
     
@@ -671,8 +707,7 @@ app.post('/api/admin/cleanup-now', requireAdminToken, (req, res) => {
 // FEEDBACK
 // ==========================================
 app.get('/api/feedbacks', (req, res) => {
-    const db = readDB();
-    res.json({ feedbacks: [...db.feedbacks].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
+    res.json({ feedbacks: [...(MEMORY_DB.feedbacks || [])].sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)) });
 });
 
 app.post('/api/submit-feedback', async (req, res) => {
@@ -726,8 +761,8 @@ app.post('/api/submit-feedback', async (req, res) => {
             createdAt: new Date().toISOString()
         };
 
-        db.feedbacks.push(newFeedback);
-        await writeDB(db);
+        MEMORY_DB.feedbacks.push(newFeedback);
+        await writeDB(MEMORY_DB);
 
         res.json({ success: true, message: 'Cảm ơn bạn đã gửi đánh giá!', feedback: newFeedback });
 
