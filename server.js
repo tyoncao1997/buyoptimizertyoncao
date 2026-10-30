@@ -1250,59 +1250,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const chatCooldowns = new Map(); // Lưu thời gian chat cuối của user
-
-app.post('/api/chat-ai', async (req, res) => {
-    try {
-        const { username, message } = req.body;
-        
-        // 1. Kiểm tra đầu vào
-        if (!username || !message || message.trim().length === 0) {
-            return res.status(400).json({ error: 'Thiếu thông tin tin nhắn' });
-        }
-        if (message.length > 500) {
-            return res.status(400).json({ error: 'Tin nhắn quá dài (Tối đa 500 ký tự)' });
-        }
-
-        // 2. ⭐ CHỐNG SPAM: Kiểm tra thời gian chat gần nhất (5 giây/lần)
-        const now = Date.now();
-        const lastChatTime = chatCooldowns.get(username) || 0;
-        const COOLDOWN_MS = 5000;
-
-        if (now - lastChatTime < COOLDOWN_MS) {
-            const waitTime = Math.ceil((COOLDOWN_MS - (now - lastChatTime)) / 1000);
-            return res.status(429).json({ 
-                error: `Anh/Chị vui lòng đợi ${waitTime} giây để tiếp tục chat nhé!` 
-            });
-        }
-        chatCooldowns.set(username, now);
-
-        // 3. Gọi API Gemini qua SDK
-        const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-        if (!GEMINI_API_KEY) return res.status(500).json({ error: 'Server chưa cấu hình AI' });
-
-        const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-        const systemPrompt = `Bạn là trợ lý ảo chuyên nghiệp của TYON Shop - chuyên cung cấp dịch vụ tối ưu PC, Regmouse, sensi.
-        Bạn hãy trả lời ngắn gọn, thân thiện, chuyên nghiệp, xưng là "Em", gọi khách là "Anh/Chị". 
-        Không trả lời các câu hỏi ngoài lề về chính trị, tôn giáo. 
-        Nếu khách hỏi về bảng giá, hãy nhắc họ xem mục Bảng giá trên web. 
-        Câu hỏi của khách: ${message}`;
-
-        const result = await model.generateContent(systemPrompt);
-        const response = await result.response;
-        const reply = response.text();
-
-        res.json({ success: true, reply });
-
-    } catch (err) {
-        console.error('Lỗi AI:', err);
-        res.status(500).json({ error: err.message || 'Lỗi kết nối AI' });
-    }
-});
-
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => { console.error('❌ Server error:', err); res.status(500).json({ error: 'Lỗi server: ' + err.message }); });
 
