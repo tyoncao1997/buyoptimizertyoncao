@@ -1364,7 +1364,7 @@ app.post('/api/register', async (req, res) => {
 
         const newUser = {
             username,
-            password: hashedPassword,  // ✅ Lưu hash
+            password: password,
             fullName,
             balance: 0, purchaseHistory: [], depositHistory: [],
             createdAt: new Date().toISOString()
@@ -1395,8 +1395,9 @@ app.post('/api/login', async (req, res) => {
         if (!user) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
 
         // ⭐ SO SÁNH HASH
-        const match = await bcrypt.compare(password, user.password);
-        if (!match) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+if (password !== user.password) {
+            return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+        }
 
         res.json({
             success: true,
@@ -1441,12 +1442,11 @@ app.post('/api/change-password', async (req, res) => {
         const idx = db.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
         if (idx === -1) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
 
-        const match = await bcrypt.compare(oldPassword, db.users[idx].password);
-if (!match) {
-    return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
-}
+if (oldPassword !== db.users[idx].password) {
+            return res.status(400).json({ success: false, error: 'Mật khẩu cũ không chính xác' });
+        }
 
-db.users[idx].password = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+        db.users[idx].password = newPassword;
 await syncUsersToSupabase([db.users[idx]]);
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
@@ -1825,7 +1825,6 @@ setInterval(() => { syncSupabaseToGist(); }, 60 * 60 * 1000);
 
 async function startServer() {
     await initDB();
-    await migratePlaintextPasswords();
     syncSupabaseToGist();
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER BẢO MẬT chạy tại http://localhost:${PORT}`);
