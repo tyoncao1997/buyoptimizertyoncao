@@ -1586,23 +1586,33 @@ app.post('/api/register', async (req, res) => {
             newUser.balance, JSON.stringify([]), JSON.stringify([])
         ]);
 
+        // ⭐ TẠO SESSION TOKEN MỚI CHO USER VỪA ĐĂNG KÝ
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
+        
+        await pool.query(`
+            INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
+            VALUES ($1, $2, NOW(), NOW(), $3)
+        `, [newUser.username, sessionToken, expiresAt]);
+
         // ⭐ Đồng bộ vào RAM (cache, tuỳ chọn)
         MEMORY_DB.users.push(newUser);
 
         res.json({
             success: true,
             message: 'Đăng ký thành công',
-            user: { username: newUser.username, fullName: newUser.fullName, balance: 0 }
+            user: { username: newUser.username, fullName: newUser.fullName, balance: 0 },
+            sessionToken: sessionToken,          
+            expiresAt: expiresAt.toISOString()     
         });
-    } catch (err) {
-        console.error('Register error:', err);
-        // Bắt lỗi UNIQUE constraint nếu có race condition
-        if (err.code === '23505')
+    } catch (err) {                           
+        console.error('Register error:', err);  
+        if (err.code === '23505') 
             return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
-        res.status(500).json({ success: false, error: 'Lỗi server' });
-    }
-});
-
+        res.status(500).json({ success: false, error: 'Lỗi server' }); 
+    }                                           
+});   
+        
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
