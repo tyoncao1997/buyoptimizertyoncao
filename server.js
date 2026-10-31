@@ -1954,26 +1954,10 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
 
         const dbUser = rows[0];
         const balance = Number(dbUser.balance);
-        const purchaseHistory = dbUser.purchase_history || [];
-
-        // ⭐ 1. KIỂM TRA ĐÃ MUA CHƯA (Đặt lên trước khi check số dư)
-        // (Bỏ qua sản phẩm ID 1 là file miễn phí)
-        if (String(productId) !== '1') {
-            const alreadyOwned = purchaseHistory.some(item => String(item.productId) === String(productId));
-            if (alreadyOwned) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Bạn đã sở hữu file này trong lịch sử mua hàng!' 
-                });
-            }
-        }
-
-        // ⭐ 2. Kiểm tra số dư
-        if (balance < price) {
-            return res.status(400).json({ success: false, error: 'Số dư không đủ' });
-        }
+        if (balance < price) return res.status(400).json({ success: false, error: 'Số dư không đủ' });
 
         const newBalance = balance - price;
+        const purchaseHistory = dbUser.purchase_history || [];
         purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
 
         await pool.query(
