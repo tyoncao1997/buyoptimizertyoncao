@@ -629,7 +629,7 @@ async function migratePlaintextPasswords() {
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
 const SESSION_ABSOLUTE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function requireUserSession(req, res, next) {
@@ -666,14 +666,13 @@ async function requireUserSession(req, res, next) {
         const createdAt = new Date(session.created_at).getTime();
         
         // 3. Kiểm tra idle timeout (15 phút không hoạt động)
-        if (now - lastActivity > SESSION_IDLE_TIMEOUT_MS) {
-            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
-            return res.status(401).json({ 
-                success: false, 
-                error: 'Phiên đã hết hạn do không hoạt động quá 15 phút. Vui lòng đăng nhập lại.',
-                code: 'IDLE_TIMEOUT' 
-            });
-        }
+if (now - lastActivity > SESSION_IDLE_TIMEOUT_MS) {
+    return res.status(401).json({ 
+        success: false, 
+        error: 'Phiên đã hết hạn do không hoạt động quá 60 phút. Vui lòng đăng nhập lại.',
+        code: 'IDLE_TIMEOUT' 
+    });
+}
         
         // 4. Kiểm tra absolute timeout (7 ngày)
         if (now - createdAt > SESSION_ABSOLUTE_TIMEOUT_MS) {
@@ -686,10 +685,10 @@ async function requireUserSession(req, res, next) {
         }
         
         // 5. Cập nhật last_activity (heartbeat)
-        await pool.query(
-            'UPDATE sessions SET last_activity = NOW() WHERE token = $1',
-            [token]
-        );
+        pool.query(
+    'UPDATE sessions SET last_activity = NOW() WHERE token = $1',
+    [token]
+).catch(err => console.error('Heartbeat update failed:', err.message));
         
         // 6. Gắn thông tin vào request
         req.session = session;
@@ -1657,7 +1656,7 @@ app.post('/api/login', async (req, res) => {
         } else {
             MEMORY_DB.users.push({ ...userData, password: dbUser.password });
         }
-
+        console.log(`✅ [Login] ${dbUser.username} - Token: ${sessionToken.slice(0, 8)}...`);
         res.json({
             success: true,
             user: userData,
@@ -2170,6 +2169,9 @@ app.get('/api/health', globalLimiter, async (req, res) => {
     });
 });
 
+app.post('/api/heartbeat', requireUserSession, (req, res) => {
+    res.json({ success: true, lastActivity: new Date().toISOString() });
+});
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => { console.error('❌ Server error:', err); res.status(500).json({ error: 'Lỗi server: ' + err.message }); });
 
@@ -2184,7 +2186,7 @@ setInterval(async () => {
         const { rowCount } = await pool.query(`
             DELETE FROM sessions 
             WHERE expires_at < NOW() 
-               OR (NOW() - last_activity) > INTERVAL '30 minutes'
+               OR (NOW() - last_activity) > INTERVAL '90 minutes'
         `);
         if (rowCount > 0) {
             console.log(`🧹 Đã dọn ${rowCount} session hết hạn.`);
