@@ -629,6 +629,78 @@ async function migratePlaintextPasswords() {
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const SESSION_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+const SESSION_ABSOLUTE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function requireUserSession(req, res, next) {
+    try {
+        // 1. Lấy token từ header Authorization
+        const authHeader = req.headers['authorization'];
+        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Chưa đăng nhập',
+                code: 'NO_TOKEN' 
+            });
+        }
+        
+        const token = authHeader.substring(7);
+        
+        // 2. Tìm session trong Supabase
+        const { rows } = await pool.query(
+            'SELECT * FROM sessions WHERE token = $1',
+            [token]
+        );
+        
+        if (rows.length === 0) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Phiên không hợp lệ',
+                code: 'INVALID_TOKEN' 
+            });
+        }
+        
+        const session = rows[0];
+        const now = Date.now();
+        const lastActivity = new Date(session.last_activity).getTime();
+        const createdAt = new Date(session.created_at).getTime();
+        
+        // 3. Kiểm tra idle timeout (15 phút không hoạt động)
+        if (now - lastActivity > SESSION_IDLE_TIMEOUT_MS) {
+            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Phiên đã hết hạn do không hoạt động quá 15 phút. Vui lòng đăng nhập lại.',
+                code: 'IDLE_TIMEOUT' 
+            });
+        }
+        
+        // 4. Kiểm tra absolute timeout (7 ngày)
+        if (now - createdAt > SESSION_ABSOLUTE_TIMEOUT_MS) {
+            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Phiên đã hết hạn tuyệt đối. Vui lòng đăng nhập lại.',
+                code: 'ABSOLUTE_TIMEOUT' 
+            });
+        }
+        
+        // 5. Cập nhật last_activity (heartbeat)
+        await pool.query(
+            'UPDATE sessions SET last_activity = NOW() WHERE token = $1',
+            [token]
+        );
+        
+        // 6. Gắn thông tin vào request
+        req.session = session;
+        req.username = session.username;
+        
+        next();
+    } catch (err) {
+        console.error('Session middleware error:', err);
+        return res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+}
 
 // ⭐ ĐỌC TỪ BIẾN MÔI TRƯỜNG (.ENV)
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
@@ -1140,7 +1212,7 @@ app.post('/api/admin/confirm-key', requireAdminToken, async (req, res) => {
     const { pin, key } = req.body;
     if (!verifyPin(pin)) return res.status(403).json({ error: 'Mã PIN không chính xác' });
     
-    cleanupExpiredKeys();
+    await cleanupExpiredKeys();
     const db = readDB();
     const idx = db.keys.findIndex(k => k.key === key);
     if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy key' });
@@ -1154,24 +1226,30 @@ app.post('/api/admin/confirm-key', requireAdminToken, async (req, res) => {
     res.json({ success: true, message: 'Đã xác nhận Key thành công!', keyData: db.keys[idx] });
 });
 
-app.post('/api/check-key', (req, res) => {
-    const { key } = req.body;
-    if (!key) return res.status(400).json({ error: 'Thiếu key' });
-    cleanupExpiredKeys();
-    const db = readDB();
-    const k = db.keys.find(x => x.key.toUpperCase() === key.trim().toUpperCase());
-    if (!k) return res.status(404).json({ error: 'Key không tồn tại' });
-    const rem = calcRemainingTime(k.createdAt, k.status);
-    res.json({ success: true, keyData: { ...k,
-        remainingTime: rem && !rem.isExpired ? { hours: rem.hours, minutes: rem.minutes } : null } });
+app.post('/api/check-key', async (req, res) => {
+    try {                                    
+        const { key } = req.body;
+        if (!key) return res.status(400).json({ error: 'Thiếu key' });
+        await cleanupExpiredKeys();
+        const db = readDB();
+        const k = db.keys.find(x => x.key.toUpperCase() === key.trim().toUpperCase());
+        if (!k) return res.status(404).json({ error: 'Key không tồn tại' });
+        const rem = calcRemainingTime(k.createdAt, k.status);
+        res.json({ success: true, keyData: { ...k,
+            remainingTime: rem && !rem.isExpired ? { hours: rem.hours, minutes: rem.minutes } : null } });
+    } catch (err) {                   
+        console.error('Check key error:', err);
+        res.status(500).json({ error: 'Lỗi server' });
+    }
 });
 
-app.post('/api/search-keys', (req, res) => {
+
+app.post('/api/search-keys', async (req, res) => {
     try {
         const { query } = req.body;
         if (!query) return res.status(400).json({ error: 'Nhập từ khóa' });
         const term = query.trim().toUpperCase();
-        cleanupExpiredKeys();
+        await cleanupExpiredKeys();
         const db = readDB();
         const matches = db.keys.filter(k =>
             (k.key && k.key.toUpperCase().includes(term)) ||
@@ -1190,14 +1268,14 @@ app.post('/api/search-keys', (req, res) => {
     }
 });
 
-app.get('/api/confirmed-keys', (req, res) => {
-    cleanupExpiredKeys();
+app.get('/api/confirmed-keys', async (req, res) => {
+    await cleanupExpiredKeys();
     res.json({ keys: readDB().keys.filter(k => k.status === 'confirmed') });
 });
 
 // ⭐ ĐÃ BẢO MẬT BẰNG JWT MIDDLEWARE
-app.post('/api/admin/cleanup-now', requireAdminToken, (req, res) => {
-    const result = cleanupExpiredKeys();
+app.post('/api/admin/cleanup-now', requireAdminToken, async (req, res) => {
+    const result = await cleanupExpiredKeys();
     res.json({ success: true, message: `Đã xóa ${result.deletedCount} key hết hạn. Các tài khoản người dùng được giữ nguyên.` });
 });
 
@@ -1532,7 +1610,6 @@ app.post('/api/login', async (req, res) => {
         if (!username || !password)
             return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
 
-        // ⭐ LUÔN TRUY VẤN TRỰC TIẾP TỪ SUPABASE ĐỂ LẤY PASS MỚI NHẤT
         if (!pool) {
             return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
         }
@@ -1548,13 +1625,23 @@ app.post('/api/login', async (req, res) => {
 
         const dbUser = rows[0];
 
-        // ⭐ So sánh mật khẩu (có trim để tránh dư dấu cách)
         if (password.trim() !== dbUser.password.trim()) {
             return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
         }
 
-        // Cập nhật lại MEMORY_DB để đồng bộ (nếu cần dùng cho các API khác)
-        const memIdx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
+        // ⭐ TẠO SESSION TOKEN MỚI
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
+        
+        // ⭐ Xóa session cũ của user này (mỗi user chỉ có 1 session active)
+        await pool.query('DELETE FROM sessions WHERE username = $1', [dbUser.username]);
+        
+        // ⭐ Tạo session mới
+        await pool.query(`
+            INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
+            VALUES ($1, $2, NOW(), NOW(), $3)
+        `, [dbUser.username, sessionToken, expiresAt]);
+        
         const userData = {
             username: dbUser.username,
             fullName: dbUser.full_name,
@@ -1563,6 +1650,8 @@ app.post('/api/login', async (req, res) => {
             purchaseHistory: dbUser.purchase_history || []
         };
 
+        // Cập nhật MEMORY_DB cache
+        const memIdx = MEMORY_DB.users.findIndex(u => u.username.toLowerCase() === username.toLowerCase());
         if (memIdx !== -1) {
             MEMORY_DB.users[memIdx] = { ...MEMORY_DB.users[memIdx], ...userData };
         } else {
@@ -1571,7 +1660,9 @@ app.post('/api/login', async (req, res) => {
 
         res.json({
             success: true,
-            user: userData
+            user: userData,
+            sessionToken: sessionToken,                    // ⭐ Trả về token cho Frontend
+            expiresAt: expiresAt.toISOString()             // ⭐ Trả về hạn tuyệt đối
         });
     } catch (err) {
         console.error('Login error:', err);
@@ -1579,7 +1670,22 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.get('/api/user/:username', async (req, res) => {
+// ⭐ API LOGOUT (xóa session)
+app.post('/api/logout', async (req, res) => {
+    try {
+        const authHeader = req.headers['authorization'];
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            const token = authHeader.substring(7);
+            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+        }
+        res.json({ success: true, message: 'Đã đăng xuất' });
+    } catch (err) {
+        console.error('Logout error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.get('/api/user/:username', requireUserSession, async (req, res) => {
     try {
         if (!pool) return res.status(500).json({ success: false, error: 'DB chưa sẵn sàng' });
         
@@ -1606,7 +1712,7 @@ app.get('/api/user/:username', async (req, res) => {
     }
 });
 
-app.post('/api/change-password', async (req, res) => {
+app.post('/api/change-password', requireUserSession, async (req, res) => {
     try {
         const { username, oldPassword, newPassword } = req.body;
         if (!username || !oldPassword || !newPassword) {
@@ -1835,7 +1941,7 @@ app.post('/api/webhub-webhook', async (req, res) => {
 // ==========================================
 // MUA HÀNG / TẢI FILE
 // ==========================================
-app.post('/api/buy-product', async (req, res) => {
+app.post('/api/buy-product', requireUserSession, async (req, res) => {
     try {
         const { username, productId, price, productName } = req.body;
         if (!username || productId === undefined || price === undefined)
@@ -1875,7 +1981,7 @@ app.post('/api/buy-product', async (req, res) => {
 });
 
 // ⭐ SỬA: Tải 1 file cụ thể dưới dạng ZIP
-app.get('/api/download/:productId', async (req, res) => {
+app.get('/api/download/:productId', requireUserSession, async (req, res) => {
     const { username } = req.query;
     const productId = req.params.productId;
     if (!username) return res.status(401).send('Chưa đăng nhập');
@@ -1937,7 +2043,7 @@ app.get('/api/download/:productId', async (req, res) => {
 // ==========================================
 // TẢI NHIỀU FILE CHỈ ĐỊNH DƯỚI DẠNG ZIP
 // ==========================================
-app.get('/api/download-all', async (req, res) => {
+app.get('/api/download-all', requireUserSession, async (req, res) => {
     const { username, ids } = req.query;
     if (!username) return res.status(401).send('Chưa đăng nhập');
     if (!pool) return res.status(500).send('DB chưa sẵn sàng');
@@ -2027,7 +2133,7 @@ app.get('/payment-return', (req, res) => {
 // ==========================================
 // HEALTH + ERROR HANDLERS
 // ==========================================
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', globalLimiter, async (req, res) => {
     const db = MEMORY_DB || DEFAULT_DB;
     
     // ⭐ Đếm orders từ Supabase
@@ -2073,6 +2179,20 @@ app.use((err, req, res, next) => { console.error('❌ Server error:', err); res.
 setInterval(() => { cleanupExpiredKeys(); }, CLEANUP_INTERVAL_MS);
 setInterval(() => { flushToGist(true).catch(console.error); }, 60000);
 setInterval(() => { syncSupabaseToGist(); }, 60 * 60 * 1000);
+setInterval(async () => {
+    try {
+        const { rowCount } = await pool.query(`
+            DELETE FROM sessions 
+            WHERE expires_at < NOW() 
+               OR (NOW() - last_activity) > INTERVAL '30 minutes'
+        `);
+        if (rowCount > 0) {
+            console.log(`🧹 Đã dọn ${rowCount} session hết hạn.`);
+        }
+    } catch (err) {
+        console.error('Lỗi cleanup sessions:', err.message);
+    }
+}, 10 * 60 * 1000);
 
 async function startServer() {
     await initDB();
