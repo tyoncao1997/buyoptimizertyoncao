@@ -541,7 +541,6 @@ function generateOrderCode() {
 async function cleanupExpiredKeys() {
     let deletedCount = 0;
 
-    // 1. Dọn keys pending quá hạn trên Gist
     const db = await readStorage();
     const before = db.keys.length;
     db.keys = db.keys.filter(k => {
@@ -555,19 +554,20 @@ async function cleanupExpiredKeys() {
         console.log(`🧹 Đã xóa ${deletedCount} key pending hết hạn.`);
     }
 
-    // 2. Expire orders pending > 24h trên Supabase
     if (pool) {
         try {
             const expireBefore = new Date(Date.now() - KEY_EXPIRE_MS).toISOString();
             const { rowCount } = await pool.query(`
-                UPDATE orders SET
-                    status = 'expired',
-                    note = COALESCE(note, '') || ' | Tự động hết hạn sau 24h'
+                DELETE FROM orders 
                 WHERE status = 'pending' AND created_at < $1
             `, [expireBefore]);
-            if (rowCount > 0) console.log(`🧹 Đã expire ${rowCount} orders pending.`);
+            
+            if (rowCount > 0) {
+                console.log(`🧹 Đã XÓA VĨNH VIỄN ${rowCount} orders pending quá hạn.`);
+                deletedCount += rowCount;
+            }
         } catch (err) {
-            console.error('❌ Lỗi expire orders:', err.message);
+            console.error('❌ Lỗi xóa orders:', err.message);
         }
     }
     return { deletedCount };
