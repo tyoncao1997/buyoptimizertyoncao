@@ -605,35 +605,12 @@ app.post('/api/create-order', async (req, res) => {
         if (!plan || !customerName || !amount) {
             return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
         }
-        const { rows: existingOrders } = await pool.query(
-            `SELECT * FROM orders 
-             WHERE (customer_name = $1 OR ip_address = $2) 
-               AND status = 'pending' 
-               AND created_at > NOW() - INTERVAL '15 minutes'
-             ORDER BY created_at DESC LIMIT 1`,
-            [customerName, req.ip] 
-        );
-
-        if (existingOrders.length > 0) {
-            const oldOrder = existingOrders[0];
-            const qrContent = `SEVQR ${oldOrder.order_code}`;
-            const qrUrl = `https://img.vietqr.io/image/${SEPAY_BANK_CODE}-${SEPAY_BANK_ACCOUNT}-qr_only.png?amount=${oldOrder.amount}&addInfo=${encodeURIComponent(qrContent)}&accountName=${encodeURIComponent(SEPAY_ACCOUNT_HOLDER)}`;
-            
-            return res.json({
-                success: true, 
-                orderCode: oldOrder.order_code, 
-                amount: Number(oldOrder.amount),
-                qrContent, 
-                qrUrl,
-                bankInfo: { bankCode: SEPAY_BANK_CODE, accountNumber: SEPAY_BANK_ACCOUNT, accountHolder: SEPAY_ACCOUNT_HOLDER },
-                message: 'Bạn đã có đơn hàng đang chờ thanh toán. Vui lòng thanh toán đơn này!'
-            });
-        }
         const orderCode = generateOrderCode();
+        const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const key = `TYON-${plan.toUpperCase()}-${randomPart}-${orderCode.slice(-6)}`;
+
         const newOrder = {
-            orderCode, 
-            key: null,
-            plan,
+            orderCode, key, plan,
             planName: planName || plan.toUpperCase(),
             customerName,
             amount: parseInt(amount),
@@ -642,11 +619,15 @@ app.post('/api/create-order', async (req, res) => {
             paidAt: null, paidAmount: 0,
             transactionId: null, sepayTransactionId: null, note: ''
         };
+
+        const saved = await upsertOrderToSupabase(newOrder);
+        if (!saved) return res.status(500).json({ success: false, error: 'Không lưu được đơn hàng' });
+
         const qrContent = `SEVQR ${orderCode}`;
         const qrUrl = `https://img.vietqr.io/image/${SEPAY_BANK_CODE}-${SEPAY_BANK_ACCOUNT}-qr_only.png?amount=${amount}&addInfo=${encodeURIComponent(qrContent)}&accountName=${encodeURIComponent(SEPAY_ACCOUNT_HOLDER)}`;
 
         res.json({
-            success: true, orderCode, amount: parseInt(amount),
+            success: true, orderCode, key, amount: parseInt(amount),
             qrContent, qrUrl,
             bankInfo: { bankCode: SEPAY_BANK_CODE, accountNumber: SEPAY_BANK_ACCOUNT, accountHolder: SEPAY_ACCOUNT_HOLDER }
         });
