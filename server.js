@@ -724,7 +724,7 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             pendingOrders,
             paidOrders,
             underpaidOrders,
-            kycPending,
+            kycPending: kycPending,
             incurred: totalIncurred,
             revenue7d,
             orderStatus: {
@@ -1088,19 +1088,47 @@ app.post('/api/admin/kyc-list', requireAdminToken, async (req, res) => {
 app.post('/api/admin/approve-kyc', requireAdminToken, async (req, res) => {
     try {
         const { pin, username, action } = req.body; // action: 'approve' hoặc 'reject'
-        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'Sai mã PIN' });
-
-        const newStatus = action === 'approve' ? 'verified' : 'rejected';
         
-        await pool.query(`
-            UPDATE users 
-            SET kyc_status = $1, kyc_reviewed_at = NOW()
-            WHERE username = $2
-        `, [newStatus, username]);
+        // 1. Kiểm tra mã PIN
+        if (!verifyPin(pin)) {
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
 
-        res.json({ success: true, message: `Đã ${action === 'approve' ? 'duyệt' : 'từ chối'} KYC cho ${username}` });
+        // 2. Xử lý theo hành động
+        if (action === 'approve') {
+            // --- TRƯỜNG HỢP DUYỆT ---
+            await pool.query(`
+                UPDATE users 
+                SET kyc_status = 'verified', kyc_reviewed_at = NOW()
+                WHERE username = $1
+            `, [username]);
+            
+            res.json({ success: true, message: `Đã duyệt KYC cho ${username}` });
+
+        } else if (action === 'reject') {
+            // --- TRƯỜNG HỢP TỪ CHỐI (XÓA DỮ LIỆU KYC) ---
+            await pool.query(`
+                UPDATE users 
+                SET 
+                    kyc_status = 'unverified', 
+                    kyc_full_name = NULL, 
+                    kyc_id_number = NULL, 
+                    kyc_front_image = NULL, 
+                    kyc_back_image = NULL,
+                    kyc_submitted_at = NULL,
+                    kyc_reviewed_at = NOW()
+                WHERE username = $1
+            `, [username]);
+            
+            res.json({ success: true, message: `Đã từ chối và xóa dữ liệu KYC của ${username}` });
+
+        } else {
+            return res.status(400).json({ success: false, error: 'Hành động không hợp lệ' });
+        }
+
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('Approve KYC error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
     }
 });
 
@@ -1563,6 +1591,7 @@ app.get('/api/user/:username', requireUserSession, async (req, res) => {
                 username: dbUser.username,
                 balance: Number(dbUser.balance),
                 fullName: dbUser.full_name,
+                kyc_status: dbUser.kyc_status || 'unverified',
                 depositHistory: dbUser.deposit_history || [],
                 purchaseHistory: dbUser.purchase_history || []
             }
