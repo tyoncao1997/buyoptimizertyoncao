@@ -634,15 +634,26 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
         const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
         const kycPending = Number(kycRows[0].count);
+        
         const { rows: userRows } = await pool.query('SELECT COUNT(*) FROM users');
         const totalUsers = Number(userRows[0].count);
-        const { rows: allUsers } = await pool.query('SELECT * FROM users');
         
-        let totalRevenue = 0;
+        const { rows: allUsers } = await pool.query('SELECT * FROM users');
+        let cashIn = 0;
         const spenderMap = new Map();
-        const dailyRevenue = new Map();
 
         allUsers.forEach(u => {
+            let deposits = [];
+            try {
+                deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
+            } catch (e) {
+                deposits = [];
+            }
+            deposits.forEach(d => {
+                if (d.status === 'success' || !d.status) {
+                    cashIn += Number(d.amount || 0);
+                }
+            });
             let purchases = [];
             try {
                 purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
@@ -651,23 +662,33 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             }
 
             const spent = purchases.reduce((s, p) => s + (p.price || 0), 0);
-            totalRevenue += spent;
             spenderMap.set(u.username, {
                 username: u.username,
                 fullName: u.full_name,
                 totalSpent: spent
             });
-            purchases.forEach(p => {
-                const at = p.purchasedAt || p.createdAt;
-                if (!at) return;
-                const date = new Date(at);
-                const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
-                if (diffDays <= 7) {
-                    const key = date.toISOString().slice(0, 10);
-                    dailyRevenue.set(key, (dailyRevenue.get(key) || 0) + (p.price || 0));
-                }
-            });
         });
+        const { rows: orderRows } = await pool.query('SELECT * FROM orders');
+        const totalOrders = orderRows.length;
+        const paidOrdersList = orderRows.filter(o => o.status === 'paid');
+        const pendingOrdersList = orderRows.filter(o => o.status === 'pending');
+        const underpaidOrdersList = orderRows.filter(o => o.status === 'underpaid');
+        const rejectedOrdersList = orderRows.filter(o => o.status === 'rejected' || o.status === 'cancelled');
+        let totalRevenue = paidOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
+        let pendingAmount = pendingOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
+        const dailyRevenue = new Map();
+        
+        paidOrdersList.forEach(o => {
+            const at = o.created_at || o.updated_at;
+            if (!at) return;
+            const date = new Date(at);
+            const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
+            if (diffDays <= 7) {
+                const key = date.toISOString().slice(0, 10);
+                dailyRevenue.set(key, (dailyRevenue.get(key) || 0) + Number(o.amount));
+            }
+        });
+
         const revenue7d = [];
         for (let i = 6; i >= 0; i--) {
             const d = new Date();
@@ -678,11 +699,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 revenue: dailyRevenue.get(key) || 0
             });
         }
-        const { rows: orderRows } = await pool.query('SELECT * FROM orders');
-        const totalOrders = orderRows.length;
-        const pendingOrders = orderRows.filter(o => o.status === 'pending').length;
-        const paidOrders = orderRows.filter(o => o.status === 'paid').length;
-        const underpaidOrders = orderRows.filter(o => o.status === 'underpaid').length;
         const recentOrders = orderRows
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5)
@@ -693,6 +709,7 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 amount: Number(o.amount),
                 status: o.status
             }));
+
         const topSpenders = [...spenderMap.values()]
             .sort((a, b) => b.totalSpent - a.totalSpent)
             .slice(0, 5);
@@ -718,25 +735,28 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         res.json({
             success: true,
             totalUsers,
-            totalRevenue,
-            totalOrders,
+            kycPending,
             totalFeedbacks,
-            pendingOrders,
-            paidOrders,
-            underpaidOrders,
-            kycPending: kycPending,
+            totalRevenue: totalRevenue,
+            cashIn: cashIn,
+            pendingAmount: pendingAmount,
             incurred: totalIncurred,
+            totalOrders,
+            pendingOrders: pendingOrdersList.length,
+            paidOrders: paidOrdersList.length,
+            underpaidOrders: underpaidOrdersList.length,
             revenue7d,
             orderStatus: {
-                paid: paidOrders,
-                pending: pendingOrders,
-                underpaid: underpaidOrders,
-                incurred: totalIncurred,
-                other: totalOrders - paidOrders - pendingOrders - underpaidOrders
+                paid: paidOrdersList.length,
+                pending: pendingOrdersList.length,
+                underpaid: underpaidOrdersList.length,
+                rejected: rejectedOrdersList.length,
+                other: totalOrders - paidOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length
             },
             recentOrders,
             topSpenders
         });
+
     } catch (err) {
         console.error('Admin stats error:', err);
         res.status(500).json({ success: false, error: err.message });
