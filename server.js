@@ -2132,42 +2132,6 @@ app.post('/api/heartbeat', requireUserSession, (req, res) => {
     res.json({ success: true, lastActivity: new Date().toISOString() });
 });
 
-// ==========================================
-// 404 + ERROR HANDLERS
-// ==========================================
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
-app.use((err, req, res, next) => {
-    console.error('❌ Server error:', err);
-    res.status(500).json({ error: 'Lỗi server: ' + err.message });
-});
-
-// ==========================================
-// TIMERS
-// ==========================================
-// Dọn keys hết hạn + expire orders mỗi giờ
-setInterval(() => {
-    cleanupExpiredKeys().catch(err => console.error('cleanupExpiredKeys error:', err.message));
-}, CLEANUP_INTERVAL_MS);
-
-// Migrate password plaintext còn sót (mỗi giờ)
-setInterval(() => {
-    migratePlaintextPasswords().catch(err => console.error('migratePassword error:', err.message));
-}, 60 * 60 * 1000);
-
-// Dọn sessions hết hạn (mỗi 10 phút)
-setInterval(async () => {
-    try {
-        const { rowCount } = await pool.query(`
-            DELETE FROM sessions 
-            WHERE expires_at < NOW() 
-               OR (NOW() - last_activity) > INTERVAL '90 minutes'
-        `);
-        if (rowCount > 0) console.log(`🧹 Đã dọn ${rowCount} session hết hạn.`);
-    } catch (err) {
-        console.error('Lỗi cleanup sessions:', err.message);
-    }
-}, 10 * 60 * 1000);
-
 app.post('/api/admin/google-token', async (req, res) => {
     try {
         const { code, redirectUri } = req.body;
@@ -2224,6 +2188,41 @@ app.post('/api/admin/google-token', async (req, res) => {
     }
 });
 
+// ==========================================
+// 404 + ERROR HANDLERS
+// ==========================================
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
+app.use((err, req, res, next) => {
+    console.error('❌ Server error:', err);
+    res.status(500).json({ error: 'Lỗi server: ' + err.message });
+});
+
+// ==========================================
+// TIMERS
+// ==========================================
+// Dọn keys hết hạn + expire orders mỗi giờ
+setInterval(() => {
+    cleanupExpiredKeys().catch(err => console.error('cleanupExpiredKeys error:', err.message));
+}, CLEANUP_INTERVAL_MS);
+
+// Migrate password plaintext còn sót (mỗi giờ)
+setInterval(() => {
+    migratePlaintextPasswords().catch(err => console.error('migratePassword error:', err.message));
+}, 60 * 60 * 1000);
+
+// Dọn sessions hết hạn (mỗi 10 phút)
+setInterval(async () => {
+    try {
+        const { rowCount } = await pool.query(`
+            DELETE FROM sessions 
+            WHERE expires_at < NOW() 
+               OR (NOW() - last_activity) > INTERVAL '90 minutes'
+        `);
+        if (rowCount > 0) console.log(`🧹 Đã dọn ${rowCount} session hết hạn.`);
+    } catch (err) {
+        console.error('Lỗi cleanup sessions:', err.message);
+    }
+}, 10 * 60 * 1000);
 // ==========================================
 // START SERVER
 // ==========================================
