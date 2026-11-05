@@ -637,63 +637,89 @@ app.get('/api/config', (req, res) => {
 // ==========================================
 app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
+        // 1. Lấy dữ liệu KYC và Users
         const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
         const kycPending = Number(kycRows[0].count);
         
-        const { rows: userRows } = await pool.query('SELECT COUNT(*) FROM users');
-        const totalUsers = Number(userRows[0].count);
-        
         const { rows: allUsers } = await pool.query('SELECT * FROM users');
+        const totalUsers = allUsers.length;
+        
+        // 2. Tính toán dòng tiền và doanh thu từ Users
         let cashIn = 0;
+        let actualRevenue = 0; // Doanh thu gộp thực tế (từ mua file)
+        let totalIncurred = 0; // Tiền phát sinh (hoàn trả)
+        let totalUserBalance = 0; // Tổng số dư còn lại của tất cả user
         const spenderMap = new Map();
 
         allUsers.forEach(u => {
+            // Cộng dồn số dư hiện tại của user
+            totalUserBalance += Number(u.balance || 0);
+
+            // --- Xử lý lịch sử nạp tiền ---
             let deposits = [];
             try {
                 deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
-            } catch (e) {
-                deposits = [];
-            }
+            } catch (e) { deposits = []; }
+            
             deposits.forEach(d => {
-    if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') return;   // ✅ ĐÚNG
+                const amt = Number(d.amount || 0);
+                // Nếu là hoàn tiền thì tính vào phát sinh
+                if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') {
+                    totalIncurred += amt;
+                } else if (d.status === 'success' || !d.status) {
+                    // Nếu là nạp tiền thành công thì cộng vào dòng tiền thu về
+                    cashIn += amt;
+                }
+            });
 
-    if (d.status === 'success' || !d.status) {
-        cashIn += Number(d.amount || 0);
-    }
-});
+            // --- Xử lý lịch sử mua hàng (để tính top chi tiêu) ---
             let purchases = [];
             try {
                 purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
-            } catch (e) {
-                purchases = [];
-            }
+            } catch (e) { purchases = []; }
 
-            const spent = purchases.reduce((s, p) => s + (p.price || 0), 0);
+            const spent = purchases.reduce((s, p) => s + (Number(p.price) || 0), 0);
+            
             spenderMap.set(u.username, {
                 username: u.username,
                 fullName: u.full_name,
                 totalSpent: spent
             });
         });
+
+        // 🟢 TÍNH DOANH THU GỘP CHUẨN XÁC BẰNG CÔNG THỨC KẾ TOÁN
+        // Doanh thu = Tổng tiền nạp vào - Tổng số dư còn lại trong ví
+        actualRevenue = cashIn - totalUserBalance;
+        if (actualRevenue < 0) actualRevenue = 0; // Tránh âm nếu có lỗi dữ liệu
+
+        // 3. Xử lý Orders
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
         const totalOrders = orderRows.length;
         const paidOrdersList = orderRows.filter(o => o.status === 'paid');
         const pendingOrdersList = orderRows.filter(o => o.status === 'pending');
         const underpaidOrdersList = orderRows.filter(o => o.status === 'underpaid');
         const rejectedOrdersList = orderRows.filter(o => o.status === 'rejected' || o.status === 'cancelled');
-        let totalRevenue = paidOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
-        let pendingAmount = pendingOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
-        const dailyRevenue = new Map();
         
-        paidOrdersList.forEach(o => {
-            const at = o.created_at || o.updated_at;
-            if (!at) return;
-            const date = new Date(at);
-            const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
-            if (diffDays <= 7) {
-                const key = date.toISOString().slice(0, 10);
-                dailyRevenue.set(key, (dailyRevenue.get(key) || 0) + Number(o.amount));
-            }
+        let pendingAmount = pendingOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
+        
+        // 4. Tính toán biểu đồ 7 ngày (Dựa trên lịch sử mua hàng)
+        const dailyRevenue = new Map();
+        allUsers.forEach(u => {
+            let purchases = [];
+            try {
+                purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
+            } catch (e) { purchases = []; }
+
+            purchases.forEach(p => {
+                const at = p.purchasedAt || p.createdAt;
+                if (!at) return;
+                const date = new Date(at);
+                const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
+                if (diffDays <= 7) {
+                    const key = date.toISOString().slice(0, 10);
+                    dailyRevenue.set(key, (dailyRevenue.get(key) || 0) + Number(p.price || 0));
+                }
+            });
         });
 
         const revenue7d = [];
@@ -706,6 +732,8 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 revenue: dailyRevenue.get(key) || 0
             });
         }
+
+        // 5. Lấy dữ liệu Đơn hàng gần đây & Top chi tiêu
         const recentOrders = orderRows
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5)
@@ -720,38 +748,40 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         const topSpenders = [...spenderMap.values()]
             .sort((a, b) => b.totalSpent - a.totalSpent)
             .slice(0, 5);
+
+        // 6. Đếm Feedback
         let totalFeedbacks = 0;
         try {
             const db = await readStorage();
             totalFeedbacks = (db.feedbacks || []).length;
         } catch (_) {}
-        let totalIncurred = 0;
-        allUsers.forEach(u => {
-            let deposits = [];
-            try {
-                deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
-            } catch (e) {
-                deposits = [];
-            }
-            deposits.forEach(d => {
-                if (d.method === 'admin_refund') {
-                    totalIncurred += Number(d.amount);
-                }
-            });
-        });
+
+        // 7. Tính lợi nhuận ròng
+        const netProfit = actualRevenue - totalIncurred;
+        const inputCost = 0; // Chưa có cơ chế nhập chi phí đầu vào
+
+        // 8. Trả về kết quả
         res.json({
             success: true,
             totalUsers,
             kycPending,
             totalFeedbacks,
-            totalRevenue: totalRevenue,
-            cashIn: cashIn,
+            
+            // Các chỉ số tài chính
+            totalRevenue: actualRevenue, // Doanh thu gộp (tính theo công thức nạp - số dư)
+            cashIn: cashIn,              // Dòng tiền thu về
+            incurred: totalIncurred,     // Phát sinh
+            netProfit: netProfit,        // Lợi nhuận ròng
+            inputCost: inputCost,        // Đầu vào
+            
+            // Thông tin Orders
             pendingAmount: pendingAmount,
-            incurred: totalIncurred,
             totalOrders,
             pendingOrders: pendingOrdersList.length,
             paidOrders: paidOrdersList.length,
             underpaidOrders: underpaidOrdersList.length,
+            
+            // Dữ liệu biểu đồ
             revenue7d,
             orderStatus: {
                 paid: paidOrdersList.length,
