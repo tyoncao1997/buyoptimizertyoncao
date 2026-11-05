@@ -72,7 +72,7 @@ const globalLimiter = rateLimit({
 
 const adminLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 30,
+    max: 2400,
     message: { error: 'Quá nhiều request admin. Vui lòng thử lại sau.' }
 });
 
