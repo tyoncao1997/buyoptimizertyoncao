@@ -632,10 +632,10 @@ app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
 // ==========================================
 app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
-        // Tổng users
         const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
         const kycPending = Number(kycRows[0].count);
-        // Tất cả users để tính revenue
+        const { rows: userRows } = await pool.query('SELECT COUNT(*) FROM users');
+        const totalUsers = Number(userRows[0].count);
         const { rows: allUsers } = await pool.query('SELECT * FROM users');
         
         let totalRevenue = 0;
@@ -643,7 +643,13 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         const dailyRevenue = new Map();
 
         allUsers.forEach(u => {
-            const purchases = u.purchase_history || [];
+            let purchases = [];
+            try {
+                purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
+            } catch (e) {
+                purchases = [];
+            }
+
             const spent = purchases.reduce((s, p) => s + (p.price || 0), 0);
             totalRevenue += spent;
             spenderMap.set(u.username, {
@@ -651,8 +657,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 fullName: u.full_name,
                 totalSpent: spent
             });
-
-            // Revenue 7 ngày qua
             purchases.forEach(p => {
                 const at = p.purchasedAt || p.createdAt;
                 if (!at) return;
@@ -664,8 +668,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 }
             });
         });
-
-        // Revenue 7 ngày gần nhất (kể cả ngày 0)
         const revenue7d = [];
         for (let i = 6; i >= 0; i--) {
             const d = new Date();
@@ -676,15 +678,11 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 revenue: dailyRevenue.get(key) || 0
             });
         }
-
-        // Orders
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
         const totalOrders = orderRows.length;
         const pendingOrders = orderRows.filter(o => o.status === 'pending').length;
         const paidOrders = orderRows.filter(o => o.status === 'paid').length;
         const underpaidOrders = orderRows.filter(o => o.status === 'underpaid').length;
-
-        // Recent orders
         const recentOrders = orderRows
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5)
@@ -695,29 +693,28 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 amount: Number(o.amount),
                 status: o.status
             }));
-
-        // Top spenders
         const topSpenders = [...spenderMap.values()]
             .sort((a, b) => b.totalSpent - a.totalSpent)
             .slice(0, 5);
-
-        // Feedbacks
         let totalFeedbacks = 0;
         try {
             const db = await readStorage();
             totalFeedbacks = (db.feedbacks || []).length;
         } catch (_) {}
-
         let totalIncurred = 0;
-allUsers.forEach(u => {
-    (u.deposit_history || []).forEach(d => {
-        if (d.method === 'admin_refund') {
-            totalIncurred += Number(d.amount);
-        }
-    });
-});
-
-        
+        allUsers.forEach(u => {
+            let deposits = [];
+            try {
+                deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
+            } catch (e) {
+                deposits = [];
+            }
+            deposits.forEach(d => {
+                if (d.method === 'admin_refund') {
+                    totalIncurred += Number(d.amount);
+                }
+            });
+        });
         res.json({
             success: true,
             totalUsers,
@@ -727,6 +724,8 @@ allUsers.forEach(u => {
             pendingOrders,
             paidOrders,
             underpaidOrders,
+            kycPending,
+            incurred: totalIncurred,
             revenue7d,
             orderStatus: {
                 paid: paidOrders,
@@ -743,7 +742,6 @@ allUsers.forEach(u => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 // ==========================================
 // ADMIN REVENUE - Chi tiết doanh thu
 // ==========================================
