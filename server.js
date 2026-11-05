@@ -633,9 +633,8 @@ app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
 app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
         // Tổng users
-        const { rows: userRows } = await pool.query('SELECT COUNT(*) FROM users');
-        const totalUsers = Number(userRows[0].count);
-
+        const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
+        const kycPending = Number(kycRows[0].count);
         // Tất cả users để tính revenue
         const { rows: allUsers } = await pool.query('SELECT * FROM users');
         
@@ -1070,6 +1069,40 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
     } catch (err) {
         console.error('Admin reject order error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/admin/kyc-list', requireAdminToken, async (req, res) => {
+    try {
+        const { rows } = await pool.query(`
+            SELECT username, full_name, email, kyc_status, kyc_full_name, kyc_id_number, 
+                   kyc_front_image, kyc_back_image, kyc_submitted_at 
+            FROM users 
+            WHERE kyc_status IN ('pending', 'verified', 'rejected')
+            ORDER BY kyc_submitted_at DESC
+        `);
+        res.json({ success: true, kycs: rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/admin/approve-kyc', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, username, action } = req.body; // action: 'approve' hoặc 'reject'
+        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'Sai mã PIN' });
+
+        const newStatus = action === 'approve' ? 'verified' : 'rejected';
+        
+        await pool.query(`
+            UPDATE users 
+            SET kyc_status = $1, kyc_reviewed_at = NOW()
+            WHERE username = $2
+        `, [newStatus, username]);
+
+        res.json({ success: true, message: `Đã ${action === 'approve' ? 'duyệt' : 'từ chối'} KYC cho ${username}` });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
@@ -1576,6 +1609,35 @@ app.post('/api/change-password', requireUserSession, async (req, res) => {
         res.json({ success: true, message: 'Đổi mật khẩu thành công!' });
     } catch (err) {
         console.error('Change password error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/user/submit-kyc', requireUserSession, async (req, res) => {
+    try {
+        const { username, fullName, idNumber, frontImage, backImage } = req.body;
+        
+        if (req.username.toLowerCase() !== username.toLowerCase()) {
+            return res.status(403).json({ success: false, error: 'Không có quyền' });
+        }
+        if (!fullName || !idNumber || !frontImage || !backImage) {
+            return res.status(400).json({ success: false, error: 'Vui lòng cung cấp đủ thông tin và ảnh' });
+        }
+
+        await pool.query(`
+            UPDATE users 
+            SET kyc_status = 'pending', 
+                kyc_full_name = $1, 
+                kyc_id_number = $2, 
+                kyc_front_image = $3, 
+                kyc_back_image = $4,
+                kyc_submitted_at = NOW()
+            WHERE username = $5
+        `, [fullName, idNumber, frontImage, backImage, username]);
+
+        res.json({ success: true, message: 'Đã gửi yêu cầu KYC, vui lòng chờ duyệt.' });
+    } catch (err) {
+        console.error('Submit KYC error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
