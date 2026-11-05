@@ -422,6 +422,7 @@ app.use(cors({
         FRONTEND_URL,
         'https://buyoptimizertc.infinityfreeapp.com',
         'https://buyoptimizertyoncao.onrender.com',
+        'https://dashboardtc.infinityfreeapp.com',
         'http://localhost:3000',
         'http://127.0.0.1:3000',
         'http://localhost:5500',
