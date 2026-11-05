@@ -1000,6 +1000,68 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
     }
 });
 
+// 🟢 CẬP NHẬT LOGIC TỪ CHỐI ĐƠN HÀNG (HOÀN TIỀN)
+app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, orderCode } = req.body;
+        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+
+        // 1. Lấy thông tin đơn hàng
+        const { rows } = await pool.query('SELECT * FROM orders WHERE order_code = $1', [orderCode]);
+        if (rows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+        
+        const order = rows[0];
+        if (order.status !== 'pending') {
+            return res.status(400).json({ success: false, error: 'Chỉ có thể từ chối đơn đang chờ xử lý' });
+        }
+
+        // 2. Cập nhật trạng thái đơn thành cancelled (Từ chối)
+        const note = (order.note || '') + ` | Admin ${req.admin.username} từ chối.`;
+        await pool.query(`
+            UPDATE orders SET status='cancelled', confirmed_by=$1, note=$2
+            WHERE order_code=$3
+        `, [req.admin.username, note, orderCode]);
+
+        // 3. 🟢 LOGIC HOÀN TIỀN: Cộng lại tiền vào ví user
+        try {
+            const user = await getUserByUsername(order.customer_name);
+            if (user) {
+                const refundAmount = Number(order.amount);
+                const currentBalance = Number(user.balance);
+                const newBalance = currentBalance + refundAmount;
+                
+                // Lấy lịch sử nạp tiền hiện tại
+                let depositHistory = user.deposit_history || [];
+                // Thêm bản ghi hoàn tiền
+                depositHistory.push({
+                    amount: refundAmount,
+                    method: 'admin_refund',
+                    content: `Hoàn tiền đơn hàng bị từ chối: ${orderCode}`,
+                    transactionId: 'REFUND_' + Date.now(),
+                    at: new Date().toISOString(),
+                    addedBy: req.admin.username
+                });
+
+                // Cập nhật DB
+                await pool.query(
+                    'UPDATE users SET balance = $1, deposit_history = $2 WHERE username = $3',
+                    [newBalance, JSON.stringify(depositHistory), user.username]
+                );
+                console.log(`💰 [REFUND] Đã hoàn ${refundAmount}đ cho ${user.username} do từ chối đơn ${orderCode}`);
+            }
+        } catch (refundErr) {
+            console.error('❌ Lỗi hoàn tiền:', refundErr.message);
+            // Vẫn trả về success cho admin dù hoàn tiền lỗi, nhưng log lại
+        }
+
+        console.log(`❌ [ADMIN] ${req.admin.username} từ chối đơn ${orderCode}`);
+        res.json({ success: true, message: `Đã từ chối đơn ${orderCode}. Tiền đã được hoàn vào ví khách hàng.` });
+    } catch (err) {
+        console.error('Admin reject order error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
 // ==========================================
 // KEYS (Gist)
 // ==========================================
