@@ -573,6 +573,246 @@ async function cleanupExpiredKeys() {
     return { deletedCount };
 }
 
+const { OAuth2Client } = require('google-auth-library');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '838516268721-ajsodtjgiis0djjoord8db84h56cl8nv.apps.googleusercontent.com';
+
+// Danh sách email admin được phép (thêm email của bạn vào)
+const ALLOWED_ADMIN_EMAILS = (process.env.ALLOWED_ADMIN_EMAILS || 'caoquangtuan97@gmail.com')
+    .split(',').map(e => e.trim().toLowerCase());
+
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
+    try {
+        const { credential } = req.body;
+        if (!credential) return res.status(400).json({ success: false, error: 'Thiếu credential' });
+
+        // Verify Google ID Token
+        const ticket = await googleClient.verifyIdToken({
+            idToken: credential,
+            audience: GOOGLE_CLIENT_ID
+        });
+        const payload = ticket.getPayload();
+        const email = (payload.email || '').toLowerCase();
+
+        if (!payload.email_verified) {
+            return res.status(401).json({ success: false, error: 'Email chưa xác thực' });
+        }
+
+        if (!ALLOWED_ADMIN_EMAILS.includes(email)) {
+            console.warn(`🚫 [Admin] Từ chối email không có quyền: ${email}`);
+            return res.status(403).json({ success: false, error: `Email ${email} không có quyền admin` });
+        }
+
+        // Tạo JWT admin token
+        const token = jwt.sign(
+            {
+                username: email,
+                email: email,
+                name: payload.name,
+                picture: payload.picture,
+                role: 'admin',
+                method: 'google'
+            },
+            JWT_SECRET,
+            { expiresIn: '8h' }
+        );
+
+        console.log(`✅ [Admin Login] ${email} - IP=${req.ip}`);
+        res.json({ success: true, token, email });
+    } catch (err) {
+        console.error('❌ Google login error:', err.message);
+        res.status(401).json({ success: false, error: 'Xác thực Google thất bại' });
+    }
+});
+
+// ==========================================
+// ADMIN STATS - Tổng quan
+// ==========================================
+app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
+    try {
+        // Tổng users
+        const { rows: userRows } = await pool.query('SELECT COUNT(*) FROM users');
+        const totalUsers = Number(userRows[0].count);
+
+        // Tất cả users để tính revenue
+        const { rows: allUsers } = await pool.query('SELECT * FROM users');
+        
+        let totalRevenue = 0;
+        const spenderMap = new Map();
+        const dailyRevenue = new Map();
+
+        allUsers.forEach(u => {
+            const purchases = u.purchase_history || [];
+            const spent = purchases.reduce((s, p) => s + (p.price || 0), 0);
+            totalRevenue += spent;
+            spenderMap.set(u.username, {
+                username: u.username,
+                fullName: u.full_name,
+                totalSpent: spent
+            });
+
+            // Revenue 7 ngày qua
+            purchases.forEach(p => {
+                const at = p.purchasedAt || p.createdAt;
+                if (!at) return;
+                const date = new Date(at);
+                const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
+                if (diffDays <= 7) {
+                    const key = date.toISOString().slice(0, 10);
+                    dailyRevenue.set(key, (dailyRevenue.get(key) || 0) + (p.price || 0));
+                }
+            });
+        });
+
+        // Revenue 7 ngày gần nhất (kể cả ngày 0)
+        const revenue7d = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const key = d.toISOString().slice(0, 10);
+            revenue7d.push({
+                date: d.toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit' }),
+                revenue: dailyRevenue.get(key) || 0
+            });
+        }
+
+        // Orders
+        const { rows: orderRows } = await pool.query('SELECT * FROM orders');
+        const totalOrders = orderRows.length;
+        const pendingOrders = orderRows.filter(o => o.status === 'pending').length;
+        const paidOrders = orderRows.filter(o => o.status === 'paid').length;
+        const underpaidOrders = orderRows.filter(o => o.status === 'underpaid').length;
+
+        // Recent orders
+        const recentOrders = orderRows
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .slice(0, 5)
+            .map(o => ({
+                orderCode: o.order_code,
+                customerName: o.customer_name,
+                planName: o.plan_name,
+                amount: Number(o.amount),
+                status: o.status
+            }));
+
+        // Top spenders
+        const topSpenders = [...spenderMap.values()]
+            .sort((a, b) => b.totalSpent - a.totalSpent)
+            .slice(0, 5);
+
+        // Feedbacks
+        let totalFeedbacks = 0;
+        try {
+            const db = await readStorage();
+            totalFeedbacks = (db.feedbacks || []).length;
+        } catch (_) {}
+
+        res.json({
+            success: true,
+            totalUsers,
+            totalRevenue,
+            totalOrders,
+            totalFeedbacks,
+            pendingOrders,
+            paidOrders,
+            underpaidOrders,
+            revenue7d,
+            orderStatus: {
+                paid: paidOrders,
+                pending: pendingOrders,
+                underpaid: underpaidOrders,
+                other: totalOrders - paidOrders - pendingOrders - underpaidOrders
+            },
+            recentOrders,
+            topSpenders
+        });
+    } catch (err) {
+        console.error('Admin stats error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ==========================================
+// ADMIN REVENUE - Chi tiết doanh thu
+// ==========================================
+app.post('/api/admin/revenue', requireAdminToken, async (req, res) => {
+    try {
+        const { period = '7d' } = req.body;
+        
+        const { rows: allUsers } = await pool.query('SELECT * FROM users');
+        
+        let daysLimit = 7;
+        if (period === '30d') daysLimit = 30;
+        else if (period === '90d') daysLimit = 90;
+        else if (period === 'all') daysLimit = 99999;
+
+        const cutoff = Date.now() - daysLimit * 24 * 60 * 60 * 1000;
+
+        let totalRevenue = 0, depositTotal = 0, purchaseTotal = 0;
+        const chartMap = new Map();
+        const transactions = [];
+
+        allUsers.forEach(u => {
+            // Deposits
+            (u.deposit_history || []).forEach(d => {
+                const at = d.at || d.createdAt;
+                if (!at || new Date(at).getTime() < cutoff) return;
+                const amt = Number(d.amount) || 0;
+                depositTotal += amt;
+                transactions.push({
+                    time: at, username: u.username,
+                    type: 'deposit', amount: amt,
+                    desc: d.method || 'nạp tiền'
+                });
+                const key = new Date(at).toISOString().slice(0, 10);
+                chartMap.set(key, (chartMap.get(key) || 0) + amt);
+            });
+            // Purchases
+            (u.purchase_history || []).forEach(p => {
+                const at = p.purchasedAt || p.createdAt;
+                if (!at || new Date(at).getTime() < cutoff) return;
+                const amt = Number(p.price) || 0;
+                purchaseTotal += amt;
+                transactions.push({
+                    time: at, username: u.username,
+                    type: 'purchase', amount: amt,
+                    desc: p.productName || 'mua file'
+                });
+                const key = new Date(at).toISOString().slice(0, 10);
+                chartMap.set(key, (chartMap.get(key) || 0) + amt);
+            });
+        });
+
+        totalRevenue = purchaseTotal; // Doanh thu thực = tiền mua file
+
+        // Build chart data
+        const chartData = [];
+        const totalDays = Math.min(daysLimit, 30);
+        for (let i = totalDays - 1; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const key = d.toISOString().slice(0, 10);
+            chartData.push({
+                label: d.toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit' }),
+                value: chartMap.get(key) || 0
+            });
+        }
+
+        transactions.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+        res.json({
+            success: true,
+            totalRevenue, depositTotal, purchaseTotal,
+            chartData,
+            transactions: transactions.slice(0, 500)
+        });
+    } catch (err) {
+        console.error('Admin revenue error:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // ==========================================
 // ADMIN LOGIN
 // ==========================================
