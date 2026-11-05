@@ -1075,10 +1075,10 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
 app.post('/api/admin/kyc-list', requireAdminToken, async (req, res) => {
     try {
         const { rows } = await pool.query(`
-            SELECT username, full_name, email, kyc_status, kyc_full_name, kyc_id_number, 
-                   kyc_front_image, kyc_back_image, kyc_submitted_at 
-            FROM users 
-            WHERE kyc_status IN ('pending', 'verified', 'rejected')
+            SELECT username, full_name, kyc_status, kyc_full_name, kyc_id_number, 
+                       kyc_front_image, kyc_back_image, kyc_submitted_at 
+                FROM users 
+                WHERE kyc_status IN ('pending', 'verified', 'rejected')
             ORDER BY kyc_submitted_at DESC
         `);
         res.json({ success: true, kycs: rows });
