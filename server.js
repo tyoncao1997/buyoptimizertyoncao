@@ -2224,62 +2224,6 @@ app.post('/api/admin/google-token', async (req, res) => {
     }
 });
 
-app.post('/api/admin/google-token', async (req, res) => {
-    try {
-        const { code, redirectUri } = req.body;
-        if (!code) return res.status(400).json({ success: false, error: 'Thiếu code' });
-
-        // 1. Gọi lên Google để đổi code lấy Access Token
-        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                code: code,
-                client_id: process.env.GOOGLE_CLIENT_ID,
-                client_secret: process.env.GOOGLE_CLIENT_SECRET, // BẮT BUỘC phải có trên Render
-                redirect_uri: redirectUri,
-                grant_type: 'authorization_code'
-            })
-        });
-        const tokenData = await tokenRes.json();
-        
-        if (tokenData.error) {
-            return res.status(400).json({ success: false, error: tokenData.error_description || tokenData.error });
-        }
-
-        // 2. Dùng Access Token lấy thông tin Email
-        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-            headers: { Authorization: `Bearer ${tokenData.access_token}` }
-        });
-        const userData = await userRes.json();
-        const email = (userData.email || '').toLowerCase();
-
-        if (!userData.verified_email) {
-            return res.status(401).json({ success: false, error: 'Email chưa xác thực' });
-        }
-
-        // 3. Kiểm tra email có trong danh sách Admin không
-        if (!ALLOWED_ADMIN_EMAILS.includes(email)) {
-            console.warn(`🚫 [Admin] Từ chối email: ${email}`);
-            return res.status(403).json({ success: false, error: `Email ${email} không có quyền admin` });
-        }
-
-        // 4. Tạo JWT token cho Admin
-        const token = jwt.sign(
-            { username: email, email: email, name: userData.name, picture: userData.picture, role: 'admin', method: 'google' },
-            JWT_SECRET,
-            { expiresIn: '8h' }
-        );
-
-        console.log(`✅ [Admin Login Redirect] ${email} - IP=${req.ip}`);
-        res.json({ success: true, token, email });
-
-    } catch (err) {
-        console.error('❌ Lỗi đổi token Google:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
-    }
-});
-
 // ==========================================
 // START SERVER
 // ==========================================
