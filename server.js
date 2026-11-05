@@ -637,71 +637,59 @@ app.get('/api/config', (req, res) => {
 // ==========================================
 app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
-        // 1. Lấy dữ liệu KYC và Users
+        // 1. Lấy dữ liệu cơ bản
         const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
         const kycPending = Number(kycRows[0].count);
         
         const { rows: allUsers } = await pool.query('SELECT * FROM users');
         const totalUsers = allUsers.length;
         
-        // 2. Tính toán dòng tiền và doanh thu từ Users
-        let cashIn = 0;          // Dòng tiền thực tế chảy vào (tiền nạp)
-        let actualRevenue = 0;   // Doanh thu gộp (chỉ tính tiền mua file)
+ 
+        let cashIn = 0;          
+        let actualRevenue = 0;   
+        let totalIncurred = 0;   
         const spenderMap = new Map();
 
         allUsers.forEach(u => {
-            // --- Xử lý lịch sử nạp tiền (Tính Dòng tiền thu về) ---
             let deposits = [];
-            try {
-                deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
-            } catch (e) { deposits = []; }
+            try { deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []); } catch (e) { deposits = []; }
             
             deposits.forEach(d => {
-                // Chỉ cộng tiền nạp thật (bỏ qua các giao dịch hoàn tiền)
-                if (d.method !== 'refund_rejected_order' && d.method !== 'admin_refund') {
-                    if (d.status === 'success' || !d.status) {
-                        cashIn += Number(d.amount || 0);
-                    }
+                const amt = Number(d.amount || 0);
+            
+                if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') {
+                    totalIncurred += amt; 
+                } 
+           
+                else if (d.status === 'success' || !d.status) {
+                    cashIn += amt;
                 }
             });
 
-            // --- Xử lý lịch sử mua hàng (Tính Doanh thu gộp & Top chi tiêu) ---
             let purchases = [];
-            try {
-                purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
-            } catch (e) { purchases = []; }
-
+            try { purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []); } catch (e) { purchases = []; }
+            
             const spent = purchases.reduce((s, p) => {
                 const price = Number(p.price) || 0;
-                actualRevenue += price; // Cộng dồn vào doanh thu gộp
+                actualRevenue += price; 
                 return s + price;
             }, 0);
             
-            spenderMap.set(u.username, {
-                username: u.username,
-                fullName: u.full_name,
-                totalSpent: spent
-            });
+            spenderMap.set(u.username, { username: u.username, fullName: u.full_name, totalSpent: spent });
         });
 
-        // 3. Xử lý Orders
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
         const totalOrders = orderRows.length;
         const paidOrdersList = orderRows.filter(o => o.status === 'paid');
         const pendingOrdersList = orderRows.filter(o => o.status === 'pending');
         const underpaidOrdersList = orderRows.filter(o => o.status === 'underpaid');
         const rejectedOrdersList = orderRows.filter(o => o.status === 'rejected' || o.status === 'cancelled');
-        
         let pendingAmount = pendingOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
         
-        // 4. Tính toán biểu đồ 7 ngày (Dựa trên lịch sử mua hàng)
         const dailyRevenue = new Map();
         allUsers.forEach(u => {
             let purchases = [];
-            try {
-                purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
-            } catch (e) { purchases = []; }
-
+            try { purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []); } catch (e) { purchases = []; }
             purchases.forEach(p => {
                 const at = p.purchasedAt || p.createdAt;
                 if (!at) return;
@@ -719,75 +707,32 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             const d = new Date();
             d.setDate(d.getDate() - i);
             const key = d.toISOString().slice(0, 10);
-            revenue7d.push({
-                date: d.toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit' }),
-                revenue: dailyRevenue.get(key) || 0
-            });
+            revenue7d.push({ date: d.toLocaleDateString('vi-VN', { day:'2-digit', month:'2-digit' }), revenue: dailyRevenue.get(key) || 0 });
         }
 
-        // 5. Lấy dữ liệu Đơn hàng gần đây & Top chi tiêu
-        const recentOrders = orderRows
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-            .slice(0, 5)
-            .map(o => ({
-                orderCode: o.order_code,
-                customerName: o.customer_name,
-                planName: o.plan_name,
-                amount: Number(o.amount),
-                status: o.status
-            }));
+        const recentOrders = orderRows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5).map(o => ({
+            orderCode: o.order_code, customerName: o.customer_name, planName: o.plan_name, amount: Number(o.amount), status: o.status
+        }));
+        const topSpenders = [...spenderMap.values()].sort((a, b) => b.totalSpent - a.totalSpent).slice(0, 5);
 
-        const topSpenders = [...spenderMap.values()]
-            .sort((a, b) => b.totalSpent - a.totalSpent)
-            .slice(0, 5);
-
-        // 6. Đếm Feedback
         let totalFeedbacks = 0;
-        try {
-            const db = await readStorage();
-            totalFeedbacks = (db.feedbacks || []).length;
-        } catch (_) {}
+        try { const db = await readStorage(); totalFeedbacks = (db.feedbacks || []).length; } catch (_) {}
 
-        // 7. Các khoản chi phí (Để mặc định là 0, bạn có thể thêm cơ chế nhập sau)
-        const inputCost = 0;     // Đầu vào (tiền mua source, server...)
-        const totalIncurred = 0; // Phát sinh (chi phí phát sinh ngoài dự kiến)
-        
-        // 8. Tính Lợi nhuận ròng thực tế
-        // Lợi nhuận = Doanh thu bán hàng - Đầu vào - Chi phí phát sinh
+        const inputCost = Number(process.env.MONTHLY_FIXED_COST) || 0; 
+
         const netProfit = actualRevenue - inputCost - totalIncurred;
 
-        // 9. Trả về kết quả
         res.json({
-            success: true,
-            totalUsers,
-            kycPending,
-            totalFeedbacks,
-            
-            // Các chỉ số tài chính
-            totalRevenue: actualRevenue, // Doanh thu gộp (Tiền khách mua file)
-            cashIn: cashIn,              // Dòng tiền thu về (Tiền khách nạp)
-            incurred: totalIncurred,     // Phát sinh (Mặc định 0)
-            netProfit: netProfit,        // Lợi nhuận ròng
-            inputCost: inputCost,        // Đầu vào (Mặc định 0)
-            
-            // Thông tin Orders
-            pendingAmount: pendingAmount,
-            totalOrders,
-            pendingOrders: pendingOrdersList.length,
-            paidOrders: paidOrdersList.length,
-            underpaidOrders: underpaidOrdersList.length,
-            
-            // Dữ liệu biểu đồ
+            success: true, totalUsers, kycPending, totalFeedbacks,
+            totalRevenue: actualRevenue, 
+            cashIn: cashIn,        
+            incurred: totalIncurred,   
+            netProfit: netProfit,  
+            inputCost: inputCost,  
+            pendingAmount, totalOrders, pendingOrders: pendingOrdersList.length, paidOrders: paidOrdersList.length, underpaidOrdersList: underpaidOrdersList.length,
             revenue7d,
-            orderStatus: {
-                paid: paidOrdersList.length,
-                pending: pendingOrdersList.length,
-                underpaid: underpaidOrdersList.length,
-                rejected: rejectedOrdersList.length,
-                other: totalOrders - paidOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length
-            },
-            recentOrders,
-            topSpenders
+            orderStatus: { paid: paidOrdersList.length, pending: pendingOrdersList.length, underpaid: underpaidOrdersList.length, rejected: rejectedOrdersList.length, other: totalOrders - paidOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length },
+            recentOrders, topSpenders
         });
 
     } catch (err) {
