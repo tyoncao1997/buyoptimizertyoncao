@@ -1856,6 +1856,39 @@ p { color: #a0a5b5; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
 </body></html>`);
 });
 
+app.post('/api/admin/users', requireAdminToken, async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT * FROM users ORDER BY created_at DESC');
+        
+        // Chuyển đổi dữ liệu từ Database sang định dạng Frontend cần
+        const users = rows.map(u => {
+            // Parse an toàn đề phòng dữ liệu lưu dạng chuỗi
+            let purchaseHistory = [];
+            let depositHistory = [];
+            try {
+                purchaseHistory = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
+                depositHistory = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
+            } catch (e) {}
+
+            return {
+                username: u.username,
+                fullName: u.full_name,
+                email: u.email || '',
+                balance: Number(u.balance),
+                purchase_history: purchaseHistory,
+                deposit_history: depositHistory,
+                createdAt: u.created_at,
+                updatedAt: u.updated_at
+            };
+        });
+
+        res.json({ success: true, users });
+    } catch (err) {
+        console.error('❌ Lỗi admin users:', err.message);
+        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+    }
+});
+
 // ==========================================
 // HEALTH + HEARTBEAT
 // ==========================================
