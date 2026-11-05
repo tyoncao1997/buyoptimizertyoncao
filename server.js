@@ -1667,12 +1667,12 @@ app.post('/api/register', async (req, res) => {
         };
 
         await pool.query(`
-            INSERT INTO users (username, password, full_name, balance, purchase_history, deposit_history)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `, [
-            newUser.username, hashedPassword, newUser.fullName, email.trim(),
-            0, JSON.stringify([]), JSON.stringify([])
-        ]);
+    INSERT INTO users (username, password, full_name, email, balance, purchase_history, deposit_history)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+`, [
+    newUser.username, hashedPassword, newUser.fullName, email.trim(),
+    0, JSON.stringify([]), JSON.stringify([])
+]);
         sendEmail(email.trim(), 'Chào mừng bạn đến với TyonCao Global Optimizer!', emailTemplates.welcome(fullName.trim()))
             .catch(err => console.error('Lỗi gửi mail welcome:', err));
         const sessionToken = crypto.randomBytes(32).toString('hex');
