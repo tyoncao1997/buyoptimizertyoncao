@@ -17,6 +17,7 @@ const archiver = require('archiver');
 const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
 
 const BCRYPT_ROUNDS = 10;
 
@@ -31,6 +32,176 @@ const pool = new Pool({
     connectionTimeoutMillis: 10000
 });
 pool.on('error', (err) => console.error('❌ Pool error:', err.message));
+
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS // Sử dụng App Password nếu dùng Gmail
+    }
+});
+
+// Hàm gửi email chung
+async function sendEmail(to, subject, htmlContent) {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.warn('⚠️ Chưa cấu hình EMAIL_USER/EMAIL_PASS, không thể gửi mail.');
+        return false;
+    }
+    try {
+        await transporter.sendMail({
+            from: `"${process.env.EMAIL_FROM_NAME || 'TYONCAO GLOBAL OPTIMIZER'}" <${process.env.EMAIL_USER}>`,
+            to,
+            subject,
+            html: htmlContent
+        });
+        console.log(`✅ Đã gửi email đến ${to}: ${subject}`);
+        return true;
+    } catch (error) {
+        console.error('❌ Lỗi gửi email:', error);
+        return false;
+    }
+}
+
+// ==========================================
+// TEMPLATE EMAIL (HTML)
+// ==========================================
+const emailTemplates = {
+    // 1. Chào mừng đăng ký thành công
+    welcome: (fullName, username) => `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
+                <p style="color: #7f8c8d; font-size: 12px;">tyonoptimizer.infinityfreeapp.com</p>
+            </div>
+            <div style="background: #fff; padding: 20px; border-radius: 8px;">
+                <h2 style="color: #27ae60;">Xin chào quý khách ${fullName}!</h2>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Cảm ơn quý khách đã tin tưởng và trở thành người dùng thân cận của <strong>TyonCao Global Optimizer</strong>.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    TyonCao xin chúc mừng quý khách đã đăng ký thành công trở thành thành viên của chúng tôi. Chúng tôi rất vui mừng được đồng hành cùng quý khách trên hành trình phát triển.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Tài khoản của quý khách đã được kích hoạt và quý khách có thể bắt đầu sử dụng các dịch vụ và sản phẩm của TyonCao Global Optimizer ngay lập tức.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Nếu có bất kỳ câu hỏi nào, xin vui lòng <a href="https://api.whatsapp.com/send/?phone=84978568965" style="color: #3498db; text-decoration: none; font-weight: bold;">liên hệ với chúng tôi</a>.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 30px;">
+                    Trân trọng,<br>
+                    <strong>Đội ngũ TyonCao Global Optimizer</strong>
+                </p>
+            </div>
+            <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #95a5a6;">
+                <p>TYON CAO GLOBAL OPTIMIZER</p>
+                <p>TYONCGO247 | (+84) 97 8568 965</p>
+            </div>
+        </div>
+    `,
+
+    // 2. Xác thực KYC thành công
+    kycSuccess: (fullName) => `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
+            </div>
+            <div style="background: #fff; padding: 20px; border-radius: 8px;">
+                <h2 style="color: #27ae60;">Xác thực danh tính thành công!</h2>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">Xin chào <strong>${fullName}</strong>,</p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Chúc mừng bạn! Yêu cầu xác minh danh tính (KYC) của bạn đã được <strong>phê duyệt thành công</strong>.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Từ bây giờ, bạn có thể sử dụng tất cả các tính năng của TyonCao Global Optimizer mà không gặp bất kỳ hạn chế nào.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 30px;">
+                    Trân trọng,<br>
+                    <strong>Đội ngũ TyonCao Global Optimizer</strong>
+                </p>
+            </div>
+        </div>
+    `,
+
+    // 3. Quên mật khẩu (Gửi mã xác thực)
+    forgotPassword: (fullName, otp) => `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
+            </div>
+            <div style="background: #fff; padding: 20px; border-radius: 8px;">
+                <h2 style="color: #e67e22;">Yêu cầu đặt lại mật khẩu</h2>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">Xin chào <strong>${fullName}</strong>,</p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn. Vui lòng sử dụng mã xác thực dưới đây để tiếp tục:
+                </p>
+                <div style="text-align: center; margin: 30px 0;">
+                    <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #e67e22; background: #fef5e7; padding: 10px 20px; border-radius: 5px;">${otp}</span>
+                </div>
+                <p style="font-size: 14px; line-height: 1.6; color: #333;">
+                    Mã này sẽ hết hạn sau 15 phút. Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.
+                </p>
+                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 30px;">
+                    Trân trọng,<br>
+                    <strong>Đội ngũ TyonCao Global Optimizer</strong>
+                </p>
+            </div>
+        </div>
+    `,
+
+    // 4. Hóa đơn mua hàng thành công
+    purchaseInvoice: (order) => `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
+            <div style="text-align: center; margin-bottom: 20px;">
+                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
+                <p style="color: #7f8c8d; font-size: 12px;">tyonoptimizer.infinityfreeapp.com</p>
+            </div>
+            <div style="background: #fff; padding: 20px; border-radius: 8px; border-top: 4px solid #2c3e50;">
+                <h2 style="color: #2c3e50; text-align: center;">THÔNG BÁO GIAO DỊCH THÀNH CÔNG</h2>
+                <p style="font-size: 14px; line-height: 1.6; color: #333; text-align: center;">
+                    Cảm ơn Quý khách đã sử dụng dịch vụ TyonCao Shop. TyonCao xin thông báo đơn hàng của Quý khách đã được thực hiện như sau:
+                </p>
+                <table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px;">
+                    <tr style="background: #f2f2f2;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Mã đơn hàng</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${order.orderCode}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Tên khách hàng</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${order.customerName}</td>
+                    </tr>
+                    <tr style="background: #f2f2f2;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Gói dịch vụ</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${order.planName}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Số tiền</td>
+                        <td style="padding: 10px; border: 1px solid #ddd; color: #e74c3c; font-weight: bold;">${new Intl.NumberFormat('vi-VN').format(order.amount)} VNĐ</td>
+                    </tr>
+                    <tr style="background: #f2f2f2;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Thời gian</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${new Date(order.paidAt).toLocaleString('vi-VN')}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Mã giao dịch</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${order.transactionId || 'N/A'}</td>
+                    </tr>
+                    <tr style="background: #f2f2f2;">
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Key</td>
+                        <td style="padding: 10px; border: 1px solid #ddd; color: #2980b9; font-weight: bold;">${order.key}</td>
+                    </tr>
+                </table>
+                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 20px; text-align: center;">
+                    Xin chân thành cảm ơn.
+                </p>
+            </div>
+            <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #95a5a6;">
+                <p><strong>TYON CAO GLOBAL OPTIMIZER</strong></p>
+                <p>TYONCGO247 | (+84) 97 8568 965</p>
+                <p>tyonoptimizer.infinityfreeapp.com</p>
+            </div>
+        </div>
+    `
+};
 
 const app = express();
 app.set('trust proxy', 1);
@@ -1100,7 +1271,15 @@ app.post('/api/admin/approve-kyc', requireAdminToken, async (req, res) => {
                 SET kyc_status = 'verified', kyc_reviewed_at = NOW()
                 WHERE username = $1
             `, [username]);
-            
+
+            // ← THÊM: Lấy user + gửi mail thông báo
+            const user = await getUserByUsername(username);
+            if (user && user.email) {
+                sendEmail(user.email, 'Xác thực danh tính thành công - TyonCao Global Optimizer',
+                    emailTemplates.kycSuccess(user.full_name || username))
+                    .catch(err => console.error('Lỗi gửi mail KYC:', err));
+            }
+
             res.json({ success: true, message: `Đã duyệt KYC cho ${username}` });
 
         } else if (action === 'reject') {
@@ -1455,9 +1634,12 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
 // ==========================================
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, password, fullName } = req.body;
-        if (!username || !password || !fullName) {
-            return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
+        const { username, password, fullName, email } = req.body;
+        if (!username || !password || !fullName || !email) {
+            return res.status(400).json({ success: false, error: 'Thiếu thông tin (bao gồm email)' });
+        }
+        if (!/^\S+@\S+\.\S+$/.test(email)) {
+            return res.status(400).json({ success: false, error: 'Email không hợp lệ' });
         }
         if (username.length < 4 || !/^[a-zA-Z0-9_]+$/.test(username)) {
             return res.status(400).json({ success: false, error: 'Username không hợp lệ (≥4 ký tự, chỉ chữ/số/_)' });
@@ -1467,9 +1649,10 @@ app.post('/api/register', async (req, res) => {
         }
 
         const { rows: dup } = await pool.query(
-            'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)', [username.trim()]
+            'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)',
+            [username.trim(), email.trim()]
         );
-        if (dup.length > 0) return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
+        if (dup.length > 0) return res.status(400).json({ success: false, error: 'Username hoặc Email đã tồn tại' });
 
         // ⭐ Hash password trước khi lưu (bảo mật)
         const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -1485,12 +1668,13 @@ app.post('/api/register', async (req, res) => {
 
         await pool.query(`
             INSERT INTO users (username, password, full_name, balance, purchase_history, deposit_history)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
         `, [
-            newUser.username, hashedPassword, newUser.fullName,
+            newUser.username, hashedPassword, newUser.fullName, email.trim(),
             0, JSON.stringify([]), JSON.stringify([])
         ]);
-
+        sendEmail(email.trim(), 'Chào mừng bạn đến với TyonCao Global Optimizer!', emailTemplates.welcome(fullName.trim()))
+            .catch(err => console.error('Lỗi gửi mail welcome:', err));
         const sessionToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
         await pool.query(`
@@ -1501,13 +1685,65 @@ app.post('/api/register', async (req, res) => {
         res.json({
             success: true,
             message: 'Đăng ký thành công',
-            user: { username: newUser.username, fullName: newUser.fullName, balance: 0 },
+            user: { username: newUser.username, fullName: newUser.fullName, email: email.trim(), balance: 0 },
             sessionToken,
             expiresAt: expiresAt.toISOString()
         });
     } catch (err) {
         console.error('Register error:', err);
-        if (err.code === '23505') return res.status(400).json({ success: false, error: 'Username đã tồn tại' });
+        if (err.code === '23505') return res.status(400).json({ success: false, error: 'Username hoặc Email đã tồn tại' });
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+const otpStore = new Map();
+
+app.post('/api/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) return res.status(400).json({ success: false, error: 'Vui lòng nhập email' });
+
+        const { rows } = await pool.query(
+            'SELECT username, full_name FROM users WHERE LOWER(email) = LOWER($1)', [email.trim()]
+        );
+        if (rows.length === 0) {
+            return res.json({ success: true, message: 'Nếu email tồn tại, bạn sẽ nhận được mã xác thực.' });
+        }
+
+        const user = rows[0];
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = Date.now() + 15 * 60 * 1000;
+
+        otpStore.set(email.trim().toLowerCase(), { otp, expiresAt, username: user.username });
+
+        await sendEmail(email.trim(), 'Mã xác thực đặt lại mật khẩu - TyonCao Global Optimizer',
+            emailTemplates.forgotPassword(user.full_name, otp));
+
+        res.json({ success: true, message: 'Mã xác thực đã được gửi đến email của bạn.' });
+    } catch (err) {
+        console.error('Forgot password error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/reset-password', async (req, res) => {
+    try {
+        const { email, otp, newPassword } = req.body;
+        if (!email || !otp || !newPassword) return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
+
+        const record = otpStore.get(email.trim().toLowerCase());
+        if (!record || record.otp !== otp || Date.now() > record.expiresAt) {
+            return res.status(400).json({ success: false, error: 'Mã xác thực không đúng hoặc đã hết hạn' });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+        await pool.query('UPDATE users SET password = $1 WHERE LOWER(username) = LOWER($2)',
+            [hashedPassword, record.username]);
+
+        otpStore.delete(email.trim().toLowerCase());
+        res.json({ success: true, message: 'Đặt lại mật khẩu thành công! Vui lòng đăng nhập lại.' });
+    } catch (err) {
+        console.error('Reset password error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -1549,6 +1785,7 @@ app.post('/api/login', async (req, res) => {
         const userData = {
             username: dbUser.username,
             fullName: dbUser.full_name,
+            email: dbUser.email || '',
             balance: Number(dbUser.balance),
             depositHistory: dbUser.deposit_history || [],
             purchaseHistory: dbUser.purchase_history || []
@@ -1589,6 +1826,7 @@ app.get('/api/user/:username', requireUserSession, async (req, res) => {
                 username: dbUser.username,
                 balance: Number(dbUser.balance),
                 fullName: dbUser.full_name,
+                email: dbUser.email || '',
                 kyc_status: dbUser.kyc_status || 'unverified',
                 depositHistory: dbUser.deposit_history || [],
                 purchaseHistory: dbUser.purchase_history || []
@@ -1865,12 +2103,27 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
         if (balance < price) return res.status(400).json({ success: false, error: 'Số dư không đủ' });
 
         const newBalance = balance - price;
-        purchaseHistory.push({ productId, productName, price, purchasedAt: new Date().toISOString() });
+        const now = new Date().toISOString();
+        purchaseHistory.push({ productId, productName, price, purchasedAt: now });
 
         await pool.query(
             'UPDATE users SET balance = $1, purchase_history = $2 WHERE username = $3',
             [newBalance, JSON.stringify(purchaseHistory), dbUser.username]
         );
+        if (dbUser.email) {
+            const orderInfo = {
+                orderCode: `TYON${Date.now().toString(36).toUpperCase()}`,
+                customerName: dbUser.full_name || dbUser.username,
+                planName: productName,
+                amount: price,
+                paidAt: now,
+                transactionId: `BALANCE_${Date.now()}`,
+                key: `TYON-KEY-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+            };
+            sendEmail(dbUser.email, 'Hóa đơn mua hàng thành công - TyonCao Shop',
+                emailTemplates.purchaseInvoice(orderInfo))
+                .catch(err => console.error('Lỗi gửi mail hóa đơn:', err));
+        }
 
         res.json({ success: true, newBalance, productId });
     } catch (err) {
@@ -2084,6 +2337,7 @@ app.get('/api/health', globalLimiter, async (req, res) => {
         status: 'ok',
         uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
+        emailConfigured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASS),
         pay2sConfigured: !!PAY2S_PARTNER_CODE,
         webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
         sepayConfigured: !!SEPAY_WEBHOOK_SECRET,
@@ -2204,6 +2458,7 @@ async function startServer() {
         console.log(`\n✅ TYON SERVER (STATELESS) chạy tại http://localhost:${PORT}`);
         console.log(`🔐 JWT Security: BẬT`);
         console.log(`🛡️ Rate Limit: BẬT`);
+        console.log(`📧 Email: ${process.env.EMAIL_USER ? 'Đã cấu hình (' + process.env.EMAIL_USER + ')' : 'CHƯA cấu hình'}`);
         console.log(`💾 Kiến trúc: STATELESS (không MEMORY_DB)`);
         console.log(`☁️  Storage Keys/Feedbacks: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
         console.log(`🗄️  Storage Users/Orders/Sessions: Supabase`);
