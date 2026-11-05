@@ -1,5 +1,6 @@
 // ==========================================
 // TYON OPTIMIZER - SECURE SERVER (STATELESS) - PRODUCTION READY
+// SỬ DỤNG GMAIL API (HTTP) THAY VÌ SMTP ĐỂ CHẠY TRÊN RENDER FREE
 // ==========================================
 require('dotenv').config();
 
@@ -16,8 +17,7 @@ const archiver = require('archiver');
 const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
-const { OAuth2Client } = require('google-auth-library');
+const { OAuth2Client } = require('google-auth-library'); // Dùng cho cả login và gửi mail
 
 const BCRYPT_ROUNDS = 10;
 
@@ -34,38 +34,74 @@ const pool = new Pool({
 pool.on('error', (err) => console.error('❌ Pool error:', err.message));
 
 // ==========================================
-// 2. MAILER + SEND EMAIL
+// 2. GMAIL API (THAY THẾ SMTP)
 // ==========================================
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
-});
+// Cấu hình OAuth2 cho Gmail API
+const gmailOAuth2Client = new OAuth2Client(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+    'https://developers.google.com/oauthplayground'
+);
 
+if (process.env.GMAIL_REFRESH_TOKEN) {
+    gmailOAuth2Client.setCredentials({
+        refresh_token: process.env.GMAIL_REFRESH_TOKEN
+    });
+}
+
+// Hàm gửi email qua Gmail API (HTTP)
 async function sendEmail(to, subject, htmlContent) {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        console.warn('⚠️ Chưa cấu hình EMAIL_USER/EMAIL_PASS, không thể gửi mail.');
+    if (!process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
+        console.warn('⚠️ Chưa cấu hình GMAIL_API, không thể gửi mail.');
         return false;
     }
+
     try {
-        await transporter.sendMail({
-            from: `"${process.env.EMAIL_FROM_NAME || 'TYONCAO GLOBAL OPTIMIZER'}" <${process.env.EMAIL_USER}>`,
-            to,
-            subject,
-            html: htmlContent
+        // Lấy access token mới từ refresh token
+        const { token } = await gmailOAuth2Client.getAccessToken();
+        
+        // Xây dựng nội dung email theo chuẩn RFC 2822
+        const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
+        const messageParts = [
+            `To: ${to}`,
+            'Content-Type: text/html; charset=utf-8',
+            'MIME-Version: 1.0',
+            `Subject: ${utf8Subject}`,
+            '',
+            htmlContent
+        ];
+        const message = messageParts.join('\n');
+        const encodedMessage = Buffer.from(message)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        // Gọi API Gmail
+        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ raw: encodedMessage })
         });
+
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error?.message || 'Gmail API error');
+        }
+
         console.log(`✅ Đã gửi email đến ${to}: ${subject}`);
         return true;
     } catch (error) {
-        console.error('❌ Lỗi gửi email:', error.message);
+        console.error('❌ Lỗi gửi email qua Gmail API:', error.message);
         return false;
     }
 }
 
 // ==========================================
-// 3. ⭐ OTP STORES + HELPERS (KHAI BÁO TRƯỚC KHI DÙNG)
+// 3. OTP STORES + HELPERS
 // ==========================================
 const registerOtpStore = new Map();
 const otpStore = new Map();
@@ -208,14 +244,14 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
 
-// ⭐ HẰNG SỐ SESSION - PHẢI KHAI BÁO TRƯỚC requireUserSession
+// ⭐ HẰNG SỐ SESSION
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000;             // 60 phút
 const SESSION_ABSOLUTE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000; // 7 ngày
 
-// ⭐ GOOGLE OAUTH - KHAI BÁO SỚM
+// ⭐ GOOGLE OAUTH (Dùng chung cho cả Login và Gmail API)
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
 if (!GOOGLE_CLIENT_ID) {
     console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID - chức năng đăng nhập Google sẽ không hoạt động');
@@ -262,7 +298,7 @@ const pollingLimiter = rateLimit({
     message: { error: 'Quá nhiều request. Vui lòng thử lại sau.' }
 });
 
-// ⭐ THỨ TỰ QUAN TRỌNG: specific trước, general sau
+// ⭐ THỨ TỰ QUAN TRỌNG
 app.use('/api/order-status/', pollingLimiter);
 app.use('/api/admin/', adminLimiter);
 app.use('/api/', globalLimiter);
@@ -578,7 +614,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// ⭐ SePay webhook cần raw body — đăng ký TRƯỚC express.json
+// ⭐ SePay webhook cần raw body
 app.post('/api/sepay-webhook', express.raw({ type: 'application/json' }), handleSePayWebhook);
 
 app.use(express.json({ limit: '50mb' }));
@@ -1010,7 +1046,7 @@ app.get('/api/order-status/:orderCode', async (req, res) => {
 });
 
 // ==========================================
-// 19. SEPAY WEBHOOK — function đặt TRƯỚC app.post
+// 19. SEPAY WEBHOOK
 // ==========================================
 async function handleSePayWebhook(req, res) {
     try {
@@ -1315,7 +1351,7 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
 });
 
 // ==========================================
-// 23. USER AUTH: SEND OTP (DUY NHẤT)
+// 23. USER AUTH: SEND OTP (DÙNG GMAIL API)
 // ==========================================
 app.post('/api/send-otp', async (req, res) => {
     try {
@@ -2439,7 +2475,7 @@ app.get('/api/health', globalLimiter, async (req, res) => {
         status: 'ok',
         uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
-        emailConfigured: !!(process.env.EMAIL_USER && process.env.EMAIL_PASS),
+        emailConfigured: !!(process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN),
         pay2sConfigured: !!PAY2S_PARTNER_CODE,
         webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
         sepayConfigured: !!SEPAY_WEBHOOK_SECRET,
@@ -2549,7 +2585,7 @@ async function startServer() {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
         console.log(`🔐 JWT Security: BẬT`);
         console.log(`🛡️ Rate Limit: BẬT`);
-        console.log(`📧 Email: ${process.env.EMAIL_USER ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
+        console.log(`📧 Email (Gmail API): ${process.env.GMAIL_CLIENT_ID ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
         console.log(`☁️  Storage Keys/Feedbacks: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
         console.log(`🗄️  Storage Users/Orders/Sessions: Supabase`);
         console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA'}`);
