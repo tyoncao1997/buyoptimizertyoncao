@@ -650,10 +650,12 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 deposits = [];
             }
             deposits.forEach(d => {
-                if (d.status === 'success' || !d.status) {
-                    cashIn += Number(d.amount || 0);
-                }
-            });
+    if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') return;   // ✅ ĐÚNG
+
+    if (d.status === 'success' || !d.status) {
+        cashIn += Number(d.amount || 0);
+    }
+});
             let purchases = [];
             try {
                 purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
@@ -1063,7 +1065,7 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
                 // Thêm bản ghi hoàn tiền
                 depositHistory.push({
                     amount: refundAmount,
-                    method: 'admin_refund',
+                    method: 'refund_rejected_order',
                     content: `Hoàn tiền đơn hàng bị từ chối: ${orderCode}`,
                     transactionId: 'REFUND_' + Date.now(),
                     at: new Date().toISOString(),
