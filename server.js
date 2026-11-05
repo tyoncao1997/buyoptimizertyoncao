@@ -645,40 +645,37 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         const totalUsers = allUsers.length;
         
         // 2. Tính toán dòng tiền và doanh thu từ Users
-        let cashIn = 0;
-        let actualRevenue = 0; // Doanh thu gộp thực tế (từ mua file)
-        let totalIncurred = 0; // Tiền phát sinh (hoàn trả)
-        let totalUserBalance = 0; // Tổng số dư còn lại của tất cả user
+        let cashIn = 0;          // Dòng tiền thực tế chảy vào (tiền nạp)
+        let actualRevenue = 0;   // Doanh thu gộp (chỉ tính tiền mua file)
         const spenderMap = new Map();
 
         allUsers.forEach(u => {
-            // Cộng dồn số dư hiện tại của user
-            totalUserBalance += Number(u.balance || 0);
-
-            // --- Xử lý lịch sử nạp tiền ---
+            // --- Xử lý lịch sử nạp tiền (Tính Dòng tiền thu về) ---
             let deposits = [];
             try {
                 deposits = typeof u.deposit_history === 'string' ? JSON.parse(u.deposit_history) : (u.deposit_history || []);
             } catch (e) { deposits = []; }
             
             deposits.forEach(d => {
-                const amt = Number(d.amount || 0);
-                // Nếu là hoàn tiền thì tính vào phát sinh
-                if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') {
-                    totalIncurred += amt;
-                } else if (d.status === 'success' || !d.status) {
-                    // Nếu là nạp tiền thành công thì cộng vào dòng tiền thu về
-                    cashIn += amt;
+                // Chỉ cộng tiền nạp thật (bỏ qua các giao dịch hoàn tiền)
+                if (d.method !== 'refund_rejected_order' && d.method !== 'admin_refund') {
+                    if (d.status === 'success' || !d.status) {
+                        cashIn += Number(d.amount || 0);
+                    }
                 }
             });
 
-            // --- Xử lý lịch sử mua hàng (để tính top chi tiêu) ---
+            // --- Xử lý lịch sử mua hàng (Tính Doanh thu gộp & Top chi tiêu) ---
             let purchases = [];
             try {
                 purchases = typeof u.purchase_history === 'string' ? JSON.parse(u.purchase_history) : (u.purchase_history || []);
             } catch (e) { purchases = []; }
 
-            const spent = purchases.reduce((s, p) => s + (Number(p.price) || 0), 0);
+            const spent = purchases.reduce((s, p) => {
+                const price = Number(p.price) || 0;
+                actualRevenue += price; // Cộng dồn vào doanh thu gộp
+                return s + price;
+            }, 0);
             
             spenderMap.set(u.username, {
                 username: u.username,
@@ -686,11 +683,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 totalSpent: spent
             });
         });
-
-        // 🟢 TÍNH DOANH THU GỘP CHUẨN XÁC BẰNG CÔNG THỨC KẾ TOÁN
-        // Doanh thu = Tổng tiền nạp vào - Tổng số dư còn lại trong ví
-        actualRevenue = cashIn - totalUserBalance;
-        if (actualRevenue < 0) actualRevenue = 0; // Tránh âm nếu có lỗi dữ liệu
 
         // 3. Xử lý Orders
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
@@ -756,11 +748,15 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             totalFeedbacks = (db.feedbacks || []).length;
         } catch (_) {}
 
-        // 7. Tính lợi nhuận ròng
-        const netProfit = actualRevenue - totalIncurred;
-        const inputCost = 0; // Chưa có cơ chế nhập chi phí đầu vào
+        // 7. Các khoản chi phí (Để mặc định là 0, bạn có thể thêm cơ chế nhập sau)
+        const inputCost = 0;     // Đầu vào (tiền mua source, server...)
+        const totalIncurred = 0; // Phát sinh (chi phí phát sinh ngoài dự kiến)
+        
+        // 8. Tính Lợi nhuận ròng thực tế
+        // Lợi nhuận = Doanh thu bán hàng - Đầu vào - Chi phí phát sinh
+        const netProfit = actualRevenue - inputCost - totalIncurred;
 
-        // 8. Trả về kết quả
+        // 9. Trả về kết quả
         res.json({
             success: true,
             totalUsers,
@@ -768,11 +764,11 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             totalFeedbacks,
             
             // Các chỉ số tài chính
-            totalRevenue: actualRevenue, // Doanh thu gộp (tính theo công thức nạp - số dư)
-            cashIn: cashIn,              // Dòng tiền thu về
-            incurred: totalIncurred,     // Phát sinh
+            totalRevenue: actualRevenue, // Doanh thu gộp (Tiền khách mua file)
+            cashIn: cashIn,              // Dòng tiền thu về (Tiền khách nạp)
+            incurred: totalIncurred,     // Phát sinh (Mặc định 0)
             netProfit: netProfit,        // Lợi nhuận ròng
-            inputCost: inputCost,        // Đầu vào
+            inputCost: inputCost,        // Đầu vào (Mặc định 0)
             
             // Thông tin Orders
             pendingAmount: pendingAmount,
