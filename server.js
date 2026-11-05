@@ -709,6 +709,16 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             totalFeedbacks = (db.feedbacks || []).length;
         } catch (_) {}
 
+        let totalIncurred = 0;
+allUsers.forEach(u => {
+    (u.deposit_history || []).forEach(d => {
+        if (d.method === 'admin_refund') {
+            totalIncurred += Number(d.amount);
+        }
+    });
+});
+
+        
         res.json({
             success: true,
             totalUsers,
@@ -723,6 +733,7 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 paid: paidOrders,
                 pending: pendingOrders,
                 underpaid: underpaidOrders,
+                incurred: totalIncurred,
                 other: totalOrders - paidOrders - pendingOrders - underpaidOrders
             },
             recentOrders,
