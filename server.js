@@ -627,6 +627,12 @@ app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
     }
 });
 
+app.get('/api/config', (req, res) => {
+    res.json({
+        googleClientId: process.env.GOOGLE_CLIENT_ID || ''
+    });
+});
+
 // ==========================================
 // ADMIN STATS - Tổng quan
 // ==========================================
