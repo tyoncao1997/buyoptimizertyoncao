@@ -35,9 +35,6 @@ pool.on('error', (err) => console.error('❌ Pool error:', err.message));
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
-
-const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
-
 // ==========================================
 // CLOUDFLARE R2
 // ==========================================
