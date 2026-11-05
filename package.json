@@ -31,6 +31,7 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.11.5",
+    "nodemailer": "^6.9.13"
     "google-auth-library": "^9.10.0"
   }
 }
