@@ -1,7 +1,3 @@
-// ==========================================
-// TYON OPTIMIZER - SECURE SERVER (STATELESS) - PRODUCTION READY
-// SỬ DỤNG GMAIL API (HTTP) THAY VÌ SMTP ĐỂ CHẠY TRÊN RENDER FREE
-// ==========================================
 require('dotenv').config();
 
 const express = require('express');
@@ -17,13 +13,10 @@ const archiver = require('archiver');
 const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const bcrypt = require('bcryptjs');
-const { OAuth2Client } = require('google-auth-library'); // Dùng cho cả login và gửi mail
+const { OAuth2Client } = require('google-auth-library');
 
 const BCRYPT_ROUNDS = 10;
 
-// ==========================================
-// 1. SUPABASE POOL
-// ==========================================
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
@@ -41,9 +34,6 @@ const emailLogPool = new Pool({
 });
 emailLogPool.on('error', (err) => console.error('❌ Email Log Pool error:', err.message));
 
-// ==========================================
-// 2. EMAIL SERVICE (GMAIL API + QUEUE + RETRY + LOG)
-// ==========================================
 const gmailOAuth2Client = new OAuth2Client(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET,
@@ -56,7 +46,6 @@ if (process.env.GMAIL_REFRESH_TOKEN) {
     });
 }
 
-// ⭐ Hàm ghi log vào Database (thay vì file .txt)
 async function writeEmailLogToDB(to, subject, status, errorMessage = null) {
     try {
         await emailLogPool.query(
@@ -65,7 +54,7 @@ async function writeEmailLogToDB(to, subject, status, errorMessage = null) {
             [to, subject, status, errorMessage]
         );
     } catch (err) {
-        // Nếu ghi log lỗi, chỉ in ra console, không làm sập luồng gửi mail
+
         console.error('❌ Không thể ghi log email vào DB:', err.message);
     }
 }
@@ -126,7 +115,6 @@ async function sendEmailCore(to, subject, htmlContent, retries = 3) {
     return false;
 }
 
-// Hàng đợi email
 const emailQueue = [];
 let isProcessingQueue = false;
 
@@ -153,16 +141,14 @@ function queueEmail(to, subject, htmlContent) {
 async function sendEmailImmediate(to, subject, htmlContent) {
     return await sendEmailCore(to, subject, htmlContent);
 }
-// ==========================================
-// 3. OTP STORES + HELPERS
-// ==========================================
+
 const registerOtpStore = new Map();
 const otpStore = new Map();
 
-const OTP_TTL_MS = 5 * 60 * 1000;             // 5 phút
-const OTP_RESEND_COOLDOWN_MS = 60 * 1000;     // 60s
+const OTP_TTL_MS = 5 * 60 * 1000;      
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;  
 const OTP_MAX_ATTEMPTS = 5;
-const RESET_OTP_TTL_MS = 15 * 60 * 1000;      // 15 phút
+const RESET_OTP_TTL_MS = 15 * 60 * 1000;     
 
 function generateOtp() {
     return Math.floor(100000 + Math.random() * 900000).toString();
@@ -174,7 +160,6 @@ function isValidUsername(username) {
     return typeof username === 'string' && username.length >= 4 && /^[a-zA-Z0-9_]+$/.test(username);
 }
 
-// Dọn OTP hết hạn mỗi 5 phút
 setInterval(() => {
     const now = Date.now();
     for (const [k, v] of registerOtpStore.entries()) {
@@ -185,9 +170,6 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000).unref();
 
-// ==========================================
-// 4. TEMPLATE EMAIL (HTML)
-// ==========================================
 const emailTemplates = {
     welcome: (fullName, username) => `
 <!DOCTYPE html>
@@ -652,22 +634,17 @@ const emailTemplates = {
 `
 };
 
-// ==========================================
-// 5. APP + CẤU HÌNH CHUNG
-// ==========================================
 const app = express();
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
 
-// ⭐ HẰNG SỐ SESSION
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
-const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000;             // 60 phút
-const SESSION_ABSOLUTE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000; // 7 ngày
+const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000;        
+const SESSION_ABSOLUTE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
 
-// ⭐ GOOGLE OAUTH (Dùng chung cho cả Login và Gmail API)
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
 if (!GOOGLE_CLIENT_ID) {
     console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID - chức năng đăng nhập Google sẽ không hoạt động');
@@ -676,7 +653,6 @@ const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const ALLOWED_ADMIN_EMAILS = (process.env.ALLOWED_ADMIN_EMAILS || 'caoquangtuan97@gmail.com')
     .split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
 
-// ⭐ R2
 const s3Client = new S3Client({
     region: 'auto',
     endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -692,9 +668,6 @@ async function streamToBuffer(stream) {
     return Buffer.concat(chunks);
 }
 
-// ==========================================
-// 6. BẢO MẬT CƠ BẢN
-// ==========================================
 app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
 const globalLimiter = rateLimit({
@@ -714,14 +687,10 @@ const pollingLimiter = rateLimit({
     message: { error: 'Quá nhiều request. Vui lòng thử lại sau.' }
 });
 
-// ⭐ THỨ TỰ QUAN TRỌNG
 app.use('/api/order-status/', pollingLimiter);
 app.use('/api/admin/', adminLimiter);
 app.use('/api/', globalLimiter);
 
-// ==========================================
-// 7. GIST + LOCAL STORAGE
-// ==========================================
 const GITHUB_TOKEN = (process.env.GITHUB_TOKEN || '').trim();
 const GIST_ID = (process.env.GIST_ID || '').trim();
 const GIST_FILENAME = 'database.json';
@@ -881,9 +850,6 @@ async function writeStorage(data, { strictGist = false } = {}) {
     return true;
 }
 
-// ==========================================
-// 8. SUPABASE HELPERS
-// ==========================================
 async function getOrdersFromSupabase() {
     try {
         const { rows } = await pool.query('SELECT * FROM orders ORDER BY created_at DESC');
@@ -938,7 +904,6 @@ async function getUserByUsername(username) {
     return rows[0] || null;
 }
 
-// ⭐ Parse JSON an toàn
 function safeParseJSON(value, fallback = []) {
     if (Array.isArray(value)) return value;
     if (typeof value === 'string') {
@@ -947,9 +912,6 @@ function safeParseJSON(value, fallback = []) {
     return fallback;
 }
 
-// ==========================================
-// 9. INIT DB + MIGRATE
-// ==========================================
 async function initDB() {
     if (!pool) return;
     try {
@@ -981,9 +943,6 @@ async function migratePlaintextPasswords() {
     }
 }
 
-// ==========================================
-// 10. CẤU HÌNH HỆ THỐNG - SECRETS
-// ==========================================
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const ADMIN_PIN = process.env.ADMIN_PIN;
@@ -1011,9 +970,6 @@ const SEPAY_ACCOUNT_HOLDER = process.env.SEPAY_ACCOUNT_HOLDER;
 
 if (!SEPAY_WEBHOOK_SECRET) console.warn('⚠️ Thiếu SEPAY_WEBHOOK_SECRET - Webhook SePay sẽ không hoạt động!');
 
-// ==========================================
-// 11. MIDDLEWARE CORS + BODY
-// ==========================================
 app.use(cors({
     origin: [
         FRONTEND_URL,
@@ -1030,15 +986,11 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// ⭐ SePay webhook cần raw body
 app.post('/api/sepay-webhook', express.raw({ type: 'application/json' }), handleSePayWebhook);
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(__dirname));
 
-// ==========================================
-// 12. USER SESSION MIDDLEWARE
-// ==========================================
 async function requireUserSession(req, res, next) {
     try {
         const authHeader = req.headers['authorization'];
@@ -1076,9 +1028,6 @@ async function requireUserSession(req, res, next) {
     }
 }
 
-// ==========================================
-// 13. ADMIN AUTH
-// ==========================================
 function verifyAdmin(username, password) {
     if (username !== ADMIN_USERNAME) return false;
     try {
@@ -1114,7 +1063,6 @@ function requireAdminToken(req, res, next) {
     }
 }
 
-// ⭐ So sánh token an toàn (timing-safe)
 function safeCompareToken(input, expected) {
     if (!input || !expected) return false;
     try {
@@ -1125,9 +1073,6 @@ function safeCompareToken(input, expected) {
     } catch { return false; }
 }
 
-// ==========================================
-// 14. HELPERS
-// ==========================================
 function calcRemainingTime(createdAt, status) {
     if (status !== 'pending') return null;
     const diffMs = (new Date(createdAt).getTime() + KEY_EXPIRE_MS) - Date.now();
@@ -1186,9 +1131,6 @@ async function cleanupExpiredKeys() {
     return { deletedCount };
 }
 
-// ==========================================
-// 15. ADMIN: GOOGLE LOGIN + CONFIG
-// ==========================================
 app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
     try {
         const { credential } = req.body;
@@ -1220,9 +1162,6 @@ app.get('/api/config', (req, res) => {
     res.json({ googleClientId: process.env.GOOGLE_CLIENT_ID || '' });
 });
 
-// ==========================================
-// 16. ADMIN STATS + REVENUE
-// ==========================================
 app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
         const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
@@ -1387,9 +1326,6 @@ app.post('/api/admin/revenue', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 17. ADMIN LOGIN
-// ==========================================
 app.post('/api/admin/login', loginLimiter, (req, res) => {
     try {
         const { username, password } = req.body;
@@ -1410,9 +1346,6 @@ app.post('/api/admin/verify-token', requireAdminToken, (req, res) => {
     res.json({ success: true, admin: { username: req.admin.username }, valid: true });
 });
 
-// ==========================================
-// 18. CREATE ORDER + ORDER STATUS
-// ==========================================
 app.post('/api/create-order', async (req, res) => {
     try {
         const { plan, customerName, planName, amount } = req.body;
@@ -1469,9 +1402,6 @@ app.get('/api/order-status/:orderCode', async (req, res) => {
     }
 });
 
-// ==========================================
-// 19. SEPAY WEBHOOK
-// ==========================================
 async function handleSePayWebhook(req, res) {
     try {
         const signature = req.headers['x-sepay-signature'];
@@ -1532,9 +1462,6 @@ async function handleSePayWebhook(req, res) {
     }
 }
 
-// ==========================================
-// 20. ADMIN: ORDERS
-// ==========================================
 app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
     try {
         const orders = await getOrdersFromSupabase();
@@ -1567,7 +1494,6 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
     }
 });
 
-// ⭐ REJECT ORDER — TRANSACTION + CHỈ HOÀN KHI ĐƠN ĐÃ THU TIỀN
 app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
     try {
         const { pin, orderCode } = req.body;
@@ -1598,7 +1524,6 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
                 [req.admin.username, note, orderCode]
             );
 
-            // ⭐ Chỉ hoàn tiền nếu đơn ĐÃ thu tiền (paid_amount > 0)
             const paidAmount = Number(order.paid_amount || 0);
             if (paidAmount > 0) {
                 const targetUsername = order.username || order.customer_name;
@@ -1646,9 +1571,6 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 21. ADMIN: KYC
-// ==========================================
 app.post('/api/admin/kyc-list', requireAdminToken, async (req, res) => {
     try {
         const { rows } = await pool.query(`
@@ -1706,9 +1628,6 @@ app.post('/api/admin/approve-kyc', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 22. ADMIN: ADD BALANCE — TRANSACTION
-// ==========================================
 app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
     try {
         const { pin, targetUsername, amount, note } = req.body;
@@ -1774,9 +1693,6 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 23. USER AUTH: SEND OTP (DÙNG GMAIL API)
-// ==========================================
 app.post('/api/send-otp', async (req, res) => {
     try {
         const { email } = req.body || {};
@@ -1830,15 +1746,11 @@ app.post('/api/send-otp', async (req, res) => {
     }
 });
 
-// Alias tương thích ngược
 app.post('/api/send-register-otp', (req, res, next) => {
     req.url = '/api/send-otp';
     app._router.handle(req, res, next);
 });
 
-// ==========================================
-// 24. USER AUTH: REGISTER (CÓ OTP)
-// ==========================================
 app.post('/api/register', async (req, res) => {
     try {
         const { username, password, fullName, email, otp } = req.body || {};
@@ -1924,9 +1836,6 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// ==========================================
-// 25. FORGOT / RESET PASSWORD
-// ==========================================
 app.post('/api/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
@@ -1974,7 +1883,6 @@ app.post('/api/reset-password', async (req, res) => {
         await pool.query('UPDATE users SET password = $1 WHERE LOWER(username) = LOWER($2)',
             [hashedPassword, record.username]);
 
-        // ⭐ Xoá tất cả session của user sau khi đổi pass
         await pool.query('DELETE FROM sessions WHERE LOWER(username) = LOWER($1)', [record.username]);
 
         otpStore.delete(email.trim().toLowerCase());
@@ -1985,9 +1893,6 @@ app.post('/api/reset-password', async (req, res) => {
     }
 });
 
-// ==========================================
-// 26. LOGIN / LOGOUT
-// ==========================================
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -2051,9 +1956,6 @@ app.post('/api/logout', async (req, res) => {
     }
 });
 
-// ==========================================
-// 27. USER INFO + CHANGE PASSWORD
-// ==========================================
 app.get('/api/user/:username', requireUserSession, async (req, res) => {
     try {
         if (req.username.toLowerCase() !== req.params.username.trim().toLowerCase()) {
@@ -2110,7 +2012,6 @@ app.post('/api/change-password', requireUserSession, async (req, res) => {
             [newHashed, username.trim()]
         );
 
-        // ⭐ Xoá tất cả session cũ
         await pool.query('DELETE FROM sessions WHERE LOWER(username) = LOWER($1)', [username.trim()]);
 
         res.json({ success: true, message: 'Đổi mật khẩu thành công! Vui lòng đăng nhập lại.' });
@@ -2120,9 +2021,6 @@ app.post('/api/change-password', requireUserSession, async (req, res) => {
     }
 });
 
-// ==========================================
-// 28. SUBMIT KYC
-// ==========================================
 app.post('/api/user/submit-kyc', requireUserSession, async (req, res) => {
     try {
         const { username, fullName, idNumber, frontImage, backImage } = req.body;
@@ -2150,9 +2048,6 @@ app.post('/api/user/submit-kyc', requireUserSession, async (req, res) => {
     }
 });
 
-// ==========================================
-// 29. PAY2S
-// ==========================================
 app.post('/api/pay2s-create-order', async (req, res) => {
     try {
         const { username, amount } = req.body;
@@ -2195,10 +2090,9 @@ app.post('/api/pay2s-create-order', async (req, res) => {
     }
 });
 
-// ⭐ PAY2S WEBHOOK — TRANSACTION + CHỐNG REPLAY
 app.post('/api/pay2s-webhook', async (req, res) => {
     try {
-        // Auth: nếu có cấu hình token thì BẮT BUỘC phải khớp (timing-safe)
+
         if (PAY2S_WEBHOOK_TOKEN) {
             const authHeader = req.headers['authorization'] || '';
             const token = authHeader.replace(/^Bearer\s+/i, '');
@@ -2209,7 +2103,6 @@ app.post('/api/pay2s-webhook', async (req, res) => {
 
         const data = req.body;
 
-        // Verify signature nếu có
         if (data.m2signature) {
             const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
             const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawHash).digest('hex');
@@ -2276,9 +2169,6 @@ app.post('/api/pay2s-webhook', async (req, res) => {
     }
 });
 
-// ==========================================
-// 30. WEBHUB
-// ==========================================
 app.post('/api/webhub-create-order', async (req, res) => {
     try {
         const { username, amount } = req.body;
@@ -2375,9 +2265,6 @@ app.post('/api/webhub-webhook', async (req, res) => {
     }
 });
 
-// ==========================================
-// 31. BUY PRODUCT — ATOMIC UPDATE
-// ==========================================
 app.post('/api/buy-product', requireUserSession, async (req, res) => {
     try {
         const { username, productId, price, productName } = req.body;
@@ -2473,14 +2360,10 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
     }
 });
 
-// ==========================================
-// 32. DOWNLOAD (R2)
-// ==========================================
 app.get('/api/download/:productId', requireUserSession, async (req, res) => {
     const productId = String(req.params.productId || '').trim();
     const username = req.username;
 
-    // ⭐ Validate productId (chỉ chữ/số/gạch)
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(productId)) {
         return res.status(400).send('Mã sản phẩm không hợp lệ.');
     }
@@ -2581,9 +2464,6 @@ app.get('/api/download-all', requireUserSession, async (req, res) => {
     }
 });
 
-// ==========================================
-// 33. ADMIN: USERS + KEYS + FEEDBACKS
-// ==========================================
 app.post('/api/admin/users', requireAdminToken, async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT * FROM users ORDER BY created_at DESC');
@@ -2622,7 +2502,7 @@ app.post('/api/admin/email-logs', requireAdminToken, async (req, res) => {
         query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
         params.push(limit, offset);
 
-        const { rows } = await emailLogPool.query(query, params); // <-- Sửa dòng này
+        const { rows } = await emailLogPool.query(query, params);
 
         let countQuery = 'SELECT COUNT(*) FROM email_logs';
         const countParams = [];
@@ -2630,7 +2510,7 @@ app.post('/api/admin/email-logs', requireAdminToken, async (req, res) => {
             countQuery += ' WHERE status = $1';
             countParams.push(status.toUpperCase());
         }
-        const countResult = await emailLogPool.query(countQuery, countParams); // <-- Sửa dòng này
+        const countResult = await emailLogPool.query(countQuery, countParams);
         const total = parseInt(countResult.rows[0].count);
 
         res.json({
@@ -2649,9 +2529,6 @@ app.post('/api/admin/email-logs', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 34. KEYS (Gist)
-// ==========================================
 app.post('/api/create-key', async (req, res) => {
     try {
         const { plan, customerName, transferContent, amount } = req.body;
@@ -2815,9 +2692,6 @@ app.post('/api/admin/cleanup-now', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 35. FEEDBACK
-// ==========================================
 app.get('/api/feedbacks', async (req, res) => {
     try {
         const db = await readStorage();
@@ -2910,9 +2784,6 @@ app.post('/api/admin/feedbacks', requireAdminToken, async (req, res) => {
     }
 });
 
-// ==========================================
-// 36. PAYMENT RETURN PAGE
-// ==========================================
 app.get('/payment-return', (req, res) => {
     const message = req.query.message || 'Giao dịch đã được xử lý.';
     const safeMessage = String(message).replace(/[&<>"']/g, c => ({
@@ -2941,9 +2812,6 @@ p { color: #a0a5b5; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
 </body></html>`);
 });
 
-// ==========================================
-// 37. HEALTH + HEARTBEAT + GOOGLE TOKEN
-// ==========================================
 app.get('/api/health', globalLimiter, async (req, res) => {
     let orderStats = { total: 0, pending: 0, paid: 0, underpaid: 0 };
     let totalUsers = 0;
@@ -3043,18 +2911,12 @@ app.post('/api/admin/google-token', async (req, res) => {
     }
 });
 
-// ==========================================
-// 38. 404 + ERROR HANDLERS
-// ==========================================
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => {
     console.error('❌ Server error:', err);
     res.status(500).json({ error: 'Lỗi server: ' + err.message });
 });
 
-// ==========================================
-// 39. TIMERS
-// ==========================================
 setInterval(() => {
     cleanupExpiredKeys().catch(err => console.error('cleanupExpiredKeys error:', err.message));
 }, CLEANUP_INTERVAL_MS);
@@ -3076,9 +2938,6 @@ setInterval(async () => {
     }
 }, 10 * 60 * 1000);
 
-// ==========================================
-// 40. START SERVER
-// ==========================================
 async function startServer() {
     await initDB();
 
