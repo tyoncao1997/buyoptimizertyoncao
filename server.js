@@ -1348,6 +1348,7 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
         const totalOrders = orderRows.length;
         const paidOrdersList = orderRows.filter(o => o.status === 'paid');
+        const completedOrdersList = orderRows.filter(o => o.status === 'completed');
         const pendingOrdersList = orderRows.filter(o => o.status === 'pending');
         const underpaidOrdersList = orderRows.filter(o => o.status === 'underpaid');
         const rejectedOrdersList = orderRows.filter(o => o.status === 'rejected' || o.status === 'cancelled');
@@ -1403,9 +1404,12 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             underpaidOrdersList: underpaidOrdersList.length,
             revenue7d,
             orderStatus: {
-                paid: paidOrdersList.length, pending: pendingOrdersList.length,
-                underpaid: underpaidOrdersList.length, rejected: rejectedOrdersList.length,
-                other: totalOrders - paidOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length
+                paid: paidOrdersList.length, 
+                completed: completedOrdersList.length,
+                pending: pendingOrdersList.length,
+                underpaid: underpaidOrdersList.length, 
+                rejected: rejectedOrdersList.length,
+                other: totalOrders - paidOrdersList.length - completedOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length
             },
             recentOrders, topSpenders
         });
@@ -1645,6 +1649,31 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
         res.json({ success: true, message: `Đã xác nhận đơn ${orderCode}. Key đã kích hoạt!` });
     } catch (err) {
         console.error('Admin confirm order error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/admin/complete-order', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, orderCode } = req.body;
+        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+
+        const { rows } = await pool.query('SELECT * FROM orders WHERE order_code = $1', [orderCode]);
+        if (rows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+        if (rows[0].status !== 'paid') {
+            return res.status(400).json({ success: false, error: 'Chỉ có thể hoàn tất đơn đã thanh toán' });
+        }
+
+        const note = (rows[0].note || '') + ` | Admin ${req.admin.username} đã hoàn tất dịch vụ.`;
+        await pool.query(
+            `UPDATE orders SET status='completed', note=$1 WHERE order_code=$2`,
+            [note, orderCode]
+        );
+
+        console.log(`✅ [ADMIN] ${req.admin.username} đã hoàn tất đơn ${orderCode}`);
+        res.json({ success: true, message: `Đã đánh dấu hoàn tất đơn ${orderCode}.` });
+    } catch (err) {
+        console.error('Admin complete order error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
