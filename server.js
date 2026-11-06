@@ -26,7 +26,7 @@ const pool = new Pool({
 });
 pool.on('error', (err) => console.error('❌ Pool error:', err.message));
 const emailLogPool = new Pool({
-    connectionString: process.env.EMAIL_LOG_DATABASE_URL || process.env.DATABASE_URL,
+    connectionString: process.env.EMAIL_LOG_DATABASE_URL,
     ssl: { rejectUnauthorized: false },
     max: 5,
     idleTimeoutMillis: 30000,
