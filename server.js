@@ -1721,17 +1721,85 @@ app.post('/api/send-otp', async (req, res) => {
             otp, expiresAt, lastSentAt: Date.now(), attempts: 0
         });
 
-        const mailSent = await sendEmailImmediate(
+                const mailSent = await sendEmailImmediate(
             emailKey,
-            'Mã OTP đăng ký tài khoản - TYON Optimizer',
+            '[TyonCao] Mã xác minh đăng ký tài khoản của bạn',
             `
-            <div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:20px;border:1px solid #ddd;border-radius:10px;">
-                <h2 style="color:#2c3e50;text-align:center">Xác thực đăng ký</h2>
-                <p>Mã OTP của bạn là:</p>
-                <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#e67e22;text-align:center">${otp}</p>
-                <p>Mã có hiệu lực <b>5 phút</b>. Không chia sẻ mã này cho ai.</p>
-                <p style="color:#888;font-size:12px">Nếu bạn không yêu cầu, hãy bỏ qua email này.</p>
-            </div>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin: 0; padding: 0; background-color: #f6f8fa; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f6f8fa; padding: 40px 20px;">
+        <tr>
+            <td align="center">
+                <!-- Khung Email -->
+                <table width="100%" max-width="600" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden;">
+                    
+                    <!-- Header (Giống tiêu đề email) -->
+                    <tr>
+                        <td style="padding: 24px 32px; border-bottom: 1px solid #d0d7de;">
+                            <h1 style="margin: 0; font-size: 20px; font-weight: 600; color: #24292f;">
+                                [TyonCao] Vui lòng xác minh đăng ký
+                            </h1>
+                        </td>
+                    </tr>
+
+                    <!-- Nội dung chính -->
+                    <tr>
+                        <td style="padding: 32px;">
+                            <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.5; color: #24292f;">
+                                Chào bạn,
+                            </p>
+                            
+                            <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.5; color: #24292f;">
+                                Cảm ơn bạn đã lựa chọn TyonCao Global Optimizer. Để hoàn tất quá trình đăng ký tài khoản, vui lòng nhập mã xác minh dưới đây:
+                            </p>
+
+                            <!-- MÃ OTP NỔI BẬT -->
+                            <div style="background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 24px; text-align: center; margin: 0 0 24px;">
+                                <p style="margin: 0 0 12px; font-size: 13px; font-weight: 600; color: #57606a; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    Mã xác minh của bạn
+                                </p>
+                                <div style="font-family: 'Courier New', monospace; font-size: 42px; font-weight: 700; color: #0969da; letter-spacing: 6px; margin: 0;">
+                                    ${otp}
+                                </div>
+                            </div>
+
+                            <p style="margin: 0 0 16px; font-size: 14px; line-height: 1.5; color: #24292f;">
+                                Mã này có hiệu lực trong vòng <strong>5 phút</strong>. Tuyệt đối không chia sẻ mã này cho bất kỳ ai.
+                            </p>
+
+                            <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.5; color: #57606a;">
+                                Nếu bạn không thực hiện yêu cầu đăng ký này, bạn có thể bỏ qua email này. Tài khoản của bạn sẽ không được tạo nếu không có mã xác minh.
+                            </p>
+
+                            <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #24292f;">
+                                Trân trọng,<br>
+                                Đội ngũ TyonCao
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- Footer nhỏ bên ngoài -->
+                <table width="100%" max-width="600" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; margin-top: 16px;">
+                    <tr>
+                        <td align="center">
+                            <p style="margin: 0; font-size: 12px; line-height: 1.5; color: #57606a;">
+                                Email này được gửi tự động từ hệ thống TyonCao Global Optimizer.<br>
+                                Vui lòng không trả lời trực tiếp email này.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
             `
         );
 
