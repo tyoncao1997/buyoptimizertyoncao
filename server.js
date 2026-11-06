@@ -137,103 +137,466 @@ setInterval(() => {
 // ==========================================
 const emailTemplates = {
     welcome: (fullName, username) => `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
-                <p style="color: #7f8c8d; font-size: 12px;">tyonoptimizer.infinityfreeapp.com</p>
-            </div>
-            <div style="background: #fff; padding: 20px; border-radius: 8px;">
-                <h2 style="color: #27ae60;">Xin chào quý khách ${fullName}!</h2>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">
-                    Cảm ơn quý khách đã tin tưởng và trở thành người dùng thân cận của <strong>TyonCao Global Optimizer</strong>.
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0; padding:0; background-color:#0f172a; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#0f172a; padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px; width:100%; background-color:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.35);">
+          
+          <!-- HEADER with luxury gradient -->
+          <tr>
+            <td style="background:linear-gradient(135deg, #0f172a 0%, #1e293b 45%, #0e7490 100%); padding:48px 40px 40px; text-align:center;">
+              <div style="display:inline-block; padding:10px 22px; border:1px solid rgba(212,175,55,0.5); border-radius:50px; margin-bottom:20px;">
+                <span style="color:#d4af37; font-size:11px; letter-spacing:3px; font-weight:600; text-transform:uppercase;">Premium Membership</span>
+              </div>
+              <h1 style="margin:0; color:#ffffff; font-size:26px; font-weight:300; letter-spacing:4px; text-transform:uppercase;">
+                TyonCao
+              </h1>
+              <p style="margin:8px 0 0; color:#d4af37; font-size:13px; letter-spacing:6px; font-weight:500; text-transform:uppercase;">
+                Global Optimizer
+              </p>
+              <div style="width:60px; height:2px; background:linear-gradient(90deg, transparent, #d4af37, transparent); margin:24px auto 0;"></div>
+            </td>
+          </tr>
+
+          <!-- BODY -->
+          <tr>
+            <td style="padding:48px 44px 32px; background-color:#ffffff;">
+              <p style="margin:0 0 8px; color:#0e7490; font-size:12px; letter-spacing:2px; font-weight:600; text-transform:uppercase;">
+                Kính gửi Quý khách
+              </p>
+              <h2 style="margin:0 0 24px; color:#0f172a; font-size:24px; font-weight:600; line-height:1.3;">
+                ${fullName}
+              </h2>
+              
+              <p style="margin:0 0 18px; color:#475569; font-size:15px; line-height:1.8;">
+                Thay mặt <strong style="color:#0f172a;">TyonCao Global Optimizer</strong>, chúng tôi trân trọng gửi đến Quý khách lời chào mừng nồng nhiệt nhất. Sự tin tưởng của Quý khách là nền tảng cho cam kết chất lượng và dịch vụ cao cấp của chúng tôi.
+              </p>
+
+              <!-- Account Card -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:28px 0;">
+                <tr>
+                  <td style="background:linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border-left:3px solid #d4af37; border-radius:8px; padding:24px 28px;">
+                    <p style="margin:0 0 6px; color:#64748b; font-size:11px; letter-spacing:1.5px; font-weight:600; text-transform:uppercase;">
+                      Tài khoản đã được kích hoạt
+                    </p>
+                    <p style="margin:0; color:#0f172a; font-size:18px; font-weight:600; font-family:'Courier New', monospace; letter-spacing:0.5px;">
+                      ${username}
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin:0 0 24px; color:#475569; font-size:15px; line-height:1.8;">
+                Quý khách có thể bắt đầu trải nghiệm các giải pháp tối ưu hóa toàn cầu của chúng tôi ngay hôm nay. Nếu cần bất kỳ hỗ trợ nào, đội ngũ chuyên viên của chúng tôi luôn sẵn sàng đồng hành cùng Quý khách.
+              </p>
+
+              <!-- CTA Button -->
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto 32px;">
+                <tr>
+                  <td align="center" style="border-radius:50px; background:linear-gradient(135deg, #0e7490 0%, #0891b2 100%); box-shadow:0 8px 20px rgba(14,116,144,0.3);">
+                    <a href="https://api.whatsapp.com/send/?phone=84978568965" 
+                       style="display:inline-block; padding:14px 40px; color:#ffffff; font-size:14px; font-weight:600; letter-spacing:1px; text-decoration:none; text-transform:uppercase; border-radius:50px;">
+                      Liên hệ Chuyên viên
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <div style="border-top:1px solid #e2e8f0; padding-top:24px;">
+                <p style="margin:0; color:#475569; font-size:14px; line-height:1.7;">
+                  Trân trọng,
                 </p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">
-                    Tài khoản của quý khách đã được kích hoạt với username: <strong>${username}</strong>.
+                <p style="margin:6px 0 0; color:#0f172a; font-size:15px; font-weight:600;">
+                  Đội ngũ TyonCao Global Optimizer
                 </p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">
-                    Nếu có bất kỳ câu hỏi nào, xin vui lòng <a href="https://api.whatsapp.com/send/?phone=84978568965" style="color: #3498db; text-decoration: none; font-weight: bold;">liên hệ với chúng tôi</a>.
+                <p style="margin:4px 0 0; color:#94a3b8; font-size:12px; font-style:italic;">
+                  Excellence in Global Optimization
                 </p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 30px;">
-                    Trân trọng,<br><strong>Đội ngũ TyonCao Global Optimizer</strong>
-                </p>
-            </div>
-            <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #95a5a6;">
-                <p>TYON CAO GLOBAL OPTIMIZER</p>
-                <p>TYONCGO247 | (+84) 97 8568 965</p>
-            </div>
-        </div>
+              </div>
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="background-color:#0f172a; padding:32px 40px; text-align:center;">
+              <p style="margin:0 0 12px; color:#d4af37; font-size:12px; letter-spacing:3px; font-weight:600; text-transform:uppercase;">
+                TyonCao Global Optimizer
+              </p>
+              <div style="width:40px; height:1px; background:#334155; margin:0 auto 16px;"></div>
+              <p style="margin:0 0 6px; color:#94a3b8; font-size:12px; line-height:1.6;">
+                TYONCGO247 &nbsp;|&nbsp; <span style="color:#cbd5e1;">(+84) 97 8568 965</span>
+              </p>
+              <p style="margin:0; color:#64748b; font-size:11px;">
+                tyonoptimizer.infinityfreeapp.com
+              </p>
+            </td>
+          </tr>
+
+        </table>
+
+        <!-- Legal note -->
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="max-width:600px; width:100%; margin-top:24px;">
+          <tr>
+            <td style="text-align:center; padding:0 20px;">
+              <p style="margin:0; color:#475569; font-size:11px; line-height:1.6;">
+                Email này được gửi tự động. Vui lòng không trả lời trực tiếp.<br>
+                © 2025 TyonCao Global Optimizer. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
     `,
 
     kycSuccess: (fullName) => `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
-            </div>
-            <div style="background: #fff; padding: 20px; border-radius: 8px;">
-                <h2 style="color: #27ae60;">Xác thực danh tính thành công!</h2>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">Xin chào <strong>${fullName}</strong>,</p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">
-                    Chúc mừng bạn! Yêu cầu xác minh danh tính (KYC) của bạn đã được <strong>phê duyệt thành công</strong>.
-                </p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 30px;">
-                    Trân trọng,<br><strong>Đội ngũ TyonCao Global Optimizer</strong>
-                </p>
-            </div>
-        </div>
-    `,
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xác thực danh tính thành công</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #0f172a; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); padding: 40px 15px;">
+        <tr>
+            <td align="center">
+                <!-- Main Container -->
+                <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);">
+                    
+                    <!-- Header with Gradient -->
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%); padding: 40px 30px; text-align: center; position: relative;">
+                            <!-- Logo Icon -->
+                            <div style="width: 64px; height: 64px; margin: 0 auto 16px; background: rgba(255, 255, 255, 0.15); border-radius: 16px; display: inline-block; padding: 14px; box-sizing: border-box; border: 1px solid rgba(255, 255, 255, 0.25);">
+                                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M12 2L3 7V12C3 17.55 6.84 22.74 12 24C17.16 22.74 21 17.55 21 12V7L12 2Z" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" fill="rgba(255,255,255,0.1)"/>
+                                    <path d="M9 12L11 14L15 10" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </div>
+                            <h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: 1.5px; text-transform: uppercase;">
+                                TYONCAO
+                            </h1>
+                            <p style="margin: 6px 0 0; font-size: 11px; color: rgba(255, 255, 255, 0.75); letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">
+                                Global Optimizer
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- Success Badge -->
+                    <tr>
+                        <td style="padding: 0; text-align: center; background: #ffffff;">
+                            <div style="margin: -28px auto 0; width: 56px; height: 56px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); border-radius: 50%; box-shadow: 0 8px 24px rgba(16, 185, 129, 0.4); display: inline-block; position: relative;">
+                                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-top: 14px;">
+                                    <path d="M5 13L9 17L19 7" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </div>
+                        </td>
+                    </tr>
+
+                    <!-- Content -->
+                    <tr>
+                        <td style="padding: 24px 40px 10px; text-align: center;">
+                            <h2 style="margin: 0 0 8px; font-size: 24px; font-weight: 700; color: #0f172a; letter-spacing: -0.5px;">
+                                Xác thực danh tính thành công
+                            </h2>
+                            <p style="margin: 0; font-size: 13px; color: #64748b; font-weight: 500; letter-spacing: 0.3px;">
+                                KYC VERIFICATION · APPROVED
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- Divider -->
+                    <tr>
+                        <td style="padding: 20px 40px 0;">
+                            <div style="height: 1px; background: linear-gradient(to right, transparent, #e2e8f0, transparent);"></div>
+                        </td>
+                    </tr>
+
+                    <!-- Message Body -->
+                    <tr>
+                        <td style="padding: 24px 40px 20px;">
+                            <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7; color: #334155;">
+                                Xin chào <strong style="color: #0f172a;">${fullName}</strong>,
+                            </p>
+                            <p style="margin: 0 0 20px; font-size: 15px; line-height: 1.7; color: #334155;">
+                                Chúc mừng bạn! Yêu cầu xác minh danh tính (KYC) của bạn đã được 
+                                <strong style="color: #059669;">phê duyệt thành công</strong>.
+                            </p>
+
+                            <!-- Info Box -->
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%); border-left: 4px solid #10b981; border-radius: 8px; margin: 24px 0;">
+                                <tr>
+                                    <td style="padding: 18px 20px;">
+                                        <p style="margin: 0 0 8px; font-size: 13px; font-weight: 700; color: #065f46; text-transform: uppercase; letter-spacing: 0.5px;">
+                                            ✓ Trạng thái tài khoản
+                                        </p>
+                                        <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #047857;">
+                                            Tài khoản của bạn hiện đã được xác minh đầy đủ và sẵn sàng sử dụng tất cả các tính năng của nền tảng.
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- CTA Button (optional) -->
+                    <tr>
+                        <td style="padding: 0 40px 30px; text-align: center;">
+                            <a href="#" style="display: inline-block; padding: 14px 36px; background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%); color: #ffffff; text-decoration: none; font-size: 14px; font-weight: 600; border-radius: 8px; letter-spacing: 0.5px; box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);">
+                                Truy cập tài khoản
+                            </a>
+                        </td>
+                    </tr>
+
+                    <!-- Sign-off -->
+                    <tr>
+                        <td style="padding: 0 40px 32px;">
+                            <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #475569;">
+                                Trân trọng,
+                            </p>
+                            <p style="margin: 4px 0 0; font-size: 14px; font-weight: 700; color: #0f172a;">
+                                Đội ngũ TyonCao Global Optimizer
+                            </p>
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background: #f8fafc; padding: 24px 40px; border-top: 1px solid #e2e8f0; text-align: center;">
+                            <p style="margin: 0 0 8px; font-size: 12px; color: #94a3b8; line-height: 1.6;">
+                                Đây là email tự động, vui lòng không trả lời trực tiếp.
+                            </p>
+                            <p style="margin: 0; font-size: 11px; color: #cbd5e1; line-height: 1.6;">
+                                © ${new Date().getFullYear()} TyonCao Global Optimizer. All rights reserved.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+`,
 
     forgotPassword: (fullName, otp) => `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
-            </div>
-            <div style="background: #fff; padding: 20px; border-radius: 8px;">
-                <h2 style="color: #e67e22;">Yêu cầu đặt lại mật khẩu</h2>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">Xin chào <strong>${fullName}</strong>,</p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">
-                    Vui lòng sử dụng mã xác thực dưới đây để tiếp tục:
-                </p>
-                <div style="text-align: center; margin: 30px 0;">
-                    <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #e67e22; background: #fef5e7; padding: 10px 20px; border-radius: 5px;">${otp}</span>
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Đặt lại mật khẩu</title>
+</head>
+<body style="margin:0; padding:0; background-color:#eef2f7; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, Arial, sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#eef2f7; padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px; width:100%; background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 12px 40px rgba(15,23,42,0.10);">
+          
+          <!-- HEADER -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #e67e22 200%); padding:36px 40px; text-align:center;">
+              <div style="display:inline-block; padding:10px 22px; border:1px solid rgba(255,255,255,0.25); border-radius:999px; margin-bottom:16px;">
+                <span style="color:#f8b878; font-size:11px; letter-spacing:3px; font-weight:600; text-transform:uppercase;">Security Notice</span>
+              </div>
+              <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:700; letter-spacing:1.5px;">
+                TYONCAO <span style="color:#e67e22;">GLOBAL</span> OPTIMIZER
+              </h1>
+            </td>
+          </tr>
+
+          <!-- BODY -->
+          <tr>
+            <td style="padding:44px 40px 20px 40px;">
+              
+              <!-- Icon -->
+              <div style="text-align:center; margin-bottom:24px;">
+                <div style="display:inline-block; width:64px; height:64px; line-height:64px; background:#fef5e7; border-radius:50%;">
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#e67e22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-top:17px;">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                  </svg>
                 </div>
-                <p style="font-size: 14px; line-height: 1.6; color: #333;">
-                    Mã này sẽ hết hạn sau 15 phút. Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.
-                </p>
-                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 30px;">
-                    Trân trọng,<br><strong>Đội ngũ TyonCao Global Optimizer</strong>
-                </p>
-            </div>
-        </div>
-    `,
+              </div>
+
+              <h2 style="margin:0 0 12px 0; color:#0f172a; font-size:22px; font-weight:700; text-align:center;">
+                Yêu cầu đặt lại mật khẩu
+              </h2>
+              <p style="margin:0 0 28px 0; color:#64748b; font-size:14px; line-height:1.7; text-align:center;">
+                Chúng tôi đã nhận được yêu cầu khôi phục quyền truy cập vào tài khoản của bạn.
+              </p>
+
+              <p style="margin:0 0 8px 0; color:#334155; font-size:15px;">
+                Xin chào <strong style="color:#0f172a;">${fullName}</strong>,
+              </p>
+              <p style="margin:0 0 24px 0; color:#334155; font-size:14px; line-height:1.7;">
+                Vui lòng sử dụng mã xác thực bên dưới để tiếp tục. Mã có hiệu lực trong vòng <strong style="color:#e67e22;">15 phút</strong>.
+              </p>
+
+              <!-- OTP BOX -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px 0;">
+                <tr>
+                  <td align="center">
+                    <div style="display:inline-block; background: linear-gradient(135deg, #fef5e7 0%, #fde8c4 100%); border:1px solid #f5c98a; border-radius:12px; padding:22px 40px;">
+                      <div style="font-size:11px; color:#b45309; letter-spacing:2.5px; font-weight:600; text-transform:uppercase; margin-bottom:6px;">Mã xác thực</div>
+                      <div style="font-size:38px; font-weight:800; letter-spacing:10px; color:#c2620a; font-family:'Courier New', monospace;">
+                        ${otp}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Warning -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc; border-left:3px solid #e67e22; border-radius:6px; margin:0 0 28px 0;">
+                <tr>
+                  <td style="padding:14px 18px;">
+                    <p style="margin:0; color:#475569; font-size:13px; line-height:1.6;">
+                      <strong style="color:#0f172a;">Lưu ý bảo mật:</strong> Tuyệt đối không chia sẻ mã này với bất kỳ ai. Nếu bạn không thực hiện yêu cầu này, hãy bỏ qua email và kiểm tra lại bảo mật tài khoản.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="margin:0 0 8px 0; color:#334155; font-size:14px; line-height:1.7;">
+                Trân trọng,
+              </p>
+              <p style="margin:0; color:#0f172a; font-size:14px; font-weight:700;">
+                Đội ngũ TyonCao Global Optimizer
+              </p>
+            </td>
+          </tr>
+
+          <!-- FOOTER -->
+          <tr>
+            <td style="background:#f8fafc; border-top:1px solid #e2e8f0; padding:24px 40px; text-align:center;">
+              <p style="margin:0 0 6px 0; color:#94a3b8; font-size:12px;">
+                Email này được gửi tự động, vui lòng không trả lời.
+              </p>
+              <p style="margin:0; color:#cbd5e1; font-size:11px; letter-spacing:0.5px;">
+                © ${new Date().getFullYear()} TyonCao Global Optimizer · All rights reserved
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`,
 
     purchaseInvoice: (order) => `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px; border-radius: 10px; border: 1px solid #ddd;">
-            <div style="text-align: center; margin-bottom: 20px;">
-                <h1 style="color: #2c3e50; margin: 0;">TYONCAO GLOBAL OPTIMIZER</h1>
-                <p style="color: #7f8c8d; font-size: 12px;">tyonoptimizer.infinityfreeapp.com</p>
-            </div>
-            <div style="background: #fff; padding: 20px; border-radius: 8px; border-top: 4px solid #2c3e50;">
-                <h2 style="color: #2c3e50; text-align: center;">THÔNG BÁO GIAO DỊCH THÀNH CÔNG</h2>
-                <p style="font-size: 14px; line-height: 1.6; color: #333; text-align: center;">
-                    Cảm ơn Quý khách đã sử dụng dịch vụ TyonCao Shop.
-                </p>
-                <table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px;">
-                    <tr style="background: #f2f2f2;"><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Mã đơn hàng</td><td style="padding: 10px; border: 1px solid #ddd;">${order.orderCode}</td></tr>
-                    <tr><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Tên khách hàng</td><td style="padding: 10px; border: 1px solid #ddd;">${order.customerName}</td></tr>
-                    <tr style="background: #f2f2f2;"><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Gói dịch vụ</td><td style="padding: 10px; border: 1px solid #ddd;">${order.planName}</td></tr>
-                    <tr><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Số tiền</td><td style="padding: 10px; border: 1px solid #ddd; color: #e74c3c; font-weight: bold;">${new Intl.NumberFormat('vi-VN').format(order.amount)} VNĐ</td></tr>
-                    <tr style="background: #f2f2f2;"><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Thời gian</td><td style="padding: 10px; border: 1px solid #ddd;">${new Date(order.paidAt).toLocaleString('vi-VN')}</td></tr>
-                    <tr><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Mã giao dịch</td><td style="padding: 10px; border: 1px solid #ddd;">${order.transactionId || 'N/A'}</td></tr>
-                    <tr style="background: #f2f2f2;"><td style="padding: 10px; border: 1px solid #ddd; font-weight: bold;">Key</td><td style="padding: 10px; border: 1px solid #ddd; color: #2980b9; font-weight: bold;">${order.key}</td></tr>
-                </table>
-                <p style="font-size: 14px; line-height: 1.6; color: #333; margin-top: 20px; text-align: center;">Xin chân thành cảm ơn.</p>
-            </div>
-            <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #95a5a6;">
-                <p><strong>TYON CAO GLOBAL OPTIMIZER</strong></p>
-                <p>TYONCGO247 | (+84) 97 8568 965</p>
-            </div>
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xác nhận đơn hàng</title>
+</head>
+<body style="margin:0; padding:0; background:#eef2f7; font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+  <div style="max-width:620px; margin:0 auto; padding:32px 16px;">
+
+    <!-- HEADER -->
+    <div style="text-align:center; padding:8px 0 28px;">
+      <div style="display:inline-block; width:56px; height:56px; line-height:56px; border-radius:16px; background:linear-gradient(135deg,#1e3a5f 0%,#2c5282 100%); color:#fff; font-size:24px; font-weight:800; letter-spacing:-1px; box-shadow:0 8px 20px rgba(30,58,95,0.25);">T</div>
+      <h1 style="margin:14px 0 4px; font-size:19px; font-weight:800; letter-spacing:2px; color:#1e3a5f;">TYONCAO GLOBAL OPTIMIZER</h1>
+      <p style="margin:0; font-size:11px; letter-spacing:1.5px; color:#94a3b8; text-transform:uppercase;">tyonoptimizer.infinityfreeapp.com</p>
+    </div>
+
+    <!-- CARD -->
+    <div style="background:#ffffff; border-radius:18px; overflow:hidden; box-shadow:0 10px 40px rgba(15,23,42,0.08); border:1px solid #e2e8f0;">
+
+      <!-- HERO STRIP -->
+      <div style="background:linear-gradient(135deg,#0f2744 0%,#1e3a5f 50%,#2c5282 100%); padding:32px 24px; text-align:center;">
+        <div style="display:inline-block; width:52px; height:52px; border-radius:50%; background:rgba(255,255,255,0.15); line-height:52px; margin-bottom:12px; font-size:26px;">✓</div>
+        <h2 style="margin:0 0 6px; color:#ffffff; font-size:21px; font-weight:700; letter-spacing:0.3px;">GIAO DỊCH THÀNH CÔNG</h2>
+        <p style="margin:0; color:#cbd5e1; font-size:13px; letter-spacing:0.5px;">Cảm ơn Quý khách đã tin tưởng TyonCao Shop</p>
+      </div>
+
+      <!-- BODY -->
+      <div style="padding:28px 24px;">
+
+        <!-- ORDER CODE HIGHLIGHT -->
+        <div style="background:#f8fafc; border:1px dashed #cbd5e1; border-radius:12px; padding:14px 18px; text-align:center; margin-bottom:24px;">
+          <p style="margin:0 0 4px; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:#64748b; font-weight:600;">Mã đơn hàng</p>
+          <p style="margin:0; font-size:18px; font-weight:800; color:#1e3a5f; letter-spacing:1px;">#${order.orderCode}</p>
         </div>
-    `
+
+        <!-- DETAILS TABLE -->
+        <table style="width:100%; border-collapse:separate; border-spacing:0; font-size:14px; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden;">
+          <tr>
+            <td style="padding:13px 16px; background:#f8fafc; color:#64748b; font-weight:600; width:42%; border-bottom:1px solid #e2e8f0;">Tên khách hàng</td>
+            <td style="padding:13px 16px; color:#0f172a; font-weight:600; border-bottom:1px solid #e2e8f0;">${order.customerName}</td>
+          </tr>
+          <tr>
+            <td style="padding:13px 16px; background:#f8fafc; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Gói dịch vụ</td>
+            <td style="padding:13px 16px; color:#0f172a; font-weight:600; border-bottom:1px solid #e2e8f0;">${order.planName}</td>
+          </tr>
+          <tr>
+            <td style="padding:13px 16px; background:#f8fafc; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Số tiền</td>
+            <td style="padding:13px 16px; border-bottom:1px solid #e2e8f0;">
+              <span style="color:#dc2626; font-weight:800; font-size:16px;">${new Intl.NumberFormat('vi-VN').format(order.amount)}</span>
+              <span style="color:#94a3b8; font-size:12px; font-weight:600;"> VNĐ</span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:13px 16px; background:#f8fafc; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Thời gian</td>
+            <td style="padding:13px 16px; color:#0f172a; border-bottom:1px solid #e2e8f0;">${new Date(order.paidAt).toLocaleString('vi-VN')}</td>
+          </tr>
+          <tr>
+            <td style="padding:13px 16px; background:#f8fafc; color:#64748b; font-weight:600; border-bottom:1px solid #e2e8f0;">Mã giao dịch</td>
+            <td style="padding:13px 16px; color:#0f172a; font-family:'Courier New',monospace; font-size:13px; border-bottom:1px solid #e2e8f0;">${order.transactionId || '—'}</td>
+          </tr>
+          <tr>
+            <td style="padding:13px 16px; background:#f8fafc; color:#64748b; font-weight:600;">Key kích hoạt</td>
+            <td style="padding:13px 16px;">
+              <span style="display:inline-block; background:#eff6ff; color:#1d4ed8; font-family:'Courier New',monospace; font-weight:700; font-size:13px; padding:6px 12px; border-radius:8px; border:1px solid #bfdbfe; letter-spacing:0.5px;">${order.key}</span>
+            </td>
+          </tr>
+        </table>
+
+        <!-- NOTICE -->
+        <div style="margin-top:22px; padding:14px 16px; background:#fffbeb; border-left:4px solid #f59e0b; border-radius:8px;">
+          <p style="margin:0; font-size:12.5px; line-height:1.6; color:#78350f;">
+            <strong>Lưu ý:</strong> Vui lòng bảo mật Key kích hoạt. Mọi thắc mắc xin liên hệ bộ phận hỗ trợ khách hàng.
+          </p>
+        </div>
+
+        <!-- CTA -->
+        <div style="text-align:center; margin-top:26px;">
+          <a href="https://tyonoptimizer.infinityfreeapp.com" style="display:inline-block; background:linear-gradient(135deg,#1e3a5f,#2c5282); color:#ffffff; text-decoration:none; font-size:14px; font-weight:700; padding:13px 36px; border-radius:10px; letter-spacing:0.5px; box-shadow:0 6px 16px rgba(30,58,95,0.25);">Truy cập Website</a>
+        </div>
+
+        <p style="margin:24px 0 0; text-align:center; font-size:13px; color:#64748b; line-height:1.6;">Xin chân thành cảm ơn Quý khách.</p>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div style="text-align:center; padding:24px 16px 8px;">
+      <p style="margin:0 0 6px; font-size:13px; font-weight:800; color:#1e3a5f; letter-spacing:1px;">TYON CAO GLOBAL OPTIMIZER</p>
+      <p style="margin:0 0 14px; font-size:12px; color:#94a3b8;">TYONCGO247 &nbsp;•&nbsp; (+84) 97 8568 965</p>
+      <div style="height:1px; background:linear-gradient(90deg,transparent,#cbd5e1,transparent); margin:0 auto 14px; max-width:320px;"></div>
+      <p style="margin:0; font-size:11px; color:#cbd5e1;">© ${new Date().getFullYear()} TyonCao. All rights reserved.</p>
+    </div>
+
+  </div>
+</body>
+</html>
+`
 };
 
 // ==========================================
@@ -754,6 +1117,14 @@ async function cleanupExpiredKeys() {
             if (rowCount > 0) {
                 console.log(`🧹 Đã XÓA VĨNH VIỄN ${rowCount} orders pending quá hạn.`);
                 deletedCount += rowCount;
+            }
+            const cancelBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const { rowCount: cancelCount } = await pool.query(
+                `DELETE FROM orders WHERE status = 'cancelled' AND created_at < $1`,
+                [cancelBefore]
+            );
+            if (cancelCount > 0) {
+                console.log(`🧹 Đã XÓA VĨNH VIỄN ${cancelCount} orders bị từ chối.`);
             }
         } catch (err) {
             console.error('❌ Lỗi xóa orders:', err.message);
