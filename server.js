@@ -3006,8 +3006,508 @@ setInterval(async () => {
     }
 }, 10 * 60 * 1000);
 
+async function initNotificationTables() {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS notifications (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                content_html TEXT NOT NULL,
+                content_text TEXT,
+                target_type VARCHAR(20) DEFAULT 'all',  -- 'all' | 'specific' | 'active'
+                target_usernames TEXT[],                 -- NULL nếu gửi all
+                sent_by TEXT NOT NULL,
+                total_recipients INTEGER DEFAULT 0,
+                total_sent INTEGER DEFAULT 0,
+                total_failed INTEGER DEFAULT 0,
+                status VARCHAR(20) DEFAULT 'pending',    -- pending | sending | completed | failed
+                created_at TIMESTAMP DEFAULT NOW(),
+                completed_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS notification_recipients (
+                id SERIAL PRIMARY KEY,
+                notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
+                username TEXT NOT NULL,
+                email TEXT NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',    -- pending | sent | failed
+                error_message TEXT,
+                sent_at TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS email_unsubscribes (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                reason TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_notif_recipients_notif 
+                ON notification_recipients(notification_id);
+            CREATE INDEX IF NOT EXISTS idx_unsub_email 
+                ON email_unsubscribes(LOWER(email));
+        `);
+        console.log('✅ Đã khởi tạo bảng notifications');
+    } catch (err) {
+        console.error('❌ Lỗi tạo bảng notification:', err.message);
+    }
+}
+
+function buildEmailHeaders({ to, subject, messageId, replyTo, unsubscribeUrl }) {
+    const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
+    const domain = (process.env.EMAIL_FROM_DOMAIN || 'tyoncao.com').trim();
+    const fromEmail = (process.env.EMAIL_FROM_ADDRESS || `no-reply@${domain}`).trim();
+    const fromName = (process.env.EMAIL_FROM_NAME || 'TyonCao Global Optimizer').trim();
+
+    const headers = [
+        `From: "${fromName}" <${fromEmail}>`,
+        `To: ${to}`,
+        `Subject: ${utf8Subject}`,
+        `Message-ID: <${messageId}@${domain}>`,
+        `Date: ${new Date().toUTCString()}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: text/html; charset="UTF-8"`,
+        `Content-Transfer-Encoding: base64`,
+        `Reply-To: ${replyTo || fromEmail}`,
+        `X-Mailer: TyonCao-Notification-System`,
+        `Precedence: bulk`,              
+        `List-Unsubscribe: <${unsubscribeUrl}>, <mailto:unsubscribe@${domain}?subject=unsubscribe>`,
+        `List-Unsubscribe-Post: List-Unsubscribe=One-Click`,
+        `X-Auto-Response-Suppress: All`,       
+        `Auto-Submitted: auto-generated`,
+    ];
+    return { headers, fromEmail, fromName, domain };
+}
+
+async function sendNotificationEmail({ to, subject, htmlContent, textContent, messageId, unsubscribeUrl }) {
+    try {
+        const { token } = await gmailOAuth2Client.getAccessToken();
+        const { headers } = buildEmailHeaders({
+            to, subject, messageId, unsubscribeUrl
+        });
+
+        const boundary = '----=_Part_' + messageId;
+        const rawMime = [
+            ...headers.slice(0, 7), 
+            `Content-Type: multipart/alternative; boundary="${boundary}"`,
+            '',
+            `--${boundary}`,
+            'Content-Type: text/plain; charset="UTF-8"',
+            'Content-Transfer-Encoding: base64',
+            '',
+            Buffer.from(textContent || stripHtml(htmlContent)).toString('base64'),
+            `--${boundary}`,
+            'Content-Type: text/html; charset="UTF-8"',
+            'Content-Transfer-Encoding: base64',
+            '',
+            Buffer.from(htmlContent).toString('base64'),
+            `--${boundary}--`
+        ].join('\r\n');
+
+        const encodedMessage = Buffer.from(rawMime)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ raw: encodedMessage })
+        });
+
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error?.message || `Gmail API ${response.status}`);
+        }
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+}
+
+function stripHtml(html) {
+    return String(html || '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function buildNotificationTemplate({ title, content, webUrl, unsubscribeUrl, username }) {
+    return `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;padding:32px 16px;">
+<tr><td align="center">
+  <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(15,23,42,0.08);border:1px solid #e2e8f0;">
+
+    <!-- Header -->
+    <tr><td style="background:linear-gradient(135deg,#1e3a5f 0%,#2c5282 100%);padding:28px 32px;">
+      <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td style="color:#ffffff;font-size:18px;font-weight:700;letter-spacing:1px;">TYONCAO</td>
+        <td align="right" style="color:#cbd5e1;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;">Global Optimizer</td>
+      </tr></table>
+    </td></tr>
+
+    <!-- Title -->
+    <tr><td style="padding:32px 32px 8px;">
+      <p style="margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:1.5px;color:#2c5282;text-transform:uppercase;">Thông báo từ hệ thống</p>
+      <h1 style="margin:0;font-size:22px;font-weight:700;color:#0f172a;line-height:1.35;">${escapeHtml(title)}</h1>
+    </td></tr>
+
+    <!-- Content -->
+    <tr><td style="padding:16px 32px 8px;font-size:15px;line-height:1.75;color:#334155;">
+      <p style="margin:0 0 16px;">Xin chào <strong style="color:#0f172a;">${escapeHtml(username || 'Quý khách')}</strong>,</p>
+      <div style="color:#334155;">${content}</div>
+    </td></tr>
+
+    ${webUrl ? `
+    <!-- CTA -->
+    <tr><td style="padding:12px 32px 24px;" align="center">
+      <a href="${escapeHtml(webUrl)}" style="display:inline-block;padding:13px 36px;background:linear-gradient(135deg,#1e3a5f,#2c5282);color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;border-radius:10px;letter-spacing:0.3px;">Truy cập website</a>
+    </td></tr>` : ''}
+
+    <!-- Sign-off -->
+    <tr><td style="padding:8px 32px 24px;font-size:14px;line-height:1.7;color:#475569;">
+      <p style="margin:0;">Trân trọng,</p>
+      <p style="margin:4px 0 0;font-weight:700;color:#0f172a;">Đội ngũ TyonCao Global Optimizer</p>
+    </td></tr>
+
+    <!-- Footer + Unsubscribe -->
+    <tr><td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:20px 32px;text-align:center;font-size:12px;line-height:1.6;color:#64748b;">
+      <p style="margin:0 0 6px;">Email này được gửi từ hệ thống TyonCao. Vui lòng không trả lời trực tiếp.</p>
+      <p style="margin:0 0 6px;">TYONCGO247 · (+84) 97 8568 965 · tyonoptimizer.infinityfreeapp.com</p>
+      <p style="margin:8px 0 0;font-size:11px;">
+        <a href="${escapeHtml(unsubscribeUrl)}" style="color:#94a3b8;text-decoration:underline;">Hủy nhận thông báo</a>
+        &nbsp;·&nbsp; © ${new Date().getFullYear()} TyonCao. All rights reserved.
+      </p>
+    </td></tr>
+
+  </table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+let isSendingNotification = false;
+
+async function processNotificationQueue(notificationId) {
+    if (isSendingNotification) {
+        console.log('⚠️ Notification worker đang bận, skip');
+        return;
+    }
+    isSendingNotification = true;
+
+    try {
+        await pool.query(
+            `UPDATE notifications SET status='sending' WHERE id=$1`,
+            [notificationId]
+        );
+
+        const { rows: recipients } = await pool.query(
+            `SELECT * FROM notification_recipients 
+             WHERE notification_id=$1 AND status='pending'`,
+            [notificationId]
+        );
+
+        const { rows: notifRows } = await pool.query(
+            'SELECT * FROM notifications WHERE id=$1', [notificationId]
+        );
+        if (notifRows.length === 0) throw new Error('Notification not found');
+        const notif = notifRows[0];
+
+        const baseUrl = process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com';
+        const webUrl = process.env.FRONTEND_URL || 'https://tyonoptimizer.infinityfreeapp.com';
+
+        let sent = 0, failed = 0;
+
+        for (const r of recipients) {
+            try {
+                const unsubscribeToken = crypto
+                    .createHmac('sha256', JWT_SECRET)
+                    .update(r.email.toLowerCase())
+                    .digest('hex')
+                    .slice(0, 32);
+                const unsubscribeUrl = `${baseUrl}/api/unsubscribe?token=${unsubscribeToken}&email=${encodeURIComponent(r.email)}`;
+
+                const html = buildNotificationTemplate({
+                    title: notif.title,
+                    content: notif.content_html,
+                    webUrl,
+                    unsubscribeUrl,
+                    username: r.username
+                });
+
+                const messageId = crypto.randomBytes(16).toString('hex');
+
+                const result = await sendNotificationEmail({
+                    to: r.email,
+                    subject: notif.subject,
+                    htmlContent: html,
+                    textContent: notif.content_text || stripHtml(notif.content_html),
+                    messageId,
+                    unsubscribeUrl
+                });
+
+                if (result.success) {
+                    await pool.query(
+                        `UPDATE notification_recipients SET status='sent', sent_at=NOW() WHERE id=$1`,
+                        [r.id]
+                    );
+                    sent++;
+                } else {
+                    await pool.query(
+                        `UPDATE notification_recipients SET status='failed', error_message=$1 WHERE id=$2`,
+                        [result.error, r.id]
+                    );
+                    failed++;
+                }
+
+                const delay = 3000 + Math.random() * 3000;
+                await new Promise(res => setTimeout(res, delay));
+
+            } catch (err) {
+                await pool.query(
+                    `UPDATE notification_recipients SET status='failed', error_message=$1 WHERE id=$2`,
+                    [err.message, r.id]
+                );
+                failed++;
+     
+                if (String(err.message).includes('quota') || String(err.message).includes('rate')) {
+                    await new Promise(res => setTimeout(res, 60000));
+                }
+            }
+        }
+
+        await pool.query(
+            `UPDATE notifications 
+             SET status='completed', total_sent=$1, total_failed=$2, completed_at=NOW() 
+             WHERE id=$3`,
+            [sent, failed, notificationId]
+        );
+
+        console.log(`✅ Notification #${notificationId}: ${sent} sent, ${failed} failed`);
+    } catch (err) {
+        console.error(`❌ Notification #${notificationId} error:`, err.message);
+        await pool.query(
+            `UPDATE notifications SET status='failed', completed_at=NOW() WHERE id=$1`,
+            [notificationId]
+        ).catch(() => {});
+    } finally {
+        isSendingNotification = false;
+    }
+}
+
+app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, title, subject, content, targetType = 'all', usernames = [] } = req.body;
+
+        if (!verifyPin(pin)) {
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
+        if (!title || !subject || !content) {
+            return res.status(400).json({ success: false, error: 'Thiếu tiêu đề / chủ đề / nội dung' });
+        }
+        if (title.length > 200 || subject.length > 200) {
+            return res.status(400).json({ success: false, error: 'Tiêu đề/chủ đề quá dài (tối đa 200 ký tự)' });
+        }
+        if (content.length > 50000) {
+            return res.status(400).json({ success: false, error: 'Nội dung quá dài (tối đa 50k ký tự)' });
+        }
+
+        let recipients = [];
+        if (targetType === 'specific') {
+            if (!Array.isArray(usernames) || usernames.length === 0) {
+                return res.status(400).json({ success: false, error: 'Chưa chọn người nhận' });
+            }
+            const { rows } = await pool.query(
+                `SELECT username, full_name, email FROM users 
+                 WHERE LOWER(username) = ANY($1::text[]) AND email IS NOT NULL AND email <> ''`,
+                [usernames.map(u => String(u).toLowerCase())]
+            );
+            recipients = rows;
+        } else {
+
+            const { rows } = await pool.query(
+                `SELECT username, full_name, email FROM users 
+                 WHERE email IS NOT NULL AND email <> ''`
+            );
+            recipients = rows;
+        }
+
+        const { rows: unsubRows } = await pool.query('SELECT LOWER(email) AS email FROM email_unsubscribes');
+        const unsubSet = new Set(unsubRows.map(r => r.email));
+        const beforeCount = recipients.length;
+        recipients = recipients.filter(r => !unsubSet.has(r.email.toLowerCase()));
+
+        if (recipients.length === 0) {
+            return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe)' });
+        }
+
+        const { rows: notifInsert } = await pool.query(
+            `INSERT INTO notifications 
+             (title, subject, content_html, content_text, target_type, target_usernames, sent_by, total_recipients, status)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending') RETURNING id`,
+            [
+                title.trim(),
+                subject.trim(),
+                content,
+                stripHtml(content),
+                targetType,
+                targetType === 'specific' ? usernames : null,
+                req.admin.username,
+                recipients.length
+            ]
+        );
+        const notifId = notifInsert[0].id;
+
+        const values = recipients.map((_, i) =>
+            `($1, $${i * 3 + 2}, $${i * 3 + 3}, $${i * 3 + 4})`
+        ).join(',');
+        const params = [notifId];
+        recipients.forEach(r => {
+            params.push(r.username, r.email, 'pending');
+        });
+
+        await pool.query(
+            `INSERT INTO notification_recipients (notification_id, username, email, status) VALUES ${values}`,
+            params
+        );
+
+        console.log(`📨 Admin ${req.admin.username} tạo notification #${notifId} (${recipients.length} recipients, filtered ${beforeCount - recipients.length} unsub)`);
+
+        setImmediate(() => processNotificationQueue(notifId));
+
+        res.json({
+            success: true,
+            notificationId: notifId,
+            totalRecipients: recipients.length,
+            filteredUnsubscribed: beforeCount - recipients.length,
+            message: `Đã xếp hàng gửi tới ${recipients.length} người. Quá trình gửi diễn ra nền.`
+        });
+    } catch (err) {
+        console.error('❌ Lỗi tạo notification:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+    }
+});
+
+app.post('/api/admin/notifications/list', requireAdminToken, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, title, subject, target_type, sent_by, total_recipients,
+                    total_sent, total_failed, status, created_at, completed_at
+             FROM notifications ORDER BY created_at DESC LIMIT 100`
+        );
+        res.json({ success: true, notifications: rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/admin/notifications/detail', requireAdminToken, async (req, res) => {
+    try {
+        const { id } = req.body;
+        const { rows: notifRows } = await pool.query('SELECT * FROM notifications WHERE id=$1', [id]);
+        if (notifRows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy' });
+
+        const { rows: recipients } = await pool.query(
+            `SELECT username, email, status, error_message, sent_at 
+             FROM notification_recipients WHERE notification_id=$1 ORDER BY id`,
+            [id]
+        );
+        res.json({ success: true, notification: notifRows[0], recipients });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/unsubscribe', async (req, res) => {
+    try {
+        const { token, email } = req.query;
+        if (!token || !email) {
+            return res.status(400).send('<h1>Link không hợp lệ</h1>');
+        }
+        const expectedToken = crypto
+            .createHmac('sha256', JWT_SECRET)
+            .update(String(email).toLowerCase())
+            .digest('hex')
+            .slice(0, 32);
+
+        if (token !== expectedToken) {
+            return res.status(400).send('<h1>Link không hợp lệ hoặc đã hết hạn</h1>');
+        }
+
+        await pool.query(
+            `INSERT INTO email_unsubscribes (email) VALUES ($1)
+             ON CONFLICT (email) DO NOTHING`,
+            [String(email).toLowerCase()]
+        );
+        console.log(`🚫 Unsubscribe: ${email}`);
+
+        res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Đã hủy</title>
+<style>body{font-family:sans-serif;background:#f4f6f8;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
+.box{background:#fff;padding:40px;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center;max-width:440px;}
+h1{color:#0f172a;font-size:22px;margin:0 0 12px;}p{color:#64748b;line-height:1.6;margin:0;}</style></head>
+<body><div class="box"><h1>✅ Đã hủy nhận thông báo</h1>
+<p>Email <strong>${escapeHtml(email)}</strong> sẽ không nhận thêm thông báo từ TyonCao. Bạn vẫn có thể đăng nhập website bình thường.</p></div></body></html>`);
+    } catch (err) {
+        console.error('Unsubscribe error:', err);
+        res.status(500).send('<h1>Lỗi server</h1>');
+    }
+});
+app.post('/api/admin/notifications/test', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, toEmail, title, subject, content } = req.body;
+        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'PIN sai' });
+        if (!isValidEmail(toEmail)) return res.status(400).json({ success: false, error: 'Email không hợp lệ' });
+
+        const unsubscribeToken = crypto.createHmac('sha256', JWT_SECRET)
+            .update(toEmail.toLowerCase()).digest('hex').slice(0, 32);
+        const baseUrl = process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com';
+        const unsubscribeUrl = `${baseUrl}/api/unsubscribe?token=${unsubscribeToken}&email=${encodeURIComponent(toEmail)}`;
+
+        const html = buildNotificationTemplate({
+            title: title || 'Test thông báo',
+            content: content || '<p>Đây là email test.</p>',
+            webUrl: process.env.FRONTEND_URL,
+            unsubscribeUrl,
+            username: 'Test User'
+        });
+
+        const result = await sendNotificationEmail({
+            to: toEmail,
+            subject: (subject || 'Test') + ' [TEST]',
+            htmlContent: html,
+            textContent: stripHtml(content || 'Test'),
+            messageId: crypto.randomBytes(16).toString('hex'),
+            unsubscribeUrl
+        });
+
+        if (result.success) {
+            res.json({ success: true, message: `Đã gửi test tới ${toEmail}` });
+        } else {
+            res.status(500).json({ success: false, error: result.error });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 async function startServer() {
     await initDB();
+    await initNotificationTables();
 
     const server = app.listen(PORT, () => {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
