@@ -2380,42 +2380,62 @@ app.post('/api/webhub-webhook', async (req, res) => {
 app.post('/api/buy-product', requireUserSession, async (req, res) => {
     try {
         const { username, productId, price, productName } = req.body;
-        if (!username || productId === undefined || price === undefined) {
-            return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
+
+        if (!username || productId === undefined || price === undefined || !productName) {
+            return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
         }
+
+        const numericPrice = Number(price);
+        if (isNaN(numericPrice) || numericPrice <= 0) {
+            return res.status(400).json({ success: false, error: 'Giá sản phẩm không hợp lệ' });
+        }
+
         if (req.username.toLowerCase() !== username.trim().toLowerCase()) {
-            return res.status(403).json({ success: false, error: 'Không có quyền' });
+            return res.status(403).json({ success: false, error: 'Không có quyền thực hiện giao dịch này' });
         }
 
         const dbUser = await getUserByUsername(username);
-        if (!dbUser) return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
+        if (!dbUser) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+        }
 
         const purchaseHistory = safeParseJSON(dbUser.purchase_history);
 
         if (String(productId) !== '1' && purchaseHistory.some(p => String(p.productId) === String(productId))) {
-            return res.status(400).json({ success: false, error: 'Bạn đã sở hữu file này!' });
+            return res.status(400).json({ success: false, error: 'Bạn đã sở hữu sản phẩm này rồi!' });
         }
 
         const now = new Date().toISOString();
-        const newPurchase = { productId, productName, price, purchasedAt: now };
+        const newPurchase = {
+            productId: String(productId), 
+            productName: productName.trim(),
+            price: numericPrice,
+            purchasedAt: now
+        };
         const updatedHistory = [...purchaseHistory, newPurchase];
 
-        // ⭐ UPDATE ATOMIC: chỉ trừ khi balance >= price
+
         const { rowCount } = await pool.query(
             `UPDATE users
              SET balance = balance - $1, purchase_history = $2
              WHERE LOWER(username) = LOWER($3) AND balance >= $1`,
-            [price, JSON.stringify(updatedHistory), dbUser.username]
+            [numericPrice, JSON.stringify(updatedHistory), dbUser.username]
         );
 
         if (rowCount === 0) {
-            return res.status(400).json({ success: false, error: 'Số dư không đủ' });
+            return res.status(400).json({ success: false, error: 'Số dư không đủ để thanh toán' });
         }
+
 
         const { rows: after } = await pool.query(
             'SELECT balance FROM users WHERE LOWER(username) = LOWER($1)',
             [dbUser.username]
         );
+
+        if (after.length === 0) {
+            return res.status(500).json({ success: false, error: 'Lỗi đồng bộ dữ liệu sau giao dịch' });
+        }
+        
         const newBalance = Number(after[0].balance);
 
         if (dbUser.email) {
@@ -2423,20 +2443,32 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
                 orderCode: `TYON${Date.now().toString(36).toUpperCase()}`,
                 customerName: dbUser.full_name || dbUser.username,
                 planName: productName,
-                amount: price,
+                amount: numericPrice,
                 paidAt: now,
                 transactionId: `BALANCE_${Date.now()}`,
                 key: `TYON-KEY-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
             };
-            queueEmail(dbUser.email, 'Hóa đơn mua hàng thành công - TyonCao Shop',
-                emailTemplates.purchaseInvoice(orderInfo))
-                .catch(err => console.error('Lỗi gửi mail hóa đơn:', err));
-        }
 
-        res.json({ success: true, newBalance, productId });
+            queueEmail(
+                dbUser.email, 
+                'Hóa đơn mua hàng thành công - TyonCao Shop',
+                emailTemplates.purchaseInvoice(orderInfo)
+            ).catch(err => console.error('Lỗi gửi mail hóa đơn:', err));
+        }
+        return res.json({
+            success: true,
+            message: 'Thanh toán thành công',
+            newBalance,
+            productId,
+            purchasedAt: now
+        });
+
     } catch (err) {
-        console.error('Buy error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
+        console.error('❌ Buy product error:', err);
+        if (err.code === '23514') {
+            return res.status(400).json({ success: false, error: 'Số dư không đủ (ràng buộc dữ liệu)' });
+        }
+        return res.status(500).json({ success: false, error: 'Lỗi server, vui lòng thử lại sau' });
     }
 });
 
