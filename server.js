@@ -2979,12 +2979,6 @@ app.post('/api/admin/google-token', async (req, res) => {
     }
 });
 
-app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
-app.use((err, req, res, next) => {
-    console.error('❌ Server error:', err);
-    res.status(500).json({ error: 'Lỗi server: ' + err.message });
-});
-
 setInterval(() => {
     cleanupExpiredKeys().catch(err => console.error('cleanupExpiredKeys error:', err.message));
 }, CLEANUP_INTERVAL_MS);
@@ -3128,6 +3122,11 @@ async function sendNotificationEmail({ to, subject, htmlContent, textContent, me
     } catch (err) {
         return { success: false, error: err.message };
     }
+}
+
+function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 
 function stripHtml(html) {
@@ -3503,6 +3502,12 @@ app.post('/api/admin/notifications/test', requireAdminToken, async (req, res) =>
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }
+});
+
+app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
+app.use((err, req, res, next) => {
+    console.error('❌ Server error:', err);
+    res.status(500).json({ error: 'Lỗi server: ' + err.message });
 });
 
 async function startServer() {
