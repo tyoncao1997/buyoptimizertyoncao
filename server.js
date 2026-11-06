@@ -3060,9 +3060,6 @@ function buildEmailHeaders({ to, subject, messageId, replyTo, unsubscribeUrl }) 
         `Subject: ${utf8Subject}`,
         `Message-ID: <${messageId}@${domain}>`,
         `Date: ${new Date().toUTCString()}`,
-        `MIME-Version: 1.0`,
-        `Content-Type: text/html; charset="UTF-8"`,
-        `Content-Transfer-Encoding: base64`,
         `Reply-To: ${replyTo || fromEmail}`,
         `X-Mailer: TyonCao-Notification-System`,
         `Precedence: bulk`,              
@@ -3081,22 +3078,23 @@ async function sendNotificationEmail({ to, subject, htmlContent, textContent, me
             to, subject, messageId, unsubscribeUrl
         });
 
-        const boundary = '----=_Part_' + messageId;
+        // Tách các header ra để nối chuẩn xác
         const rawMime = [
-            ...headers.slice(0, 7), 
-            `Content-Type: multipart/alternative; boundary="${boundary}"`,
+            ...headers,
+            'MIME-Version: 1.0',
+            `Content-Type: multipart/alternative; boundary="BOUNDARY_${messageId}"`,
             '',
-            `--${boundary}`,
+            `--BOUNDARY_${messageId}`,
             'Content-Type: text/plain; charset="UTF-8"',
             'Content-Transfer-Encoding: base64',
             '',
-            Buffer.from(textContent || stripHtml(htmlContent)).toString('base64'),
-            `--${boundary}`,
+            Buffer.from(textContent || stripHtml(htmlContent) || ' ').toString('base64'),
+            `--BOUNDARY_${messageId}`,
             'Content-Type: text/html; charset="UTF-8"',
             'Content-Transfer-Encoding: base64',
             '',
             Buffer.from(htmlContent).toString('base64'),
-            `--${boundary}--`
+            `--BOUNDARY_${messageId}--`
         ].join('\r\n');
 
         const encodedMessage = Buffer.from(rawMime)
@@ -3116,6 +3114,7 @@ async function sendNotificationEmail({ to, subject, htmlContent, textContent, me
 
         if (!response.ok) {
             const errData = await response.json();
+            console.error('🔴 Gmail API Error Details:', errData);
             throw new Error(errData.error?.message || `Gmail API ${response.status}`);
         }
         return { success: true };
