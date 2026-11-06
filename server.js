@@ -3082,10 +3082,8 @@ async function sendNotificationEmail({ to, subject, htmlContent, textContent, me
         });
 
         const boundary = '----=_Part_' + messageId;
-        const finalHeaders = headers.filter(h => !h.startsWith('Content-Type'));
-        
         const rawMime = [
-            ...finalHeaders, 
+            ...headers.slice(0, 7), 
             `Content-Type: multipart/alternative; boundary="${boundary}"`,
             '',
             `--${boundary}`,
