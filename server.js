@@ -14,6 +14,52 @@ const { Pool } = require('pg');
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
+const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
+
+if (!TELEGRAM_ENABLED) {
+    console.warn('⚠️ Telegram Bot chưa cấu hình đầy đủ (cần TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME)');
+}
+
+const telegramOtpStore = new Map();
+const TG_OTP_TTL_MS = 5 * 60 * 1000;   
+const TG_OTP_MAX_ATTEMPTS = 5;
+
+setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of telegramOtpStore.entries()) {
+        if (now > v.expiresAt) telegramOtpStore.delete(k);
+    }
+}, 5 * 60 * 1000).unref();
+
+async function telegramApiCall(method, payload) {
+    if (!TELEGRAM_ENABLED) throw new Error('Telegram chưa cấu hình');
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(`Telegram API ${method}: ${data.description || 'unknown'}`);
+    return data.result;
+}
+
+async function registerTelegramWebhook(baseUrl) {
+    if (!TELEGRAM_ENABLED) return;
+    try {
+        await telegramApiCall('setWebhook', {
+            url: `${baseUrl}/api/telegram/webhook`,
+            secret_token: TELEGRAM_WEBHOOK_SECRET,
+            allowed_updates: ['message'],
+            drop_pending_updates: false
+        });
+        console.log(`✅ Đã đăng ký Telegram Webhook: ${baseUrl}/api/telegram/webhook`);
+    } catch (err) {
+        console.error('❌ Lỗi đăng ký Telegram Webhook:', err.message);
+    }
+}
 
 const BCRYPT_ROUNDS = 10;
 
@@ -1131,6 +1177,111 @@ async function cleanupExpiredKeys() {
     return { deletedCount };
 }
 
+app.post('/api/telegram/webhook', express.json(), async (req, res) => {
+
+    const secretHeader = req.headers['x-telegram-bot-api-secret-token'];
+    if (!secretHeader || secretHeader !== TELEGRAM_WEBHOOK_SECRET) {
+        return res.sendStatus(401);
+    }
+
+    try {
+        const msg = req.body.message;
+        if (!msg || !msg.text) return res.sendStatus(200);
+
+        const chatId = msg.chat.id;
+        const fromUser = msg.from || {};
+        const text = msg.text.trim();
+        const tgUsername = fromUser.username || fromUser.first_name || 'bạn';
+
+        if (text === '/start' || text === '/start register' || text.startsWith('/start ')) {
+
+            const otp = generateOtp();
+            const expiresAt = Date.now() + TG_OTP_TTL_MS;
+
+            telegramOtpStore.set(otp, {
+                chatId,
+                telegramUsername: tgUsername,
+                expiresAt,
+                attempts: 0,
+                createdAt: new Date().toISOString()
+            });
+
+            await telegramApiCall('sendMessage', {
+                chat_id: chatId,
+                parse_mode: 'HTML',
+                text: `🎉 <b>Chào mừng đến TyonCao Global Optimizer!</b>\n\n` +
+                      `Xin chào <b>${escapeHtmlTg(tgUsername)}</b>,\n\n` +
+                      `Mã xác minh đăng ký của bạn là:\n\n` +
+                      `<code>${otp}</code>\n\n` +
+                      `⏱ Mã có hiệu lực <b>5 phút</b>.\n` +
+                      `Vui lòng quay lại trang web và nhập mã này để hoàn tất đăng ký.\n\n` +
+                      `Nếu bạn không yêu cầu, hãy bỏ qua tin nhắn này.`
+            });
+
+            console.log(`📨 [Telegram] Đã gửi OTP cho chat_id=${chatId} (@${tgUsername})`);
+            return res.sendStatus(200);
+        }
+
+        if (text === '/help') {
+            await telegramApiCall('sendMessage', {
+                chat_id: chatId,
+                text: `📖 Hướng dẫn:\n` +
+                      `/start - Nhận mã xác minh đăng ký\n` +
+                      `/help - Xem hướng dẫn\n\n` +
+                      `Website: ${FRONTEND_URL}`
+            });
+            return res.sendStatus(200);
+        }
+
+        await telegramApiCall('sendMessage', {
+            chat_id: chatId,
+            text: `Xin chào! Gõ /start để nhận mã xác minh đăng ký, hoặc /help để xem hướng dẫn.`
+        });
+        return res.sendStatus(200);
+    } catch (err) {
+        console.error('❌ Telegram webhook error:', err);
+        return res.sendStatus(200); 
+    }
+});
+
+function escapeHtmlTg(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+app.post('/api/verify-telegram-otp', async (req, res) => {
+    try {
+        const { otp } = req.body;
+        if (!otp) return res.status(400).json({ success: false, error: 'Thiếu mã OTP' });
+
+        const record = telegramOtpStore.get(String(otp).trim());
+        if (!record) {
+            return res.status(400).json({ success: false, error: 'Mã không đúng hoặc đã hết hạn' });
+        }
+        if (Date.now() > record.expiresAt) {
+            telegramOtpStore.delete(String(otp).trim());
+            return res.status(400).json({ success: false, error: 'Mã đã hết hạn. Vui lòng /start lại trên Telegram.' });
+        }
+        if (record.attempts >= TG_OTP_MAX_ATTEMPTS) {
+            telegramOtpStore.delete(String(otp).trim());
+            return res.status(400).json({ success: false, error: 'Nhập sai quá nhiều lần. Vui lòng /start lại.' });
+        }
+
+        telegramOtpStore.delete(String(otp).trim());
+
+        return res.json({
+            success: true,
+            message: 'Xác minh Telegram thành công',
+            telegram: {
+                chatId: record.chatId,
+                username: record.telegramUsername
+            }
+        });
+    } catch (err) {
+        console.error('Verify Telegram OTP error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
 app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
     try {
         const { credential } = req.body;
@@ -1804,10 +1955,25 @@ app.post('/api/send-otp', async (req, res) => {
         );
 
         if (!mailSent) {
-            registerOtpStore.delete(emailKey);
-            return res.status(500).json({ success: false, error: 'Không gửi được email, vui lòng thử lại sau' });
-        }
-        return res.json({ success: true, message: 'Đã gửi OTP tới email của bạn' });
+    registerOtpStore.delete(emailKey);
+    return res.status(503).json({
+        success: false,
+        error: 'Không gửi được email (có thể đã chạm giới hạn gửi). Vui lòng thử lại sau hoặc nhận mã qua Telegram.',
+        code: 'EMAIL_QUOTA_EXCEEDED',
+        telegramAvailable: TELEGRAM_ENABLED,
+        telegramDeepLink: TELEGRAM_ENABLED
+            ? `https://t.me/${TELEGRAM_BOT_USERNAME}?start=register`
+            : null
+    });
+}
+        return res.json({
+            success: true,
+            message: 'Đã gửi OTP tới email của bạn',
+            telegramAvailable: TELEGRAM_ENABLED,
+            telegramDeepLink: TELEGRAM_ENABLED
+                ? `https://t.me/${TELEGRAM_BOT_USERNAME}?start=register`
+                : null
+        });
     } catch (err) {
         console.error('send-otp error:', err);
         return res.status(500).json({ success: false, error: 'Lỗi server' });
@@ -1841,25 +2007,52 @@ app.post('/api/register', async (req, res) => {
         if (password.length < 6) return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥6 ký tự' });
         if (fullNameTrim.length < 2) return res.status(400).json({ success: false, error: 'Họ tên quá ngắn' });
 
-        const storedOtp = registerOtpStore.get(emailKey);
-        if (!storedOtp) return res.status(400).json({ success: false, error: 'Vui lòng yêu cầu gửi mã OTP trước!' });
-        if (Date.now() > storedOtp.expiresAt) {
-            registerOtpStore.delete(emailKey);
-            return res.status(400).json({ success: false, error: 'Mã OTP đã hết hạn. Vui lòng gửi lại!' });
-        }
-        if (storedOtp.attempts >= OTP_MAX_ATTEMPTS) {
-            registerOtpStore.delete(emailKey);
-            return res.status(400).json({ success: false, error: 'Nhập sai OTP quá nhiều lần. Vui lòng gửi lại!' });
-        }
-        if (storedOtp.otp !== otpTrim) {
-            storedOtp.attempts += 1;
-            registerOtpStore.set(emailKey, storedOtp);
-            return res.status(400).json({
-                success: false,
-                error: `Mã OTP không chính xác! Còn ${OTP_MAX_ATTEMPTS - storedOtp.attempts} lần thử.`
-            });
-        }
+let otpValid = false;
+let otpSource = null;
+let lastError = null;
 
+const storedOtp = registerOtpStore.get(emailKey);
+if (storedOtp) {
+    if (Date.now() > storedOtp.expiresAt) {
+        registerOtpStore.delete(emailKey);
+        lastError = 'Mã OTP đã hết hạn. Vui lòng gửi lại!';
+    } else if (storedOtp.attempts >= OTP_MAX_ATTEMPTS) {
+        registerOtpStore.delete(emailKey);
+        lastError = 'Nhập sai OTP quá nhiều lần. Vui lòng gửi lại!';
+    } else if (storedOtp.otp === otpTrim) {
+        otpValid = true;
+        otpSource = 'email';
+        registerOtpStore.delete(emailKey);
+    } else {
+        storedOtp.attempts += 1;
+        registerOtpStore.set(emailKey, storedOtp);
+        lastError = `Mã OTP không chính xác! Còn ${OTP_MAX_ATTEMPTS - storedOtp.attempts} lần thử.`;
+    }
+}
+
+if (!otpValid) {
+    const tgRecord = telegramOtpStore.get(otpTrim);
+    if (tgRecord) {
+        if (Date.now() > tgRecord.expiresAt) {
+            telegramOtpStore.delete(otpTrim);
+            lastError = 'Mã Telegram đã hết hạn. Vui lòng /start lại trên Telegram.';
+        } else if (tgRecord.attempts >= TG_OTP_MAX_ATTEMPTS) {
+            telegramOtpStore.delete(otpTrim);
+            lastError = 'Nhập sai quá nhiều lần. Vui lòng /start lại trên Telegram.';
+        } else {
+            otpValid = true;
+            otpSource = 'telegram';
+            telegramOtpStore.delete(otpTrim);
+        }
+    }
+}
+
+if (!otpValid) {
+    return res.status(400).json({
+        success: false,
+        error: lastError || 'Vui lòng yêu cầu gửi mã OTP trước, hoặc /start trên Telegram để nhận mã.'
+    });
+}
         const { rows: dup } = await pool.query(
             'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)',
             [usernameTrim, emailTrim]
@@ -3513,11 +3706,12 @@ async function startServer() {
     await initDB();
     await initNotificationTables();
 
-    const server = app.listen(PORT, () => {
+    const server = app.listen(PORT, async () => {
         console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
         console.log(`🔐 JWT Security: BẬT`);
         console.log(`🛡️ Rate Limit: BẬT`);
         console.log(`📧 Email (Gmail API): ${process.env.GMAIL_CLIENT_ID ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
+        console.log(`📨 Telegram Bot: ${TELEGRAM_ENABLED ? 'Đã cấu hình' : 'CHƯA'}`);
         console.log(`☁️  Storage Keys/Feedbacks: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
         console.log(`🗄️  Storage Users/Orders/Sessions: Supabase`);
         console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? 'Đã cấu hình' : 'CHƯA'}`);
@@ -3526,6 +3720,14 @@ async function startServer() {
         console.log(`🔑 Google OAuth: ${GOOGLE_CLIENT_ID ? 'Đã cấu hình' : 'CHƯA'}`);
         console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
         console.log(`🏦 Bank: ${SEPAY_BANK_CODE} - ${SEPAY_BANK_ACCOUNT}\n`);
+        if (TELEGRAM_ENABLED) {
+            const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
+            if (baseUrl.startsWith('https://')) {
+                await registerTelegramWebhook(baseUrl);
+            } else {
+                console.warn('⚠️ BASE_URL không phải HTTPS — bỏ qua đăng ký Telegram webhook (dùng ngrok khi test local)');
+            }
+        }
     });
 
     let shutting = false;
