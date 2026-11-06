@@ -144,11 +144,12 @@ async function processEmailQueue() {
 }
 
 function queueEmail(to, subject, htmlContent) {
-    emailQueue.push({ to, subject, htmlContent });
-    processEmailQueue(); 
-    return true; 
+    return new Promise((resolve) => {
+        emailQueue.push({ to, subject, htmlContent });
+        processEmailQueue();
+        resolve(true);
+    });
 }
-
 async function sendEmailImmediate(to, subject, htmlContent) {
     return await sendEmailCore(to, subject, htmlContent);
 }
