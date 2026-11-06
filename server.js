@@ -1310,7 +1310,11 @@ app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
 });
 
 app.get('/api/config', (req, res) => {
-    res.json({ googleClientId: process.env.GOOGLE_CLIENT_ID || '' });
+    res.json({
+        googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+        telegramBotUsername: TELEGRAM_BOT_USERNAME || '',
+        telegramAvailable: TELEGRAM_ENABLED
+    });
 });
 
 app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
