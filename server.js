@@ -32,11 +32,18 @@ const pool = new Pool({
     connectionTimeoutMillis: 10000
 });
 pool.on('error', (err) => console.error('❌ Pool error:', err.message));
+const emailLogPool = new Pool({
+    connectionString: process.env.EMAIL_LOG_DATABASE_URL || process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
+});
+emailLogPool.on('error', (err) => console.error('❌ Email Log Pool error:', err.message));
 
 // ==========================================
-// 2. GMAIL API (THAY THẾ SMTP)
+// 2. EMAIL SERVICE (GMAIL API + QUEUE + RETRY + LOG)
 // ==========================================
-// Cấu hình OAuth2 cho Gmail API
 const gmailOAuth2Client = new OAuth2Client(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET,
@@ -49,57 +56,102 @@ if (process.env.GMAIL_REFRESH_TOKEN) {
     });
 }
 
-// Hàm gửi email qua Gmail API (HTTP)
-async function sendEmail(to, subject, htmlContent) {
-    if (!process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
-        console.warn('⚠️ Chưa cấu hình GMAIL_API, không thể gửi mail.');
-        return false;
-    }
-
+// ⭐ Hàm ghi log vào Database (thay vì file .txt)
+async function writeEmailLogToDB(to, subject, status, errorMessage = null) {
     try {
-        // Lấy access token mới từ refresh token
-        const { token } = await gmailOAuth2Client.getAccessToken();
-        
-        // Xây dựng nội dung email theo chuẩn RFC 2822
-        const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
-        const messageParts = [
-            `To: ${to}`,
-            'Content-Type: text/html; charset=utf-8',
-            'MIME-Version: 1.0',
-            `Subject: ${utf8Subject}`,
-            '',
-            htmlContent
-        ];
-        const message = messageParts.join('\n');
-        const encodedMessage = Buffer.from(message)
-            .toString('base64')
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=+$/, '');
-
-        // Gọi API Gmail
-        const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ raw: encodedMessage })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error?.message || 'Gmail API error');
-        }
-
-        console.log(`✅ Đã gửi email đến ${to}: ${subject}`);
-        return true;
-    } catch (error) {
-        console.error('❌ Lỗi gửi email qua Gmail API:', error.message);
-        return false;
+        await emailLogPool.query(
+            `INSERT INTO email_logs (recipient, subject, status, error_message, created_at)
+             VALUES ($1, $2, $3, $4, NOW())`,
+            [to, subject, status, errorMessage]
+        );
+    } catch (err) {
+        // Nếu ghi log lỗi, chỉ in ra console, không làm sập luồng gửi mail
+        console.error('❌ Không thể ghi log email vào DB:', err.message);
     }
 }
 
+async function sendEmailCore(to, subject, htmlContent, retries = 3) {
+    if (!process.env.GMAIL_CLIENT_ID || !process.env.GMAIL_CLIENT_SECRET || !process.env.GMAIL_REFRESH_TOKEN) {
+        console.warn('⚠️ Chưa cấu hình GMAIL_API, không thể gửi mail.');
+        await writeEmailLogToDB(to, subject, 'FAILED', 'Missing GMAIL Config');
+        return false;
+    }
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const { token } = await gmailOAuth2Client.getAccessToken();
+            
+            const utf8Subject = `=?utf-8?B?${Buffer.from(subject).toString('base64')}?=`;
+            const messageParts = [
+                `To: ${to}`,
+                'Content-Type: text/html; charset=utf-8',
+                'MIME-Version: 1.0',
+                `Subject: ${utf8Subject}`,
+                '',
+                htmlContent
+            ];
+            const message = messageParts.join('\n');
+            const encodedMessage = Buffer.from(message)
+                .toString('base64')
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=+$/, '');
+
+            const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ raw: encodedMessage })
+            });
+
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.error?.message || 'Gmail API error');
+            }
+
+            console.log(`✅ [Email] Đã gửi đến ${to}: ${subject} (Lần thử: ${attempt})`);
+            await writeEmailLogToDB(to, subject, 'SUCCESS');
+            return true;
+        } catch (error) {
+            console.error(`❌ [Email] Lỗi gửi (Lần ${attempt}/${retries}):`, error.message);
+            if (attempt === retries) {
+                await writeEmailLogToDB(to, subject, 'FAILED', error.message);
+                return false;
+            }
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+    }
+    return false;
+}
+
+// Hàng đợi email
+const emailQueue = [];
+let isProcessingQueue = false;
+
+async function processEmailQueue() {
+    if (isProcessingQueue || emailQueue.length === 0) return;
+    isProcessingQueue = true;
+
+    while (emailQueue.length > 0) {
+        const { to, subject, htmlContent } = emailQueue.shift();
+        await sendEmailCore(to, subject, htmlContent);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+
+    isProcessingQueue = false;
+}
+
+function queueEmail(to, subject, htmlContent) {
+    emailQueue.push({ to, subject, htmlContent });
+    processEmailQueue(); 
+    return true; 
+}
+
+async function sendEmailImmediate(to, subject, htmlContent) {
+    return await sendEmailCore(to, subject, htmlContent);
+}
 // ==========================================
 // 3. OTP STORES + HELPERS
 // ==========================================
@@ -1630,7 +1682,7 @@ app.post('/api/admin/approve-kyc', requireAdminToken, async (req, res) => {
 
             const user = await getUserByUsername(username);
             if (user && user.email) {
-                sendEmail(user.email, 'Xác thực danh tính thành công - TyonCao Global Optimizer',
+                queueEmail(user.email, 'Xác thực danh tính thành công - TyonCao Global Optimizer',
                     emailTemplates.kycSuccess(user.full_name || username))
                     .catch(err => console.error('Lỗi gửi mail KYC:', err));
             }
@@ -1752,7 +1804,7 @@ app.post('/api/send-otp', async (req, res) => {
             otp, expiresAt, lastSentAt: Date.now(), attempts: 0
         });
 
-        const mailSent = await sendEmail(
+        const mailSent = await sendEmailImmediate(
             emailKey,
             'Mã OTP đăng ký tài khoản - TYON Optimizer',
             `
@@ -1843,7 +1895,7 @@ app.post('/api/register', async (req, res) => {
 
         registerOtpStore.delete(emailKey);
 
-        sendEmail(
+        queueEmail(
             emailTrim,
             'Chào mừng bạn đến với TyonCao Global Optimizer!',
             emailTemplates.welcome(fullNameTrim, usernameTrim)
@@ -1893,7 +1945,7 @@ app.post('/api/forgot-password', async (req, res) => {
 
         otpStore.set(email.trim().toLowerCase(), { otp, expiresAt, username: user.username });
 
-        await sendEmail(
+        await sendEmailImmediate(
             email.trim(),
             'Mã xác thực đặt lại mật khẩu - TyonCao Global Optimizer',
             emailTemplates.forgotPassword(user.full_name, otp)
@@ -2376,7 +2428,7 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
                 transactionId: `BALANCE_${Date.now()}`,
                 key: `TYON-KEY-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
             };
-            sendEmail(dbUser.email, 'Hóa đơn mua hàng thành công - TyonCao Shop',
+            queueEmail(dbUser.email, 'Hóa đơn mua hàng thành công - TyonCao Shop',
                 emailTemplates.purchaseInvoice(orderInfo))
                 .catch(err => console.error('Lỗi gửi mail hóa đơn:', err));
         }
@@ -2516,6 +2568,51 @@ app.post('/api/admin/users', requireAdminToken, async (req, res) => {
     } catch (err) {
         console.error('❌ Lỗi admin users:', err.message);
         res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+    }
+});
+
+app.post('/api/admin/email-logs', requireAdminToken, async (req, res) => {
+    try {
+        const { page = 1, limit = 50, status = 'all' } = req.body;
+        const offset = (page - 1) * limit;
+
+        let query = 'SELECT * FROM email_logs';
+        const params = [];
+        let paramIndex = 1;
+
+        if (status !== 'all') {
+            query += ` WHERE status = $${paramIndex}`;
+            params.push(status.toUpperCase());
+            paramIndex++;
+        }
+
+        query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+        params.push(limit, offset);
+
+        const { rows } = await emailLogPool.query(query, params); // <-- Sửa dòng này
+
+        let countQuery = 'SELECT COUNT(*) FROM email_logs';
+        const countParams = [];
+        if (status !== 'all') {
+            countQuery += ' WHERE status = $1';
+            countParams.push(status.toUpperCase());
+        }
+        const countResult = await emailLogPool.query(countQuery, countParams); // <-- Sửa dòng này
+        const total = parseInt(countResult.rows[0].count);
+
+        res.json({
+            success: true,
+            logs: rows,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (err) {
+        console.error('❌ Lỗi lấy email logs:', err.message);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
