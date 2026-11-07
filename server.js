@@ -1728,6 +1728,16 @@ app.get('/api/order-status/:orderCode', async (req, res) => {
     }
 });
 
+app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
+    try {
+        const orders = await getOrdersFromSupabase();
+        res.json({ success: true, orders });
+    } catch (err) {
+        console.error('❌ Lỗi lấy danh sách đơn hàng admin:', err.message);
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
+    }
+});
+
 app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
     try {
         const { pin, orderCode } = req.body;
@@ -1849,7 +1859,7 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
         }
     } catch (err) {
         console.error('Admin reject order error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -1863,7 +1873,8 @@ app.post('/api/admin/kyc-list', requireAdminToken, async (req, res) => {
         `);
         res.json({ success: true, kycs: rows });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('Lỗi lấy KYC list:', err.message);
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -1906,7 +1917,7 @@ app.post('/api/admin/approve-kyc', requireAdminToken, async (req, res) => {
         }
     } catch (err) {
         console.error('Approve KYC error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -1971,7 +1982,7 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
         }
     } catch (err) {
         console.error('Admin add-balance error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -2967,7 +2978,7 @@ app.post('/api/create-key', async (req, res) => {
         });
     } catch (err) {
         console.error('❌ create-key error:', err);
-        res.status(500).json({ error: 'Không thể tạo key: ' + err.message });
+        res.status(500).json({ error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -3017,7 +3028,7 @@ app.post('/api/admin/confirm-key', requireAdminToken, async (req, res) => {
         res.json({ success: true, message: 'Đã xác nhận Key thành công!', keyData });
     } catch (err) {
         console.error('❌ confirm-key error:', err);
-        res.status(err.status || 500).json({ error: err.message });
+        res.status(err.status || 500).json({ error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -3746,7 +3757,8 @@ app.post('/api/admin/notifications/list', requireAdminToken, async (req, res) =>
         );
         res.json({ success: true, notifications: rows });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('Lỗi notification:', err.message);
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -3763,7 +3775,8 @@ app.post('/api/admin/notifications/detail', requireAdminToken, async (req, res) 
         );
         res.json({ success: true, notification: notifRows[0], recipients });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        console.error('Lỗi notification:', err.message);
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
     }
 });
 
@@ -3842,7 +3855,7 @@ app.post('/api/admin/notifications/test', requireAdminToken, async (req, res) =>
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => {
     console.error('❌ Server error:', err);
-    res.status(500).json({ error: 'Lỗi server: ' + err.message });
+    res.status(500).json({ error: 'Hệ thống đang gặp sự cố, vui lòng thử lại sau.' });
 });
 
 async function startServer() {
