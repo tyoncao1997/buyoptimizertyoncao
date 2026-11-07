@@ -1617,44 +1617,23 @@ async function handleSePayWebhook(req, res) {
     try {
         const signature = req.headers['x-sepay-signature'];
         const timestamp = req.headers['x-sepay-timestamp'];
-        
-        // Log để debug nếu cần
-        console.log('📥 [SePay Webhook] Headers:', {
-            signature: signature ? signature.slice(0, 20) + '...' : 'MISSING',
-            timestamp
-        });
-
         const rawBody = req.body.toString('utf8');
-        console.log('📥 [SePay Webhook] Body:', rawBody.slice(0, 500));
 
-        // ✅ FIX 1: SePay gửi signature KHÔNG có prefix "sha256=" và format khác
-        // Format chuẩn: HMAC-SHA256(timestamp + "." + rawBody, SEPAY_WEBHOOK_SECRET)
         if (signature && timestamp && SEPAY_WEBHOOK_SECRET) {
             const dataToSign = `${timestamp}.${rawBody}`;
-            const expectedHash = crypto
-                .createHmac('sha256', SEPAY_WEBHOOK_SECRET)
-                .update(dataToSign)
-                .digest('hex');
-            
-            // SePay có thể gửi kèm hoặc không kèm "sha256=", chấp nhận cả 2
+            const expectedHash = crypto.createHmac('sha256', SEPAY_WEBHOOK_SECRET).update(dataToSign).digest('hex');
             const cleanSignature = signature.replace(/^sha256=/, '');
-            
+
             if (cleanSignature !== expectedHash) {
-                console.error('❌ [SePay] Signature KHÔNG KHỚP!');
-                console.error('   Expected:', expectedHash);
-                console.error('   Received:', cleanSignature);
-                // ⚠️ TẠM THỜI BỎ QUA để test (production nên bật lại)
-                // return res.status(401).json({ success: false, error: 'Invalid signature' });
-                console.warn('⚠️ [SePay] Bỏ qua check signature để test - HÃY BẬT LẠI Ở PRODUCTION!');
-            } else {
-                console.log('✅ [SePay] Signature hợp lệ');
+                console.error('❌ [SePay] Signature KHÔNG KHỚP! Có thể là request giả mạo.');
+                return res.status(401).json({ success: false, error: 'Invalid signature' });
             }
         } else {
-            console.warn('⚠️ [SePay] Thiếu signature/timestamp/secret - bỏ qua check');
+            console.warn('⚠️ [SePay] Thiếu signature/timestamp/secret - Bỏ qua check bảo mật');
         }
 
         const data = JSON.parse(rawBody);
-        console.log('✅ [SePay] Data:', JSON.stringify(data, null, 2));
+        console.log('📥 [SePay Webhook] Data nhận được:', JSON.stringify(data));
 
         if (data.transferType !== 'in') {
             return res.status(200).json({ success: true, message: 'Ignored - not incoming' });
@@ -1664,39 +1643,23 @@ async function handleSePayWebhook(req, res) {
         const content = (data.content || data.description || '').toUpperCase();
         const transactionId = data.id || data.referenceCode || data.transactionId || 'N/A';
 
-        console.log(`💰 [SePay] Nhận ${amount}đ, nội dung: "${content}", transId: ${transactionId}`);
-
-        // ✅ FIX 2: Tìm đơn hàng LINH HOẠT hơn (không chỉ exact match)
-        // Loại bỏ prefix SEVQR hoặc bất kỳ text lạ
-        const orderCodeFromContent = content
-            .replace(/SEVQR\s*/g, '')
-            .replace(/\s+/g, '')
-            .trim();
-
-        // Tìm chính xác
+        console.log(`💰 [SePay] Nhận ${amount}đ, Nội dung: "${content}", TransID: ${transactionId}`);
+        const cleanContent = content.replace(/[^A-Z0-9]/g, ''); 
         let { rows } = await pool.query(
             `SELECT * FROM orders 
              WHERE status IN ('pending', 'underpaid') 
-               AND (UPPER(order_code) = UPPER($1) OR UPPER(order_code) = UPPER($2))
+               AND (
+                   UPPER(REPLACE(order_code, ' ', '')) LIKE $1 
+                   OR $2 LIKE '%' || UPPER(REPLACE(order_code, ' ', '')) || '%'
+                   OR UPPER(REPLACE(order_code, ' ', '')) = $3
+               )
+             ORDER BY created_at DESC
              LIMIT 1`,
-            [content.trim(), orderCodeFromContent]
+            [`%${cleanContent}%`, cleanContent, content.trim()]
         );
 
-        // Nếu không tìm thấy, thử tìm gần đúng (contains)
-        if (rows.length === 0 && orderCodeFromContent.length >= 8) {
-            const { rows: fuzzyRows } = await pool.query(
-                `SELECT * FROM orders 
-                 WHERE status IN ('pending', 'underpaid') 
-                   AND UPPER(order_code) LIKE UPPER($1)
-                 ORDER BY created_at DESC
-                 LIMIT 1`,
-                [`%${orderCodeFromContent}%`]
-            );
-            rows = fuzzyRows;
-        }
-
         if (rows.length === 0) {
-            console.warn(`⚠️ [SePay] Không tìm thấy đơn pending khớp với "${content}"`);
+            console.warn(`⚠️ [SePay] Không tìm thấy đơn hàng nào khớp với nội dung: "${content}" (Clean: ${cleanContent})`);
             return res.status(200).json({ success: true, message: 'No matching order' });
         }
 
@@ -1705,27 +1668,19 @@ async function handleSePayWebhook(req, res) {
         const currentPaidAmount = Number(o.paid_amount || 0);
         const totalReceived = currentPaidAmount + amount;
 
-        console.log(`📋 [SePay] Đơn ${o.order_code}: cần ${requiredAmount}đ, đã nhận ${currentPaidAmount}đ, chuyển thêm ${amount}đ`);
-
-        // ✅ FIX 3: Xử lý đúng khi thanh toán đủ / thiếu / thừa
+        console.log(`📋 [SePay] Khớp đơn: ${o.order_code} | Cần: ${requiredAmount}đ | Đã nhận: ${currentPaidAmount}đ | Chuyển thêm: ${amount}đ`);
         if (totalReceived >= requiredAmount) {
             await pool.query(
                 `UPDATE orders 
                  SET status='paid', 
-                     paid_at=$1, 
-                     paid_amount=$2, 
-                     transaction_id=$3, 
-                     sepay_transaction_id=$4 
-                 WHERE order_code=$5`,
-                [
-                    new Date().toISOString(),
-                    totalReceived,
-                    transactionId,
-                    data.referenceCode || data.id || transactionId,
-                    o.order_code
-                ]
+                     paid_at=NOW(), 
+                     paid_amount=$1, 
+                     transaction_id=$2, 
+                     sepay_transaction_id=$3 
+                 WHERE order_code=$4`,
+                [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
             );
-            console.log(`✅✅✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ! Key: ${o.key}`);
+            console.log(`✅✅✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
         } else {
             const note = `Thanh toán thiếu: cần ${requiredAmount}đ, đã nhận ${totalReceived}đ`;
             await pool.query(
@@ -1737,20 +1692,38 @@ async function handleSePayWebhook(req, res) {
                  WHERE order_code=$4`,
                 [totalReceived, transactionId, note, o.order_code]
             );
-            console.log(`⚠️ [SePay] ĐƠN ${o.order_code} THIẾU TIỀN!`);
+            console.log(`⚠️ [SePay] ĐƠN ${o.order_code} THIẾU TIỀN! (Cần bổ sung thêm)`);
         }
         
         return res.status(200).json({ success: true });
     } catch (error) {
-        console.error('❌ [SePay Webhook] Lỗi:', error);
+        console.error('❌ [SePay Webhook] Lỗi xử lý:', error);
         return res.status(500).json({ success: false, error: 'Internal error' });
     }
 }
-app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
+
+app.get('/api/order-status/:orderCode', async (req, res) => {
     try {
-        const orders = await getOrdersFromSupabase();
-        res.json({ success: true, orders });
-    } catch {
+        const { orderCode } = req.params;
+        const { rows } = await pool.query('SELECT * FROM orders WHERE order_code = $1', [orderCode]);
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+        }
+        const o = rows[0];
+        
+        res.json({
+            success: true, 
+            orderCode: o.order_code, 
+            status: o.status,
+            key: (o.status === 'paid' || o.status === 'completed') ? o.key : null,
+            amount: Number(o.amount), 
+            paidAmount: Number(o.paid_amount || 0),
+            paidAt: o.paid_at, 
+            planName: o.plan_name,
+            note: o.note || ''
+        });
+    } catch (err) {
+        console.error('Lỗi check order:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
