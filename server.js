@@ -1520,7 +1520,6 @@ app.post('/api/admin/verify-token', requireAdminToken, (req, res) => {
 
 app.post('/api/create-order', async (req, res) => {
     try {
-        // Nhận thêm các trường thông tin mới từ Client
         const { 
             plan, customerName, planName, amount, 
             customerUsername, customerPhone, remoteTool, remoteId, remotePass 
@@ -1528,6 +1527,30 @@ app.post('/api/create-order', async (req, res) => {
 
         if (!plan || !amount || !customerUsername || !customerPhone || !remoteTool || !remoteId || !remotePass) {
             return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng hoặc thông tin hỗ trợ' });
+        }
+
+        const phoneClean = String(customerPhone).replace(/[^0-9]/g, '');
+        if (phoneClean.length < 10 || phoneClean.length > 11) {
+            return res.status(400).json({ success: false, error: 'Số điện thoại không hợp lệ (10-11 số)' });
+        }
+
+        if (remoteTool === 'UltraView') {
+            if (!/^[0-9]{9,12}$/.test(remoteId)) {
+                return res.status(400).json({ success: false, error: 'UltraView ID không hợp lệ' });
+            }
+            if (String(remotePass).length < 4) {
+                return res.status(400).json({ success: false, error: 'UltraView Password quá ngắn' });
+            }
+        } else if (remoteTool === 'AnyDesk') {
+            const adIdClean = String(remoteId).replace(/\s/g, '');
+            if (!/^[0-9]{9,10}$/.test(adIdClean)) {
+                return res.status(400).json({ success: false, error: 'AnyDesk ID không hợp lệ' });
+            }
+            if (remotePass && remotePass !== 'Không có' && String(remotePass).length < 4) {
+                return res.status(400).json({ success: false, error: 'AnyDesk Password quá ngắn' });
+            }
+        } else {
+            return res.status(400).json({ success: false, error: 'Ứng dụng hỗ trợ không hợp lệ' });
         }
 
         const orderCode = generateOrderCode();
