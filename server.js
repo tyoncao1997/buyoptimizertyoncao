@@ -1923,6 +1923,95 @@ app.post('/api/admin/reject-order', requireAdminToken, async (req, res) => {
     }
 });
 
+app.post('/api/admin/refund-order', requireAdminToken, async (req, res) => {
+    try {
+        const { pin, orderCode } = req.body;
+        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            // Khóa đơn hàng để tránh tranh chấp
+            const { rows: lockRows } = await client.query(
+                'SELECT * FROM orders WHERE order_code = $1 FOR UPDATE',
+                [orderCode]
+            );
+            if (lockRows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+            }
+
+            const order = lockRows[0];
+            // Chỉ hoàn tiền cho đơn đã thanh toán (paid) hoặc hoàn thành (completed)
+            if (order.status !== 'paid' && order.status !== 'completed') {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ success: false, error: 'Chỉ có thể hoàn tiền cho đơn đã thanh toán' });
+            }
+
+            const paidAmount = Number(order.paid_amount || order.amount || 0); // Lấy số tiền đã thu
+            if (paidAmount <= 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ success: false, error: 'Đơn hàng này chưa thu tiền, không thể hoàn' });
+            }
+
+            const targetUsername = order.customer_username || order.customer_name;
+            if (!targetUsername) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ success: false, error: 'Không tìm thấy thông tin khách hàng để hoàn tiền' });
+            }
+
+            // Cập nhật trạng thái đơn thành cancelled (hoặc refunded)
+            const note = (order.note || '') + ` | Admin ${req.admin.username} đã hoàn tiền.`;
+            await client.query(
+                `UPDATE orders SET status='cancelled', confirmed_by=$1, note=$2 WHERE order_code=$3`,
+                [req.admin.username, note, orderCode]
+            );
+
+            // Cộng tiền lại vào ví khách
+            const { rows: userRows } = await client.query(
+                'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
+                [targetUsername]
+            );
+            
+            if (userRows.length > 0) {
+                const user = userRows[0];
+                const depositHistory = safeParseJSON(user.deposit_history);
+                depositHistory.push({
+                    amount: paidAmount,
+                    method: 'admin_refund',
+                    content: `Hoàn tiền đơn hàng: ${orderCode}`,
+                    transactionId: 'REFUND_' + Date.now(),
+                    at: new Date().toISOString(),
+                    addedBy: req.admin.username
+                });
+                await client.query(
+                    'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
+                    [paidAmount, JSON.stringify(depositHistory), user.username]
+                );
+                console.log(`💰 [REFUND] Hoàn ${paidAmount}đ cho ${user.username} (đơn ${orderCode})`);
+            } else {
+                console.warn(`⚠️ Không tìm thấy user ${targetUsername} để hoàn tiền`);
+            }
+
+            await client.query('COMMIT');
+            return res.json({
+                success: true,
+                message: `Đã hoàn tiền ${paidAmount.toLocaleString('vi-VN')}đ cho đơn ${orderCode}.`
+            });
+
+        } catch (txErr) {
+            await client.query('ROLLBACK');
+            throw txErr;
+        } finally {
+            client.release();
+        }
+    } catch (err) {
+        console.error('Admin refund order error:', err);
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
+    }
+});
+
 app.post('/api/admin/kyc-list', requireAdminToken, async (req, res) => {
     try {
         const { rows } = await pool.query(`
