@@ -1334,7 +1334,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
     try {
         const { rows: kycRows } = await pool.query("SELECT COUNT(*) FROM users WHERE kyc_status = 'pending'");
         const kycPending = Number(kycRows[0].count);
-
         const { rows: allUsers } = await pool.query('SELECT * FROM users');
         const totalUsers = allUsers.length;
 
@@ -1345,29 +1344,36 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             const deposits = safeParseJSON(u.deposit_history);
             deposits.forEach(d => {
                 const amt = Number(d.amount || 0);
-                if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') totalIncurred += amt;
-                else if (d.status === 'success' || !d.status) cashIn += amt;
+                if (d.method === 'refund_rejected_order' || d.method === 'admin_refund') {
+                    totalIncurred += amt; 
+                } else if (d.status === 'success' || !d.status) {
+                    cashIn += amt;
+                }
             });
 
             const purchases = safeParseJSON(u.purchase_history);
             const spent = purchases.reduce((s, p) => {
                 const price = Number(p.price) || 0;
-                actualRevenue += price;
+                actualRevenue += price; 
                 return s + price;
             }, 0);
             spenderMap.set(u.username, { username: u.username, fullName: u.full_name, totalSpent: spent });
         });
-
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
         const totalOrders = orderRows.length;
-        const paidOrdersList = orderRows.filter(o => o.status === 'paid');
-        const completedOrdersList = orderRows.filter(o => o.status === 'completed');
+        const paidOrdersList = orderRows.filter(o => o.status === 'paid' || o.status === 'completed'); // Gộp đơn đã thanh toán và hoàn thành
         const pendingOrdersList = orderRows.filter(o => o.status === 'pending');
         const underpaidOrdersList = orderRows.filter(o => o.status === 'underpaid');
         const rejectedOrdersList = orderRows.filter(o => o.status === 'rejected' || o.status === 'cancelled');
         const pendingAmount = pendingOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
 
+        let orderRevenue = 0;
+        paidOrdersList.forEach(o => {
+            orderRevenue += Number(o.amount || 0);
+        });
+
         const dailyRevenue = new Map();
+
         allUsers.forEach(u => {
             const purchases = safeParseJSON(u.purchase_history);
             purchases.forEach(p => {
@@ -1381,7 +1387,16 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 }
             });
         });
-
+        paidOrdersList.forEach(o => {
+            const at = o.paid_at || o.created_at;
+            if (!at) return;
+            const date = new Date(at);
+            const diffDays = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
+            if (diffDays <= 7) {
+                const key = date.toISOString().slice(0, 10);
+                dailyRevenue.set(key, (dailyRevenue.get(key) || 0) + Number(o.amount || 0));
+            }
+        });
         const revenue7d = [];
         for (let i = 6; i >= 0; i--) {
             const d = new Date();
@@ -1392,7 +1407,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 revenue: dailyRevenue.get(key) || 0
             });
         }
-
         const recentOrders = orderRows
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5)
@@ -1401,41 +1415,43 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                 planName: o.plan_name, amount: Number(o.amount), status: o.status
             }));
         const topSpenders = [...spenderMap.values()].sort((a, b) => b.totalSpent - a.totalSpent).slice(0, 5);
-
         let totalFeedbacks = 0;
         try { const db = await readStorage(); totalFeedbacks = (db.feedbacks || []).length; } catch (_) {}
-
         const inputCost = Number(process.env.MONTHLY_FIXED_COST) || 0;
-        const netProfit = actualRevenue - inputCost - totalIncurred;
-
+        const totalRealRevenue = actualRevenue + orderRevenue;
+        const netProfit = totalRealRevenue - inputCost - totalIncurred;
         res.json({
             success: true, totalUsers, kycPending, totalFeedbacks,
-            totalRevenue: actualRevenue, cashIn, incurred: totalIncurred,
-            netProfit, inputCost, pendingAmount, totalOrders,
+            totalRevenue: totalRealRevenue,
+            cashIn, 
+            incurred: totalIncurred,
+            netProfit, 
+            inputCost, 
+            pendingAmount, 
+            totalOrders,
             pendingOrders: pendingOrdersList.length,
             paidOrders: paidOrdersList.length,
             underpaidOrdersList: underpaidOrdersList.length,
             revenue7d,
             orderStatus: {
-                paid: paidOrdersList.length, 
-                completed: completedOrdersList.length,
+                paid: orderRows.filter(o => o.status === 'paid').length, 
+                completed: orderRows.filter(o => o.status === 'completed').length,
                 pending: pendingOrdersList.length,
                 underpaid: underpaidOrdersList.length, 
                 rejected: rejectedOrdersList.length,
-                other: totalOrders - paidOrdersList.length - completedOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length
+                other: totalOrders - paidOrdersList.length - pendingOrdersList.length - underpaidOrdersList.length - rejectedOrdersList.length
             },
             recentOrders, topSpenders
         });
     } catch (err) {
         console.error('Admin stats error:', err);
-        res.status(500).json({ success: false, error: err.message });
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra khi tính toán số liệu, vui lòng thử lại sau.' });
     }
 });
 
 app.post('/api/admin/revenue', requireAdminToken, async (req, res) => {
     try {
         const { period = '7d' } = req.body;
-        const { rows: allUsers } = await pool.query('SELECT * FROM users');
 
         let daysLimit = 7;
         if (period === '30d') daysLimit = 30;
@@ -1444,37 +1460,81 @@ app.post('/api/admin/revenue', requireAdminToken, async (req, res) => {
 
         const cutoff = Date.now() - daysLimit * 24 * 60 * 60 * 1000;
 
-        let purchaseTotal = 0, depositTotal = 0;
+        let purchaseTotal = 0;
+        let depositTotal = 0; 
         const chartMap = new Map();
         const transactions = [];
 
+        const { rows: allUsers } = await pool.query('SELECT * FROM users');
+        
         allUsers.forEach(u => {
             const deposits = safeParseJSON(u.deposit_history);
             deposits.forEach(d => {
                 const at = d.at || d.createdAt;
                 if (!at || new Date(at).getTime() < cutoff) return;
+                
                 const amt = Number(d.amount) || 0;
                 depositTotal += amt;
-                transactions.push({ time: at, username: u.username, type: 'deposit', amount: amt, desc: d.method || 'nạp tiền' });
+                
+                transactions.push({ 
+                    time: at, 
+                    username: u.username, 
+                    type: 'deposit', 
+                    amount: amt, 
+                    desc: d.method || 'nạp tiền' 
+                });
+                
                 const key = new Date(at).toISOString().slice(0, 10);
                 chartMap.set(key, (chartMap.get(key) || 0) + amt);
             });
-
             const purchases = safeParseJSON(u.purchase_history);
             purchases.forEach(p => {
                 const at = p.purchasedAt || p.createdAt;
                 if (!at || new Date(at).getTime() < cutoff) return;
+                
                 const amt = Number(p.price) || 0;
                 purchaseTotal += amt;
-                transactions.push({ time: at, username: u.username, type: 'purchase', amount: amt, desc: p.productName || 'mua file' });
+                
+                transactions.push({ 
+                    time: at, 
+                    username: u.username, 
+                    type: 'purchase', 
+                    amount: amt, 
+                    desc: p.productName || 'mua file' 
+                });
+                
                 const key = new Date(at).toISOString().slice(0, 10);
                 chartMap.set(key, (chartMap.get(key) || 0) + amt);
             });
         });
+        const { rows: orderRows } = await pool.query(
+            `SELECT * FROM orders 
+             WHERE status IN ('paid', 'completed') 
+               AND paid_at >= $1`, 
+            [new Date(cutoff).toISOString()]
+        );
 
+        orderRows.forEach(o => {
+            const amt = Number(o.amount) || 0;
+            const at = o.paid_at; 
+            
+            purchaseTotal += amt;
+            
+            transactions.push({ 
+                time: at, 
+                username: o.customer_username || o.customer_name || 'Khách', 
+                type: 'order', 
+                amount: amt, 
+                desc: `Thanh toán đơn: ${o.plan_name}` 
+            });
+
+            const key = new Date(at).toISOString().slice(0, 10);
+            chartMap.set(key, (chartMap.get(key) || 0) + amt);
+        });
         const chartData = [];
-        const totalDays = Math.min(daysLimit, 30);
-        for (let i = totalDays - 1; i >= 0; i--) {
+        const totalDaysToRender = Math.min(daysLimit, 30);
+        
+        for (let i = totalDaysToRender - 1; i >= 0; i--) {
             const d = new Date();
             d.setDate(d.getDate() - i);
             const key = d.toISOString().slice(0, 10);
@@ -1483,18 +1543,18 @@ app.post('/api/admin/revenue', requireAdminToken, async (req, res) => {
                 value: chartMap.get(key) || 0
             });
         }
-
         transactions.sort((a, b) => new Date(b.time) - new Date(a.time));
 
         res.json({
             success: true,
-            totalRevenue: purchaseTotal,
-            depositTotal, purchaseTotal, chartData,
+            totalRevenue: purchaseTotal, 
+            depositTotal, 
+            chartData,
             transactions: transactions.slice(0, 500)
         });
     } catch (err) {
         console.error('Admin revenue error:', err);
-        res.status(500).json({ success: false, error: err.message });
+        res.status(500).json({ success: false, error: 'Có lỗi xảy ra khi tải dữ liệu doanh thu.' });
     }
 });
 
