@@ -1152,41 +1152,66 @@ function generateOrderCode() {
 
 async function cleanupExpiredKeys() {
     let deletedCount = 0;
-    const db = await readStorage();
-    const before = db.keys.length;
-    db.keys = db.keys.filter(k => {
-        if (k.status !== 'pending') return true;
-        const age = Date.now() - new Date(k.createdAt).getTime();
-        return age <= KEY_EXPIRE_MS;
-    });
-    deletedCount = before - db.keys.length;
-    if (deletedCount > 0) {
-        await writeStorage(db);
-        console.log(`🧹 Đã xóa ${deletedCount} key pending hết hạn.`);
+    try {
+        const db = await readStorage();
+        if (db && Array.isArray(db.keys)) {
+            const before = db.keys.length;
+            db.keys = db.keys.filter(k => {
+                if (k.status !== 'pending') return true;
+                const age = Date.now() - new Date(k.createdAt).getTime();
+                return age <= KEY_EXPIRE_MS;
+            });
+            
+            const keysDeleted = before - db.keys.length;
+            if (keysDeleted > 0) {
+                await writeStorage(db);
+                console.log(`🧹 Đã xóa ${keysDeleted} key pending hết hạn trên bộ nhớ đệm.`);
+                deletedCount += keysDeleted;
+            }
+        }
+    } catch (err) {
+        console.error('❌ Lỗi dọn dẹp keys:', err.message);
     }
     if (pool) {
         try {
-            const expireBefore = new Date(Date.now() - KEY_EXPIRE_MS).toISOString();
-            const { rowCount } = await pool.query(
-                `DELETE FROM orders WHERE status = 'pending' AND created_at < $1`,
-                [expireBefore]
+            const now = Date.now();
+            const expireBefore24h = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+            const expireBefore18Months = new Date(now - 18 * 30 * 24 * 60 * 60 * 1000).toISOString();
+            const { rowCount: pendingCount } = await pool.query(
+                `DELETE FROM orders 
+                 WHERE status = 'pending' 
+                   AND created_at < $1`,
+                [expireBefore24h]
             );
-            if (rowCount > 0) {
-                console.log(`🧹 Đã XÓA VĨNH VIỄN ${rowCount} orders pending quá hạn.`);
-                deletedCount += rowCount;
+            if (pendingCount > 0) {
+                console.log(`🧹 Đã XÓA VĨNH VIỄN ${pendingCount} đơn hàng pending (chưa thanh toán) quá 24h.`);
+                deletedCount += pendingCount;
             }
-            const cancelBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
             const { rowCount: cancelCount } = await pool.query(
-                `DELETE FROM orders WHERE status = 'cancelled' AND created_at < $1`,
-                [cancelBefore]
+                `DELETE FROM orders 
+                 WHERE status IN ('cancelled', 'rejected') 
+                   AND created_at < $1`,
+                [expireBefore24h]
             );
             if (cancelCount > 0) {
-                console.log(`🧹 Đã XÓA VĨNH VIỄN ${cancelCount} orders bị từ chối.`);
+                console.log(`🧹 Đã XÓA VĨNH VIỄN ${cancelCount} đơn hàng bị từ chối quá 24h.`);
+                deletedCount += cancelCount;
+            }
+            const { rowCount: archiveCount } = await pool.query(
+                `DELETE FROM orders 
+                 WHERE status IN ('paid', 'completed', 'refunded') 
+                   AND created_at < $1`,
+                [expireBefore18Months]
+            );
+            if (archiveCount > 0) {
+                console.log(`🧹 Đã XÓA VĨNH VIỄN ${archiveCount} đơn hàng (đã thanh toán/hoàn tất/hoàn tiền) quá 18 tháng.`);
+                deletedCount += archiveCount;
             }
         } catch (err) {
-            console.error('❌ Lỗi xóa orders:', err.message);
+            console.error('❌ Lỗi dọn dẹp orders trong Database:', err.message);
         }
     }
+
     return { deletedCount };
 }
 
