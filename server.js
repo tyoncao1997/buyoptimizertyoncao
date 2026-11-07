@@ -2377,7 +2377,19 @@ app.post('/api/user/submit-kyc', requireUserSession, async (req, res) => {
         if (!fullName || !idNumber || !frontImage || !backImage) {
             return res.status(400).json({ success: false, error: 'Vui lòng cung cấp đủ thông tin và ảnh' });
         }
+        const isValidImageBase64 = (str) => {
+            if (typeof str !== 'string') return false;
+            if (!str.startsWith('data:image/')) return false;
+            if (str.length > 5 * 1024 * 1024) return false; 
+            return true;
+        };
 
+        if (!isValidImageBase64(frontImage)) {
+            return res.status(400).json({ success: false, error: 'Ảnh mặt trước không hợp lệ (phải là JPG/PNG và < 3MB)' });
+        }
+        if (!isValidImageBase64(backImage)) {
+            return res.status(400).json({ success: false, error: 'Ảnh mặt sau không hợp lệ (phải là JPG/PNG và < 3MB)' });
+        }
         await pool.query(`
             UPDATE users
             SET kyc_status = 'pending',
