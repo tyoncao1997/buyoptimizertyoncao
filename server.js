@@ -904,7 +904,12 @@ async function getOrdersFromSupabase() {
             customerName: o.customer_name, amount: Number(o.amount), status: o.status,
             createdAt: o.created_at, paidAt: o.paid_at, paidAmount: Number(o.paid_amount || 0),
             transactionId: o.transaction_id, sepayTransactionId: o.sepay_transaction_id,
-            confirmedBy: o.confirmed_by, note: o.note || ''
+            confirmedBy: o.confirmed_by, note: o.note || '',
+            customerUsername: o.customer_username,
+            customerPhone: o.customer_phone,
+            remoteTool: o.remote_tool,
+            remoteId: o.remote_id,
+            remotePass: o.remote_pass
         }));
     } catch (err) {
         console.error('❌ Lỗi đọc orders:', err.message);
@@ -917,8 +922,9 @@ async function upsertOrderToSupabase(order) {
         await pool.query(`
             INSERT INTO orders (order_code, key, plan, plan_name, customer_name, amount,
                                 status, created_at, paid_at, paid_amount, transaction_id,
-                                sepay_transaction_id, confirmed_by, note)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                                sepay_transaction_id, confirmed_by, note,
+                                customer_username, customer_phone, remote_tool, remote_id, remote_pass)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
             ON CONFLICT (order_code) DO UPDATE SET
                 status = EXCLUDED.status,
                 paid_at = EXCLUDED.paid_at,
@@ -926,13 +932,20 @@ async function upsertOrderToSupabase(order) {
                 transaction_id = EXCLUDED.transaction_id,
                 sepay_transaction_id = EXCLUDED.sepay_transaction_id,
                 confirmed_by = EXCLUDED.confirmed_by,
-                note = EXCLUDED.note;
+                note = EXCLUDED.note,
+                customer_username = EXCLUDED.customer_username,
+                customer_phone = EXCLUDED.customer_phone,
+                remote_tool = EXCLUDED.remote_tool,
+                remote_id = EXCLUDED.remote_id,
+                remote_pass = EXCLUDED.remote_pass;
         `, [
             order.orderCode, order.key, order.plan, order.planName || null,
             order.customerName || null, order.amount, order.status || 'pending',
             order.createdAt || new Date().toISOString(), order.paidAt || null,
             order.paidAmount || 0, order.transactionId || null,
-            order.sepayTransactionId || null, order.confirmedBy || null, order.note || ''
+            order.sepayTransactionId || null, order.confirmedBy || null, order.note || '',
+            order.customerUsername || null, order.customerPhone || null,
+            order.remoteTool || null, order.remoteId || null, order.remotePass || null
         ]);
         return true;
     } catch (err) {
@@ -1507,23 +1520,39 @@ app.post('/api/admin/verify-token', requireAdminToken, (req, res) => {
 
 app.post('/api/create-order', async (req, res) => {
     try {
-        const { plan, customerName, planName, amount } = req.body;
-        if (!plan || !customerName || !amount) {
-            return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
+        // Nhận thêm các trường thông tin mới từ Client
+        const { 
+            plan, customerName, planName, amount, 
+            customerUsername, customerPhone, remoteTool, remoteId, remotePass 
+        } = req.body;
+
+        if (!plan || !amount || !customerUsername || !customerPhone || !remoteTool || !remoteId || !remotePass) {
+            return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng hoặc thông tin hỗ trợ' });
         }
+
         const orderCode = generateOrderCode();
         const randomPart = Math.random().toString(36).substring(2, 8).toUpperCase();
         const key = `TYON-${plan.toUpperCase()}-${randomPart}-${orderCode.slice(-6)}`;
 
         const newOrder = {
-            orderCode, key, plan,
+            orderCode, 
+            key, 
+            plan,
             planName: planName || plan.toUpperCase(),
-            customerName,
+            customerName: customerName || customerUsername,
             amount: parseInt(amount),
             status: 'pending',
             createdAt: new Date().toISOString(),
-            paidAt: null, paidAmount: 0,
-            transactionId: null, sepayTransactionId: null, note: ''
+            paidAt: null, 
+            paidAmount: 0,
+            transactionId: null, 
+            sepayTransactionId: null, 
+            note: '',
+            customerUsername,
+            customerPhone,
+            remoteTool,
+            remoteId,
+            remotePass
         };
 
         const saved = await upsertOrderToSupabase(newOrder);
@@ -1589,8 +1618,8 @@ async function handleSePayWebhook(req, res) {
         const transactionId = data.id || data.referenceCode || 'N/A';
 
         const { rows } = await pool.query(
-            `SELECT * FROM orders WHERE status = 'pending' AND UPPER($1) LIKE '%' || UPPER(order_code) || '%' LIMIT 1`,
-            [content]
+            `SELECT * FROM orders WHERE status = 'pending' AND UPPER(order_code) = UPPER($1) LIMIT 1`,
+            [content.replace(/SEVQR\s*/g, '').trim()]
         );
         if (rows.length === 0) {
             console.log(`⚠️ Không tìm thấy đơn pending khớp: "${content}"`);
