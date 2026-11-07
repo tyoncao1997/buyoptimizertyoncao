@@ -1603,7 +1603,7 @@ app.get('/api/order-status/:orderCode', async (req, res) => {
         const o = rows[0];
         res.json({
             success: true, orderCode: o.order_code, status: o.status,
-            key: o.status === 'paid' ? o.key : null,
+            key: (o.status === 'paid' || o.status === 'completed') ? o.key : null,
             amount: Number(o.amount), paidAmount: Number(o.paid_amount || 0),
             paidAt: o.paid_at, planName: o.plan_name
         });
