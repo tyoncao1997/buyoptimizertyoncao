@@ -2863,8 +2863,8 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
         }
 
         const numericPrice = Number(price);
-        if (isNaN(numericPrice) || numericPrice <= 0) {
-            return res.status(400).json({ success: false, error: 'Giá sản phẩm không hợp lệ' });
+        if (isNaN(numericPrice) || numericPrice < 0) {
+        return res.status(400).json({ success: false, error: 'Giá sản phẩm không hợp lệ' });
         }
 
         if (req.username.toLowerCase() !== username.trim().toLowerCase()) {
@@ -2878,8 +2878,8 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
 
         const purchaseHistory = safeParseJSON(dbUser.purchase_history);
 
-        if (String(productId) !== '1' && purchaseHistory.some(p => String(p.productId) === String(productId))) {
-            return res.status(400).json({ success: false, error: 'Bạn đã sở hữu sản phẩm này rồi!' });
+        if (purchaseHistory.some(p => String(p.productId) === String(productId))) {
+        return res.status(400).json({ success: false, error: 'Bạn đã sở hữu sản phẩm này rồi!' });
         }
 
         const now = new Date().toISOString();
@@ -2963,9 +2963,9 @@ app.get('/api/download/:productId', requireUserSession, async (req, res) => {
 
         const purchaseHistory = safeParseJSON(dbUser.purchase_history);
         const ownedIds = new Set(purchaseHistory.map(p => String(p.productId)));
-        if (!ownedIds.has(productId) && productId !== '1') {
-            return res.status(403).send('Chưa mua sản phẩm.');
-        }
+        if (!ownedIds.has(productId)) {
+        return res.status(403).send('Chưa mua sản phẩm.');
+            }
 
         const listCommand = new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME });
         const listResponse = await s3Client.send(listCommand);
@@ -3006,7 +3006,7 @@ app.get('/api/download-all', requireUserSession, async (req, res) => {
         if (ids) {
             const requestedIds = String(ids).split(',').map(s => s.trim()).filter(Boolean);
             const ownedIds = new Set(purchaseHistory.map(p => String(p.productId)));
-            targetIds = requestedIds.filter(id => ownedIds.has(String(id)) || String(id) === '1');
+            targetIds = requestedIds.filter(id => ownedIds.has(String(id)));    
         } else {
             targetIds = [...new Set(purchaseHistory.map(p => String(p.productId)))];
         }
