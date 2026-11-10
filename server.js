@@ -2559,6 +2559,50 @@ app.get('/api/user/:username', requireUserSession, async (req, res) => {
     }
 });
 
+app.get('/api/user/:username/tier', requireUserSession, async (req, res) => {
+    try {
+        if (req.username.toLowerCase() !== req.params.username.trim().toLowerCase()) {
+            return res.status(403).json({ success: false, error: 'Không có quyền' });
+        }
+
+        const dbUser = await getUserByUsername(req.params.username);
+        if (!dbUser) return res.status(404).json({ success: false, error: 'User not found' });
+        const depositHistory = safeParseJSON(dbUser.deposit_history);
+        const totalDeposit = depositHistory.reduce((sum, item) => {
+            if (item.method === 'refund_rejected_order' || item.method === 'admin_refund') return sum;
+            return sum + (Number(item.amount) || 0);
+        }, 0);
+        let tier = 'Member';
+        let nextTier = 'Silver';
+        let amountToNext = 500000 - totalDeposit;
+
+        if (totalDeposit >= 10000000) {
+            tier = 'Diamond';
+            nextTier = 'Max';
+            amountToNext = 0;
+        } else if (totalDeposit >= 2000000) {
+            tier = 'Gold';
+            nextTier = 'Diamond';
+            amountToNext = 10000000 - totalDeposit;
+        } else if (totalDeposit >= 500000) {
+            tier = 'Silver';
+            nextTier = 'Gold';
+            amountToNext = 2000000 - totalDeposit;
+        }
+
+        res.json({
+            success: true,
+            totalDeposit,
+            currentTier: tier,
+            nextTier: nextTier,
+            amountToNext: amountToNext > 0 ? amountToNext : 0
+        });
+    } catch (err) {
+        console.error('Lỗi lấy cấp bậc:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
 app.post('/api/change-password', requireUserSession, async (req, res) => {
     try {
         const { username, oldPassword, newPassword } = req.body;
