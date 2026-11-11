@@ -757,17 +757,6 @@ const emailTemplates = {
           <!-- BODY -->
           <tr>
             <td style="padding:44px 40px 20px 40px;">
-              
-              <!-- Icon -->
-              <div style="text-align:center; margin-bottom:24px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
-                <tr>
-                  <td width="64" height="64" align="center" valign="middle" style="width:64px; height:64px; background:#fef5e7; border-radius:50%; text-align:center; vertical-align:middle; font-size:32px; line-height:64px;">
-                    🔒
-                  </td>
-                </tr>
-              </table>
-            </div>
               <h2 style="margin:0 0 12px 0; color:#0f172a; font-size:22px; font-weight:700; text-align:center;">
                 Yêu cầu đặt lại mật khẩu
               </h2>
