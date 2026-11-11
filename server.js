@@ -34,6 +34,87 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000).unref();
 
+const TIER_CONFIG = {
+    Member: {
+        name: 'Member',
+        displayName: 'MEMBER',
+        tierLevel: 1,
+        color: '#3b82f6',
+        colorSecondary: '#1d4ed8',
+        colorLight: '#dbeafe',
+        metallicGradient: 'linear-gradient(135deg, #60a5fa 0%, #3b82f6 35%, #1d4ed8 70%, #1e3a8a 100%)',
+        iconSvg: `<svg width="52" height="52" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L4 6V12C4 17 7.5 21.5 12 22C16.5 21.5 20 17 20 12V6L12 2Z" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,0.15)"/><path d="M9 12L11 14L15 10" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+        tagline: 'Khởi đầu hành trình tối ưu hóa',
+        minDeposit: 0,
+        benefits: [
+            'Mở toàn bộ module cơ bản',
+            'Hỗ trợ qua WhatsApp/Zalo 24/7',
+            'Truy cập shop file cơ bản'
+        ]
+    },
+    Silver: {
+        name: 'Silver',
+        displayName: 'BẠC',
+        tierLevel: 2,
+        color: '#94a3b8',
+        colorSecondary: '#64748b',
+        colorLight: '#f1f5f9',
+        metallicGradient: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 25%, #94a3b8 55%, #64748b 80%, #475569 100%)',
+        iconSvg: `<svg width="52" height="52" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L3 7V12C3 17 7.5 21.5 12 22C16.5 21.5 21 17 21 12V7L12 2Z" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,0.2)"/><path d="M12 7L9 10L12 13L15 10L12 7Z" fill="#ffffff"/></svg>`,
+        tagline: 'Đẳng cấp Bạc - Ưu tiên trải nghiệm',
+        minDeposit: 500000,
+        benefits: [
+            'Tất cả quyền lợi Member',
+            'Ưu tiên hỗ trợ (phản hồi < 2 giờ)',
+            'Badge "Silver" trên hồ sơ',
+            'Giảm 5% khi mua file trong shop',
+            'Tặng 1 file Regmouse bất kỳ (trị giá < 200k)'
+        ]
+    },
+    Gold: {
+        name: 'Gold',
+        displayName: 'VÀNG',
+        tierLevel: 3,
+        color: '#f59e0b',
+        colorSecondary: '#d97706',
+        colorLight: '#fef3c7',
+        metallicGradient: 'linear-gradient(135deg, #fef3c7 0%, #fcd34d 25%, #f59e0b 50%, #d97706 75%, #92400e 100%)',
+        iconSvg: `<svg width="52" height="52" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 7L6 11L9 6L12 11L15 6L18 11L21 7L19 19H5L3 7Z" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,0.25)"/><circle cx="7" cy="15" r="1.2" fill="#ffffff"/><circle cx="12" cy="15" r="1.2" fill="#ffffff"/><circle cx="17" cy="15" r="1.2" fill="#ffffff"/></svg>`,
+        tagline: 'Đẳng cấp Vàng - Ưu tiên tuyệt đối',
+        minDeposit: 2000000,
+        benefits: [
+            'Tất cả quyền lợi Silver',
+            'Ưu tiên duyệt bài/forum ads (duyệt ngay)',
+            'Badge "Gold" hiển thị nổi bật với viền vàng',
+            'Giảm 10% khi mua file trong shop',
+            'Tặng 2 file Regmouse bất kỳ (trị giá < 500k)',
+            'Hỗ trợ qua kênh riêng Telegram/Zalo'
+        ]
+    },
+    Diamond: {
+        name: 'Diamond',
+        displayName: 'KIM CƯƠNG',
+        tierLevel: 4,
+        color: '#8b5cf6',
+        colorSecondary: '#7c3aed',
+        colorLight: '#ede9fe',
+        metallicGradient: 'linear-gradient(135deg, #f5f3ff 0%, #ddd6fe 20%, #c4b5fd 40%, #a78bfa 60%, #8b5cf6 80%, #4c1d95 100%)',
+        iconSvg: `<svg width="52" height="52" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 3H18L22 9L12 22L2 9L6 3Z" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round" fill="rgba(255,255,255,0.25)"/><path d="M2 9H22M12 22L6 3M12 22L18 3" stroke="#ffffff" stroke-width="1.2" opacity="0.7"/></svg>`,
+        tagline: 'Đẳng cấp Kim Cương - Đặc quyền tối thượng',
+        minDeposit: 10000000,
+        benefits: [
+            'Tất cả quyền lợi Gold',
+            'Ưu tiên xử lý đơn lớn (VIP 24/7)',
+            'Badge "Diamond" phát sáng độc quyền',
+            'Giảm 15% khi mua file trong shop',
+            'Tặng file độc quyền mỗi tháng',
+            'Support riêng 1-1 qua UltraView/AnyDesk',
+            'Tham gia nhóm VIP Discord/Telegram',
+            'Ưu tiên nhận khuyến mãi sớm nhất'
+        ]
+    }
+};
+
 async function telegramApiCall(method, payload) {
     if (!TELEGRAM_ENABLED) throw new Error('Telegram chưa cấu hình');
     const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`, {
@@ -341,6 +422,181 @@ const emailTemplates = {
 </html>
     `,
 
+    tierUpgrade: (fullName, tierName, tierDisplayName, tierColor, tierColorSecondary, tierColorLight, metallicGradient, tierIconSvg, tagline, totalDeposit, benefits) => `
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chúc mừng bạn đã thăng hạng ${tierDisplayName}</title>
+</head>
+<body style="margin:0; padding:0; background:#0a0e1a; font-family:'Segoe UI',Tahoma,Geneva,Verdana,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(135deg,#0a0e1a 0%,#0f172a 50%,#0a0e1a 100%); padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="620" cellpadding="0" cellspacing="0" style="max-width:620px; width:100%; background:#ffffff; border-radius:24px; overflow:hidden; box-shadow:0 30px 80px rgba(0,0,0,0.6);">
+          
+          <!-- ═══════════ HEADER VIP METALLIC ═══════════ -->
+          <tr>
+            <td style="background:${metallicGradient}; padding:0; position:relative;">
+              <div style="position:relative; padding:48px 40px 40px; text-align:center; background-image:radial-gradient(circle at 20% 30%, rgba(255,255,255,0.3) 0%, transparent 45%), radial-gradient(circle at 80% 70%, rgba(0,0,0,0.2) 0%, transparent 45%);">
+                
+                <!-- Vương miện SVG -->
+                <div style="margin-bottom:20px;">
+                  <svg width="70" height="35" viewBox="0 0 70 35" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M5 30L12 8L24 20L35 3L46 20L58 8L65 30H5Z" stroke="#ffffff" stroke-width="1.8" fill="rgba(255,255,255,0.25)" stroke-linejoin="round"/>
+                    <circle cx="12" cy="8" r="2.5" fill="#ffffff"/>
+                    <circle cx="35" cy="3" r="2.5" fill="#ffffff"/>
+                    <circle cx="58" cy="8" r="2.5" fill="#ffffff"/>
+                    <circle cx="5" cy="30" r="2" fill="#ffffff"/>
+                    <circle cx="65" cy="30" r="2" fill="#ffffff"/>
+                  </svg>
+                </div>
+
+                <!-- Badge -->
+                <div style="display:inline-block; padding:9px 26px; background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.45); border-radius:50px; margin-bottom:20px;">
+                  <span style="color:#ffffff; font-size:11px; letter-spacing:4px; font-weight:700; text-transform:uppercase;">✦ CHÚC MỪNG THĂNG HẠNG ✦</span>
+                </div>
+
+                <!-- Brand -->
+                <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:300; letter-spacing:7px; text-transform:uppercase; text-shadow:0 2px 12px rgba(0,0,0,0.35);">
+                  TYONCAO
+                </h1>
+                <p style="margin:6px 0 0; color:#ffffff; font-size:11px; letter-spacing:9px; font-weight:500; text-transform:uppercase; opacity:0.9;">
+                  Global Optimizer
+                </p>
+
+                <!-- Divider -->
+                <div style="width:110px; height:1px; background:linear-gradient(90deg,transparent,#ffffff,transparent); margin:24px auto 0; opacity:0.8;"></div>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ═══════════ ICON HẠNG VỚI GLOW ═══════════ -->
+          <tr>
+            <td style="text-align:center; padding:0; background:#ffffff;">
+              <div style="margin:-52px auto 0; width:104px; height:104px; background:${metallicGradient}; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 15px 45px ${tierColor}80, 0 0 0 6px #ffffff, 0 0 0 9px ${tierColor}30; position:relative; z-index:2;">                ${tierIconSvg}
+              </div>
+            </td>
+          </tr>
+
+          <!-- ═══════════ TIÊU ĐỀ ═══════════ -->
+          <tr>
+            <td style="padding:32px 44px 8px; text-align:center; background:#ffffff;">
+              <p style="margin:0 0 6px; color:#94a3b8; font-size:11px; letter-spacing:3px; font-weight:600; text-transform:uppercase;">
+                Kính gửi Quý khách ${fullName}
+              </p>
+              <h2 style="margin:0 0 10px; color:#0f172a; font-size:13px; font-weight:600; letter-spacing:4px; text-transform:uppercase;">
+                Bạn đã chính thức trở thành
+              </h2>
+              <h1 style="margin:0 0 16px; font-size:44px; font-weight:900; letter-spacing:3px; line-height:1.05; background:${metallicGradient}; -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; color:${tierColorSecondary}; text-transform:uppercase;">
+                ${tierDisplayName}
+              </h1>
+              <p style="margin:0 0 4px; color:${tierColorSecondary}; font-size:14px; font-weight:600; font-style:italic; letter-spacing:0.5px;">
+                "${tagline}"
+              </p>
+            </td>
+          </tr>
+
+          <!-- ═══════════ MÔ TẢ ═══════════ -->
+          <tr>
+            <td style="padding:20px 44px; text-align:center; background:#ffffff;">
+              <p style="margin:0; color:#475569; font-size:15px; line-height:1.8;">
+                Với tổng nạp tích lũy <strong style="color:${tierColorSecondary}; font-size:16px;">${new Intl.NumberFormat('vi-VN').format(totalDeposit)} VNĐ</strong>, 
+                Quý khách đã chính thức bước vào hàng ngũ <strong style="color:${tierColorSecondary};">${tierDisplayName}</strong> của TYON Optimizer. 
+                Đây là sự ghi nhận xứng đáng cho lòng tin và sự đồng hành của Quý khách.
+              </p>
+            </td>
+          </tr>
+
+          <!-- ═══════════ ĐẶC QUYỀN ═══════════ -->
+          <tr>
+            <td style="padding:8px 44px 24px; background:#ffffff;">
+              <!-- Header box -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${metallicGradient}; border-radius:16px 16px 0 0;">
+                <tr>
+                  <td style="padding:18px 24px; text-align:center;">
+                    <div style="display:inline-flex; align-items:center; gap:12px;">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="#ffffff"/></svg>
+                      <span style="color:#ffffff; font-size:12px; font-weight:800; letter-spacing:3px; text-transform:uppercase;">ĐẶC QUYỀN CỦA BẠN</span>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="#ffffff"/></svg>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+              <!-- Body box -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:linear-gradient(180deg, ${tierColorLight} 0%, #ffffff 100%); border:1px solid ${tierColor}40; border-top:none; border-radius:0 0 16px 16px;">
+                <tr>
+                  <td style="padding:20px 24px;">
+                    ${benefits.map((b, i) => `
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:${i === benefits.length - 1 ? '0' : '12px'};">
+                        <tr>
+                          <td width="34" style="vertical-align:top; padding-top:1px;">
+                            <div style="width:26px; height:26px; border-radius:50%; background:linear-gradient(135deg, ${tierColor}, ${tierColorSecondary}); display:flex; align-items:center; justify-content:center; box-shadow:0 4px 10px ${tierColor}50;">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M5 13L9 17L19 7" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </div>
+                          </td>
+                          <td style="padding-left:14px; vertical-align:top; padding-top:4px;">
+                            <span style="color:#1e293b; font-size:14px; line-height:1.6; font-weight:600;">${b}</span>
+                          </td>
+                        </tr>
+                      </table>
+                    `).join('')}
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- ═══════════ CTA BUTTON ═══════════ -->
+          <tr>
+            <td style="padding:8px 44px 32px; text-align:center; background:#ffffff;">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:0 auto;">
+                <tr>
+                  <td align="center" style="border-radius:50px; background:${metallicGradient}; box-shadow:0 14px 36px ${tierColor}70, 0 0 0 1px rgba(255,255,255,0.25) inset;">
+                    <a href="https://buyoptimizertc.infinityfreeapp.com/" 
+                       style="display:inline-block; padding:17px 52px; color:#ffffff; font-size:14px; font-weight:800; letter-spacing:2.5px; text-decoration:none; text-transform:uppercase; border-radius:50px; text-shadow:0 2px 4px rgba(0,0,0,0.25);">
+                      ✦ KHÁM PHÁ NGAY ✦
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:16px 0 0; color:#94a3b8; font-size:12px; font-style:italic;">
+                Đặc quyền có hiệu lực ngay khi Quý khách nhận được email này
+              </p>
+            </td>
+          </tr>
+
+          <!-- ═══════════ SIGN OFF ═══════════ -->
+          <tr>
+            <td style="padding:0 44px 32px; background:#ffffff;">
+              <div style="border-top:1px solid #e2e8f0; padding-top:24px;">
+                <p style="margin:0; color:#475569; font-size:14px;">Trân trọng,</p>
+                <p style="margin:8px 0 0; color:#0f172a; font-size:16px; font-weight:800; letter-spacing:0.5px;">Đội ngũ TyonCao Global Optimizer</p>
+                <p style="margin:6px 0 0; color:#94a3b8; font-size:11px; font-style:italic; letter-spacing:3px; text-transform:uppercase;">Excellence in Global Optimization</p>
+              </div>
+            </td>
+          </tr>
+
+          <!-- ═══════════ FOOTER ═══════════ -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%); padding:32px 40px; text-align:center;">
+              <div style="width:60px; height:1px; background:linear-gradient(90deg,transparent,${tierColor},transparent); margin:0 auto 16px;"></div>
+              <p style="margin:0 0 8px; color:${tierColor}; font-size:11px; letter-spacing:4px; font-weight:700; text-transform:uppercase;">TyonCao Global Optimizer</p>
+              <p style="margin:0 0 4px; color:#94a3b8; font-size:12px;">TYONCGO247 &nbsp;•&nbsp; <span style="color:#e2e8f0;">(+84) 97 8568 965</span></p>
+              <p style="margin:0; color:#64748b; font-size:11px; letter-spacing:1px;">tyonoptimizer.infinityfreeapp.com</p>
+              <p style="margin:16px 0 0; font-size:10px; color:#475569; letter-spacing:1.5px;">© ${new Date().getFullYear()} TYONCAO • ALL RIGHTS RESERVED</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`,
+
     kycSuccess: (fullName) => `
 <!DOCTYPE html>
 <html lang="vi">
@@ -504,14 +760,17 @@ const emailTemplates = {
               
               <!-- Icon -->
               <div style="text-align:center; margin-bottom:24px;">
-                <div style="display:inline-block; width:64px; height:64px; line-height:64px; background:#fef5e7; border-radius:50%;">
-                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#e67e22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle; margin-top:17px;">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                  </svg>
-                </div>
-              </div>
-
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
+                <tr>
+                  <td width="64" height="64" align="center" valign="middle" style="width:64px; height:64px; background:#fef5e7; border-radius:50%; text-align:center; vertical-align:middle;">
+                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#e67e22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin:0 auto;">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                    </svg>
+                  </td>
+                </tr>
+              </table>
+            </div>
               <h2 style="margin:0 0 12px 0; color:#0f172a; font-size:22px; font-weight:700; text-align:center;">
                 Yêu cầu đặt lại mật khẩu
               </h2>
@@ -961,6 +1220,70 @@ async function getUserByUsername(username) {
         [username.trim()]
     );
     return rows[0] || null;
+}
+
+function calculateTier(totalDeposit) {
+    if (totalDeposit >= 10000000) return 'Diamond';
+    if (totalDeposit >= 2000000) return 'Gold';
+    if (totalDeposit >= 500000) return 'Silver';
+    return 'Member';
+}
+
+function getTierLevel(tierName) {
+    return TIER_CONFIG[tierName]?.tierLevel || 1;
+}
+
+async function checkAndSendTierUpgrade(username, oldDepositHistory) {
+    try {
+        const dbUser = await getUserByUsername(username);
+        if (!dbUser || !dbUser.email) return;
+        const newDeposits = safeParseJSON(dbUser.deposit_history);
+        const newTotalDeposit = newDeposits.reduce((sum, item) => {
+            if (item.method === 'refund_rejected_order' || item.method === 'admin_refund') return sum;
+            return sum + (Number(item.amount) || 0);
+        }, 0);
+        const oldDeposits = oldDepositHistory || [];
+        const oldTotalDeposit = oldDeposits.reduce((sum, item) => {
+            if (item.method === 'refund_rejected_order' || item.method === 'admin_refund') return sum;
+            return sum + (Number(item.amount) || 0);
+        }, 0);
+
+        const oldTier = calculateTier(oldTotalDeposit);
+        const newTier = calculateTier(newTotalDeposit);
+        if (getTierLevel(newTier) <= getTierLevel(oldTier)) {
+            console.log(`ℹ️ [Tier] ${username}: ${oldTier} → ${newTier} (không thăng hạng, skip email)`);
+            return;
+        }
+
+        console.log(`🎉 [Tier] ${username} THĂNG HẠNG: ${oldTier} → ${newTier} (tổng nạp: ${newTotalDeposit}đ)`);
+        const tier = TIER_CONFIG[newTier];
+        if (!tier) return;
+        const subjectMap = {
+            Silver:  `🥈 [TyonCao] Bạn đã thăng hạng BẠC — Ưu tiên hỗ trợ < 2h`,
+            Gold:    `🥇 [TyonCao] Bạn đã thăng hạng VÀNG — Giảm 10% mọi file`,
+            Diamond: `💎 [TyonCao] Bạn đã thăng hạng KIM CƯƠNG — Đặc quyền VIP 24/7`,
+        };
+        const emailSubject = subjectMap[newTier] || `✨ [TyonCao] Bạn đã thăng hạng ${tier.displayName}`;
+        queueEmail(
+            dbUser.email,
+            emailSubject,
+            emailTemplates.tierUpgrade(
+                dbUser.full_name || username,
+                tier.name,
+                tier.displayName,
+                tier.color,
+                tier.colorSecondary,
+                tier.colorLight,
+                tier.metallicGradient,
+                tier.iconSvg,
+                tier.tagline,
+                newTotalDeposit,
+                tier.benefits
+            )
+        ).catch(err => console.error('❌ Lỗi gửi mail tier upgrade:', err.message));
+    } catch (err) {
+        console.error('❌ checkAndSendTierUpgrade error:', err.message);
+    }
 }
 
 function safeParseJSON(value, fallback = []) {
@@ -2142,6 +2465,10 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
 
             await client.query('COMMIT');
             console.log(`💰 [AUDIT] ${req.admin.username} cộng ${addAmount}đ cho ${targetUsername} (${oldBalance} → ${newBalance})`);
+            setImmediate(() => {
+                checkAndSendTierUpgrade(targetUsername, depositHistory.slice(0, -1))
+                    .catch(err => console.error('Tier check error:', err.message));
+            });
 
             res.json({
                 success: true,
@@ -2777,10 +3104,15 @@ app.post('/api/pay2s-webhook', async (req, res) => {
                             at: new Date().toISOString()
                         });
                         await client.query(
-                            'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
-                            [amount, JSON.stringify(depositHistory), user.username]
-                        );
-                        console.log(`💰 Đã cộng ${amount}đ cho ${username} qua Pay2S (transId=${transId})`);
+                'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
+                [amount, JSON.stringify(depositHistory), user.username]
+            );
+            console.log(`💰 Đã cộng ${amount}đ cho ${username} qua Pay2S (transId=${transId})`);
+            const oldHistoryForTier = depositHistory.slice(0, -1);
+            setImmediate(() => {
+                checkAndSendTierUpgrade(user.username, oldHistoryForTier)
+                    .catch(err => console.error('Tier check error:', err.message));
+            });
                     } else {
                         console.log(`⚠️ Pay2S transId ${transId} đã xử lý, bỏ qua (chống replay)`);
                     }
@@ -2876,10 +3208,15 @@ app.post('/api/webhub-webhook', async (req, res) => {
                                 at: new Date().toISOString()
                             });
                             await client.query(
-                                'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
-                                [amount, JSON.stringify(depositHistory), user.username]
-                            );
-                            console.log(`💰 Đã cộng ${amount}đ cho ${username} qua WebHub (transId=${transId})`);
+                'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
+                [amount, JSON.stringify(depositHistory), user.username]
+            );
+            console.log(`💰 Đã cộng ${amount}đ cho ${username} qua WebHub (transId=${transId})`);
+            const oldHistoryForTier = depositHistory.slice(0, -1);
+            setImmediate(() => {
+                checkAndSendTierUpgrade(user.username, oldHistoryForTier)
+                    .catch(err => console.error('Tier check error:', err.message));
+            });
                         }
                     }
                     await client.query('COMMIT');
