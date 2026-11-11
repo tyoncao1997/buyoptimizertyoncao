@@ -18,6 +18,7 @@ const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
+const googleTempUsers = new Map(); 
 
 if (!TELEGRAM_ENABLED) {
     console.warn('⚠️ Telegram Bot chưa cấu hình đầy đủ (cần TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME)');
@@ -4398,6 +4399,102 @@ app.post('/api/admin/notifications/test', requireAdminToken, async (req, res) =>
         }
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/auth/google/callback', async (req, res) => {
+    const { code } = req.query;
+    if (!code) return res.redirect(`${FRONTEND_URL}?error=GoogleAuthFailed`);
+
+    try {
+        const baseUrl = process.env.BASE_URL || 'https://buyoptimizertyoncao.onrender.com';
+        const redirectUri = `${baseUrl}/api/auth/google/callback`;
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                code,
+                client_id: GOOGLE_CLIENT_ID,
+                client_secret: process.env.GOOGLE_CLIENT_SECRET,
+                redirect_uri: redirectUri,
+                grant_type: 'authorization_code'
+            })
+        });
+        const tokenData = await tokenRes.json();
+
+        if (tokenData.error) throw new Error(tokenData.error_description);
+        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+            headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        const googleUser = await userRes.json();
+        const email = (googleUser.email || '').toLowerCase();
+        const fullName = googleUser.name || email.split('@')[0];
+        const tempToken = crypto.randomBytes(32).toString('hex');
+        googleTempUsers.set(tempToken, { email, fullName, expires: Date.now() + 5 * 60000 });
+        res.redirect(`${FRONTEND_URL}/?google_token=${tempToken}`);
+    } catch (err) {
+        console.error('Google callback error:', err);
+        res.redirect(`${FRONTEND_URL}?error=GoogleAuthFailed`);
+    }
+});
+
+app.post('/api/user/google-me', async (req, res) => {
+    try {
+        const { token } = req.body;
+        const tempUser = googleTempUsers.get(token);
+
+        if (!tempUser || Date.now() > tempUser.expires) {
+            return res.status(401).json({ success: false, error: 'Token Google không hợp lệ hoặc đã hết hạn' });
+        }
+        googleTempUsers.delete(token);
+        let { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [tempUser.email]);
+        let dbUser = rows[0];
+
+        if (!dbUser) {
+            let baseUsername = tempUser.email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
+            const { rows: checkUser } = await pool.query('SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)', [baseUsername]);
+            if (checkUser.length > 0) {
+                baseUsername = baseUsername + Math.floor(1000 + Math.random() * 9000);
+            }
+            const insertQuery = `
+                INSERT INTO users (username, password, full_name, email, balance, purchase_history, deposit_history, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING *
+            `;
+            const { rows: newRows } = await pool.query(insertQuery, [
+                baseUsername, '', tempUser.fullName, tempUser.email, 0, JSON.stringify([]), JSON.stringify([])
+            ]);
+            dbUser = newRows[0];
+            console.log(`✅ [Google Auth] Tạo tài khoản mới: ${dbUser.username} (${dbUser.full_name})`);
+        } else {
+            console.log(`✅ [Google Auth] Đăng nhập tài khoản cũ: ${dbUser.username}`);
+        }
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
+        
+        await pool.query('DELETE FROM sessions WHERE username = $1', [dbUser.username]);
+        await pool.query(
+            `INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
+             VALUES ($1, $2, NOW(), NOW(), $3)`,
+            [dbUser.username, sessionToken, expiresAt]
+        );
+
+        res.json({
+            success: true,
+            user: {
+                username: dbUser.username,
+                fullName: dbUser.full_name,
+                email: dbUser.email,
+                balance: Number(dbUser.balance),
+                depositHistory: safeParseJSON(dbUser.deposit_history),
+                purchaseHistory: safeParseJSON(dbUser.purchase_history)
+            },
+            sessionToken,
+            expiresAt: expiresAt.toISOString()
+        });
+
+    } catch (err) {
+        console.error('Google login error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
