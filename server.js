@@ -1375,15 +1375,14 @@ async function requireUserSession(req, res, next) {
         const lastActivity = new Date(session.last_activity).getTime();
         const createdAt = new Date(session.created_at).getTime();
         const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
-
-        if (now - lastActivity > SESSION_IDLE_TIMEOUT_MS) {
+        const isRememberedSession = expiresAt && (expiresAt - createdAt > 2 * 24 * 60 * 60 * 1000);
+        if (!isRememberedSession && (now - lastActivity > SESSION_IDLE_TIMEOUT_MS)) {
             return res.status(401).json({ success: false, error: 'Phiên đã hết hạn do không hoạt động quá 60 phút.', code: 'IDLE_TIMEOUT' });
         }
-        if (now - createdAt > SESSION_ABSOLUTE_TIMEOUT_MS || (expiresAt && now > expiresAt)) {
+        if (now > expiresAt) {
             await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
             return res.status(401).json({ success: false, error: 'Phiên đã hết hạn tuyệt đối. Vui lòng đăng nhập lại.', code: 'ABSOLUTE_TIMEOUT' });
         }
-
         pool.query('UPDATE sessions SET last_activity = NOW() WHERE token = $1', [token])
             .catch(err => console.error('Heartbeat failed:', err.message));
 
@@ -2785,7 +2784,7 @@ app.post('/api/reset-password', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
     try {
-        const { username, password } = req.body;
+        const { username, password, rememberMe } = req.body;
         if (!username || !password) return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
 
         const dbUser = await getUserByUsername(username);
@@ -2806,7 +2805,9 @@ app.post('/api/login', async (req, res) => {
         if (!passwordMatch) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
 
         const sessionToken = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
+        const expiresAt = rememberMe 
+            ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+            : new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
 
         await pool.query('DELETE FROM sessions WHERE username = $1', [dbUser.username]);
         await pool.query(
@@ -2825,8 +2826,15 @@ app.post('/api/login', async (req, res) => {
             balance: Number(dbUser.balance),
             depositHistory, purchaseHistory
         };
-        console.log(`✅ [Login] ${dbUser.username} - Token: ${sessionToken.slice(0, 8)}...`);
-        res.json({ success: true, user: userData, sessionToken, expiresAt: expiresAt.toISOString() });
+        
+        console.log(`✅ [Login] ${dbUser.username} - Remember: ${rememberMe ? 'YES' : 'NO'}`);
+        res.json({ 
+            success: true, 
+            user: userData, 
+            sessionToken, 
+            isRemembered: !!rememberMe, 
+            expiresAt: expiresAt.toISOString() 
+        });
     } catch (err) {
         console.error('Login error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
