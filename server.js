@@ -66,10 +66,8 @@ const TIER_CONFIG = {
         minDeposit: 500000,
         benefits: [
             'Tất cả quyền lợi Member',
-            'Ưu tiên hỗ trợ (phản hồi < 2 giờ)',
-            'Badge "Silver" trên hồ sơ',
-            'Giảm 5% khi mua file trong shop',
-            'Tặng 1 file Regmouse bất kỳ (trị giá < 200k)'
+            'Ưu tiên hỗ trợ',
+            'Badge "Silver" trên hồ sơ'
         ]
     },
     Gold: {
@@ -85,11 +83,10 @@ const TIER_CONFIG = {
         minDeposit: 2000000,
         benefits: [
             'Tất cả quyền lợi Silver',
-            'Ưu tiên duyệt bài/forum ads (duyệt ngay)',
+            'Ưu tiên duyệt bài/forum',
             'Badge "Gold" hiển thị nổi bật với viền vàng',
-            'Giảm 10% khi mua file trong shop',
-            'Tặng 2 file Regmouse bất kỳ (trị giá < 500k)',
-            'Hỗ trợ qua kênh riêng Telegram/Zalo'
+            'Tỉ tệ thưởng Voucher',
+            'Hỗ trợ qua kênh riêng Telegram/Zalo/WhatsApp'
         ]
     },
     Diamond: {
@@ -107,9 +104,7 @@ const TIER_CONFIG = {
             'Tất cả quyền lợi Gold',
             'Ưu tiên xử lý đơn lớn (VIP 24/7)',
             'Badge "Diamond" phát sáng độc quyền',
-            'Giảm 15% khi mua file trong shop',
-            'Tặng file độc quyền mỗi tháng',
-            'Support riêng 1-1 qua UltraView/AnyDesk',
+            'Support riêng',
             'Tham gia nhóm VIP Discord/Telegram',
             'Ưu tiên nhận khuyến mãi sớm nhất'
         ]
