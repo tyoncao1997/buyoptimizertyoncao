@@ -762,11 +762,8 @@ const emailTemplates = {
               <div style="text-align:center; margin-bottom:24px;">
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
                 <tr>
-                  <td width="64" height="64" align="center" valign="middle" style="width:64px; height:64px; background:#fef5e7; border-radius:50%; text-align:center; vertical-align:middle;">
-                    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#e67e22" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin:0 auto;">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                    </svg>
+                  <td width="64" height="64" align="center" valign="middle" style="width:64px; height:64px; background:#fef5e7; border-radius:50%; text-align:center; vertical-align:middle; font-size:32px; line-height:64px;">
+                    🔒
                   </td>
                 </tr>
               </table>
