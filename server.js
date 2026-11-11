@@ -4430,28 +4430,53 @@ app.get('/api/auth/google/callback', async (req, res) => {
         const email = (googleUser.email || '').toLowerCase();
         const fullName = googleUser.name || email.split('@')[0];
         const tempToken = crypto.randomBytes(32).toString('hex');
-        googleTempUsers.set(tempToken, { email, fullName, expires: Date.now() + 5 * 60000 });
-        res.redirect(`${FRONTEND_URL}/?google_token=${tempToken}`);
+        await pool.query('DELETE FROM sessions WHERE username = $1', ['GOOGLE_' + email]);
+        await pool.query(
+            `INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
+             VALUES ($1, $2, NOW(), NOW(), NOW() + INTERVAL '5 minutes')`,
+            ['GOOGLE_' + email, tempToken]
+        );
+        const payload = Buffer.from(JSON.stringify({ email, fullName })).toString('base64url');
+        
+        res.redirect(`${FRONTEND_URL}/?google_token=${tempToken}&data=${payload}`);
     } catch (err) {
         console.error('Google callback error:', err);
         res.redirect(`${FRONTEND_URL}?error=GoogleAuthFailed`);
     }
 });
 
+
 app.post('/api/user/google-me', async (req, res) => {
     try {
-        const { token } = req.body;
-        const tempUser = googleTempUsers.get(token);
+        const { token, dataPayload } = req.body;
+        const { rows: sessionRows } = await pool.query(
+            'SELECT username FROM sessions WHERE token = $1 AND expires_at > NOW()',
+            [token]
+        );
 
-        if (!tempUser || Date.now() > tempUser.expires) {
+        if (sessionRows.length === 0) {
             return res.status(401).json({ success: false, error: 'Token Google không hợp lệ hoặc đã hết hạn' });
         }
-        googleTempUsers.delete(token);
-        let { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [tempUser.email]);
+
+        const tempUsername = sessionRows[0].username;
+        if (!tempUsername.startsWith('GOOGLE_')) {
+            return res.status(400).json({ success: false, error: 'Token không hợp lệ' });
+        }
+
+        const email = tempUsername.replace('GOOGLE_', '');
+        let fullName = email.split('@')[0];
+        if (dataPayload) {
+            try {
+                const decoded = JSON.parse(Buffer.from(dataPayload, 'base64url').toString());
+                fullName = decoded.fullName || fullName;
+            } catch (e) {}
+        }
+        await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+        let { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
         let dbUser = rows[0];
 
         if (!dbUser) {
-            let baseUsername = tempUser.email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
+            let baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
             const { rows: checkUser } = await pool.query('SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)', [baseUsername]);
             if (checkUser.length > 0) {
                 baseUsername = baseUsername + Math.floor(1000 + Math.random() * 9000);
@@ -4461,12 +4486,9 @@ app.post('/api/user/google-me', async (req, res) => {
                 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING *
             `;
             const { rows: newRows } = await pool.query(insertQuery, [
-                baseUsername, '', tempUser.fullName, tempUser.email, 0, JSON.stringify([]), JSON.stringify([])
+                baseUsername, '', fullName, email, 0, JSON.stringify([]), JSON.stringify([])
             ]);
             dbUser = newRows[0];
-            console.log(`✅ [Google Auth] Tạo tài khoản mới: ${dbUser.username} (${dbUser.full_name})`);
-        } else {
-            console.log(`✅ [Google Auth] Đăng nhập tài khoản cũ: ${dbUser.username}`);
         }
         const sessionToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
