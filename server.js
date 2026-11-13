@@ -4659,18 +4659,43 @@ app.post('/api/admin/notifications/list', requireAdminToken, async (req, res) =>
 app.post('/api/admin/notifications/detail', requireAdminToken, async (req, res) => {
     try {
         const { id } = req.body;
-        const { rows: notifRows } = await pool.query('SELECT * FROM notifications WHERE id=$1', [id]);
-        if (notifRows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy' });
-
-        const { rows: recipients } = await pool.query(
-            `SELECT username, email, status, error_message, sent_at 
-             FROM notification_recipients WHERE notification_id=$1 ORDER BY id`,
-            [id]
+        const notifId = parseInt(id);
+        if (!notifId || isNaN(notifId)) {
+            return res.status(400).json({ success: false, error: 'ID thông báo không hợp lệ' });
+        }
+        const { rows: notifRows } = await pool.query(
+            'SELECT * FROM notifications WHERE id = $1',
+            [notifId]
         );
-        res.json({ success: true, notification: notifRows[0], recipients });
+        if (notifRows.length === 0) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy thông báo' });
+        }
+        const notification = notifRows[0];
+        const { rows: recipients } = await pool.query(
+            `SELECT 
+                username, 
+                email, 
+                read_status,      -- Cột trạng thái đọc (unread/read)
+                email_status,     -- Cột trạng thái gửi mail (pending/sent/failed/no_email)
+                error_message, 
+                sent_at 
+             FROM notification_recipients 
+             WHERE notification_id = $1 
+             ORDER BY id ASC`,
+            [notifId]
+        );
+        res.json({
+            success: true,
+            notification,
+            recipients
+        });
+
     } catch (err) {
-        console.error('Lỗi notification:', err.message);
-        res.status(500).json({ success: false, error: 'Có lỗi xảy ra, vui lòng thử lại sau.' });
+        console.error('❌ Lỗi lấy chi tiết thông báo:', err.message);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Có lỗi xảy ra khi lấy chi tiết thông báo: ' + err.message 
+        });
     }
 });
 
