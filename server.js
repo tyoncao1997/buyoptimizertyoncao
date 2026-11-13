@@ -4400,18 +4400,38 @@ async function processNotificationQueue(notificationId) {
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
     try {
         const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
+        
+        // 1. Validate PIN
         if (!verifyPin(pin)) {
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
         }
-        if (!title || !subject || !content) {
-            return res.status(400).json({ success: false, error: 'Thiếu tiêu đề / chủ đề / nội dung' });
+        
+        // 2. Validate các trường bắt buộc
+        if (!title || !title.trim()) {
+            return res.status(400).json({ success: false, error: 'Thiếu tiêu đề' });
         }
-        if (title.length > 200 || subject.length > 200) {
-            return res.status(400).json({ success: false, error: 'Tiêu đề/chủ đề quá dài (tối đa 200 ký tự)' });
+        if (!subject || !subject.trim()) {
+            return res.status(400).json({ success: false, error: 'Thiếu chủ đề' });
         }
-        if (content.length > 50000) {
-            return res.status(400).json({ success: false, error: 'Nội dung quá dài (tối đa 50k ký tự)' });
-        }
+        
+        // 3. QUAN TRỌNG: Đảm bảo content luôn có giá trị
+        // Nếu admin không nhập content, tự động tạo nội dung mặc định từ title
+        const finalContent = (content && content.trim()) 
+            ? content.trim() 
+            : `<p>${title.trim()}</p>`;  // Fallback: dùng title làm nội dung
+        
+        // 4. Tạo text thuần từ HTML
+        const contentText = stripHtml(finalContent);
+        
+        // 5. Log để debug
+        console.log('📝 [Notification] Tạo thông báo mới:');
+        console.log('  - Title:', title);
+        console.log('  - Subject:', subject);
+        console.log('  - Content HTML (độ dài):', finalContent.length);
+        console.log('  - Content Text (độ dài):', contentText.length);
+        console.log('  - Content HTML (100 ký tự đầu):', finalContent.substring(0, 100));
+        
+        // 6. Lấy danh sách người nhận
         let recipients = [];
         if (targetType === 'specific') {
             if (!Array.isArray(usernames) || usernames.length === 0) {
@@ -4430,6 +4450,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             );
             recipients = rows;
         }
+
         const { rows: unsubRows } = await pool.query('SELECT LOWER(email) AS email FROM email_unsubscribes');
         const unsubSet = new Set(unsubRows.map(r => r.email));
         const beforeCount = recipients.length;
@@ -4438,6 +4459,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         if (recipients.length === 0) {
             return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe)' });
         }
+        
         const { rows: notifInsert } = await pool.query(
             `INSERT INTO notifications 
              (title, subject, content_html, content_text, target_type, target_usernames, sent_by, total_recipients, status)
@@ -4445,15 +4467,18 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             [
                 title.trim(),
                 subject.trim(),
-                content,
-                stripHtml(content),
+                finalContent,     
+                contentText,     
                 targetType,
                 targetType === 'specific' ? usernames : null,
                 req.admin.username,
                 recipients.length
             ]
         );
+        
         const notifId = notifInsert[0].id;
+        console.log(`✅ [Notification] Đã tạo ID #${notifId} với nội dung dài ${finalContent.length} ký tự`);
+
         const values = recipients.map((_, i) =>
             `($1, $${i * 3 + 2}, $${i * 3 + 3}, $${i * 3 + 4})`
         ).join(',');
@@ -4465,7 +4490,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             `INSERT INTO notification_recipients (notification_id, username, email, status) VALUES ${values}`,
             params
         );
-        console.log(`📨 Admin ${req.admin.username} tạo notification #${notifId} | Type: ${type} | ${recipients.length} recipients`);
+
         if (type === 'email' || type === 'all') {
             setImmediate(() => processNotificationQueue(notifId));
         } else {
@@ -4477,9 +4502,9 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
                 `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE notification_id = $1`,
                 [notifId]
             );
-            
             console.log(`✅ Đã lưu thông báo hệ thống #${notifId} (Không gửi mail)`);
         }
+        
         res.json({
             success: true,
             notificationId: notifId,
