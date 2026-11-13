@@ -4643,6 +4643,47 @@ app.post('/api/user/update-avatar', requireUserSession, async (req, res) => {
     }
 });
 
+app.get('/api/user/notifications', requireUserSession, async (req, res) => {
+    try {
+        const { rows } = await pool.query(`
+            SELECT n.id, n.title, n.subject, n.content_html, n.created_at, r.status as read_status
+            FROM notifications n
+            JOIN notification_recipients r ON n.id = r.notification_id
+            WHERE LOWER(r.username) = LOWER($1)
+            ORDER BY n.created_at DESC
+            LIMIT 50
+        `, [req.username]);
+        const unreadCount = rows.filter(n => n.read_status !== 'read').length;
+        res.json({ success: true, notifications: rows, unreadCount });
+    } catch (err) {
+        console.error('Lỗi lấy thông báo user:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/user/notifications/read', requireUserSession, async (req, res) => {
+    try {
+        const { notificationId } = req.body;
+        if (notificationId) {
+            await pool.query(`
+                UPDATE notification_recipients 
+                SET status = 'read' 
+                WHERE LOWER(username) = LOWER($1) AND notification_id = $2
+            `, [req.username, notificationId]);
+        } else {
+            await pool.query(`
+                UPDATE notification_recipients 
+                SET status = 'read' 
+                WHERE LOWER(username) = LOWER($1)
+            `, [req.username]);
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Lỗi đánh dấu đã đọc:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => {
     console.error('❌ Server error:', err);
