@@ -4103,9 +4103,12 @@ setInterval(async () => {
 
 async function initNotificationTables() {
     try {
+        // Xóa bảng cũ nếu tồn tại (chỉ chạy 1 lần khi khởi động)
         await pool.query(`DROP TABLE IF EXISTS notification_recipients CASCADE;`);
         await pool.query(`DROP TABLE IF EXISTS notifications CASCADE;`);
         await pool.query(`DROP TABLE IF EXISTS email_unsubscribes CASCADE;`);
+
+        // Tạo lại bảng với cấu trúc chính xác
         await pool.query(`
             CREATE TABLE notifications (
                 id SERIAL PRIMARY KEY,
