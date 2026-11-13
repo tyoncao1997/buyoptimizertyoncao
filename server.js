@@ -2971,21 +2971,64 @@ app.post('/api/logout', async (req, res) => {
     }
 });
 
+app.get('/api/user/notifications', requireAuthOnly, async (req, res) => { 
+    try {
+        const { rows } = await pool.query(`
+            SELECT n.id, n.title, n.subject, n.content_html, n.created_at, r.status as read_status
+            FROM notifications n
+            JOIN notification_recipients r ON n.id = r.notification_id
+            WHERE LOWER(r.username) = LOWER($1)
+            ORDER BY n.created_at DESC
+            LIMIT 50
+        `, [req.username]);
+        const unreadCount = rows.filter(n => n.read_status !== 'read').length;
+        res.json({ success: true, notifications: rows, unreadCount });
+    } catch (err) {
+        console.error('Lỗi lấy thông báo user:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/user/notifications/read', requireAuthOnly, async (req, res) => {
+    try {
+        const { notificationId } = req.body;
+        if (notificationId) {
+            await pool.query(`
+                UPDATE notification_recipients 
+                SET status = 'read' 
+                WHERE LOWER(username) = LOWER($1) AND notification_id = $2
+            `, [req.username, notificationId]);
+        } else {
+            await pool.query(`
+                UPDATE notification_recipients 
+                SET status = 'read' 
+                WHERE LOWER(username) = LOWER($1)
+            `, [req.username]);
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Lỗi đánh dấu đã đọc:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
 app.get('/api/user/:username', requireAuthOnly, async (req, res) => {
     try {
-        if (req.username.toLowerCase() !== req.params.username.trim().toLowerCase()) {
+        const requestedUsername = req.params.username.trim();
+        if (req.username.toLowerCase() !== requestedUsername.toLowerCase()) {
             return res.status(403).json({ success: false, error: 'Không có quyền truy cập' });
         }
-        const dbUser = await getUserByUsername(req.params.username);
-        if (!dbUser) return res.status(404).json({ success: false, error: 'User not found' });
-
+        const dbUser = await getUserByUsername(requestedUsername);
+        if (!dbUser) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+        }
         res.json({
             success: true,
             user: {
                 username: dbUser.username,
                 avatar: dbUser.avatar_url || '',
-                balance: Number(dbUser.balance),
-                fullName: dbUser.full_name,
+                balance: Number(dbUser.balance) || 0,
+                fullName: dbUser.full_name || '',
                 email: dbUser.email || '',
                 phone: dbUser.phone || '', 
                 telegram: dbUser.telegram || '',
@@ -2993,12 +3036,14 @@ app.get('/api/user/:username', requireAuthOnly, async (req, res) => {
                 hometown: dbUser.hometown || '',  
                 status: dbUser.status || 'active',
                 kyc_status: dbUser.kyc_status || 'unverified',
+                createdAt: dbUser.created_at,
                 depositHistory: safeParseJSON(dbUser.deposit_history),
                 purchaseHistory: safeParseJSON(dbUser.purchase_history)
             }
         });
+
     } catch (err) {
-        console.error('Get user error:', err);
+        console.error('Lỗi API Get User:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -4684,47 +4729,6 @@ app.post('/api/user/update-avatar', requireUserSession, async (req, res) => {
         res.json({ success: true, message: 'Cập nhật ảnh đại diện thành công!' });
     } catch (err) {
         console.error('Update avatar error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
-    }
-});
-
-app.get('/api/user/notifications', requireAuthOnly, async (req, res) => {
-    try {
-        const { rows } = await pool.query(`
-            SELECT n.id, n.title, n.subject, n.content_html, n.created_at, r.status as read_status
-            FROM notifications n
-            JOIN notification_recipients r ON n.id = r.notification_id
-            WHERE LOWER(r.username) = LOWER($1)
-            ORDER BY n.created_at DESC
-            LIMIT 50
-        `, [req.username]);
-        const unreadCount = rows.filter(n => n.read_status !== 'read').length;
-        res.json({ success: true, notifications: rows, unreadCount });
-    } catch (err) {
-        console.error('Lỗi lấy thông báo user:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
-    }
-});
-
-app.post('/api/user/notifications/read', requireAuthOnly, async (req, res) => {
-    try {
-        const { notificationId } = req.body;
-        if (notificationId) {
-            await pool.query(`
-                UPDATE notification_recipients 
-                SET status = 'read' 
-                WHERE LOWER(username) = LOWER($1) AND notification_id = $2
-            `, [req.username, notificationId]);
-        } else {
-            await pool.query(`
-                UPDATE notification_recipients 
-                SET status = 'read' 
-                WHERE LOWER(username) = LOWER($1)
-            `, [req.username]);
-        }
-        res.json({ success: true });
-    } catch (err) {
-        console.error('Lỗi đánh dấu đã đọc:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
