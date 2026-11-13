@@ -4458,7 +4458,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         recipients = recipients.filter(r => !unsubSet.has(r.email.toLowerCase()));
 
         // Lọc bỏ các bản ghi rác (đề phòng lỗi dữ liệu cũ)
-        recipients = recipients.filter(r => r.username && r.email);
+        recipients = recipients.filter(r => r.username && r.email && String(r.username).trim() !== '' && String(r.email).trim() !== '');
 
         if (recipients.length === 0) {
             return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe hoặc lỗi dữ liệu)' });
@@ -4483,21 +4483,20 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         
         const notifId = notifInsert[0].id;
         console.log(`✅ [Notification] Đã tạo ID #${notifId} với nội dung dài ${finalContent.length} ký tự`);
-
         const values = recipients.map((_, i) =>
             `($1::int, $${i * 3 + 2}::text, $${i * 3 + 3}::text, 'unread', 'pending')`
         ).join(',');
         
         const params = [notifId];
         recipients.forEach(r => {
-            params.push(String(r.username), String(r.email)); 
+            params.push(String(r.username).trim(), String(r.email).trim()); 
         });
+        console.log(`📝 [Notification] Đang insert ${recipients.length} người nhận...`);
 
         await pool.query(
             `INSERT INTO notification_recipients (notification_id, username, email, read_status, email_status) VALUES ${values}`,
             params
         );
-
         if (type === 'email' || type === 'all') {
             setImmediate(() => processNotificationQueue(notifId));
             console.log(`📧 [Notification] Đã xếp hàng gửi Email cho thông báo #${notifId}`);
