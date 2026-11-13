@@ -4103,13 +4103,16 @@ setInterval(async () => {
 
 async function initNotificationTables() {
     try {
+        await pool.query(`DROP TABLE IF EXISTS notification_recipients CASCADE;`);
+        await pool.query(`DROP TABLE IF EXISTS notifications CASCADE;`);
+        await pool.query(`DROP TABLE IF EXISTS email_unsubscribes CASCADE;`);
         await pool.query(`
-            CREATE TABLE IF NOT EXISTS notifications (
+            CREATE TABLE notifications (
                 id SERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
                 subject TEXT NOT NULL,
-                content_html TEXT,           -- Cho phép NULL
-                content_text TEXT,           -- Cho phép NULL
+                content_html TEXT,
+                content_text TEXT,
                 target_type VARCHAR(20) DEFAULT 'all',
                 target_usernames TEXT[],
                 sent_by TEXT NOT NULL,
@@ -4121,30 +4124,28 @@ async function initNotificationTables() {
                 completed_at TIMESTAMP
             );
 
-            CREATE TABLE IF NOT EXISTS notification_recipients (
-            id SERIAL PRIMARY KEY,
-            notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
-            username TEXT NOT NULL,
-            email TEXT NOT NULL,
-            read_status VARCHAR(20) DEFAULT 'unread', -- Cột riêng cho Web (unread/read)
-            email_status VARCHAR(20) DEFAULT 'pending', -- Cột riêng cho Email (pending/sent/failed)
-            error_message TEXT,
-            sent_at TIMESTAMP
-        );
+            CREATE TABLE notification_recipients (
+                id SERIAL PRIMARY KEY,
+                notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
+                username TEXT NOT NULL,
+                email TEXT NOT NULL,
+                read_status VARCHAR(20) DEFAULT 'unread',
+                email_status VARCHAR(20) DEFAULT 'pending',
+                error_message TEXT,
+                sent_at TIMESTAMP
+            );
 
-            CREATE TABLE IF NOT EXISTS email_unsubscribes (
+            CREATE TABLE email_unsubscribes (
                 id SERIAL PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT NOW()
             );
 
-            CREATE INDEX IF NOT EXISTS idx_notif_recipients_notif 
-                ON notification_recipients(notification_id);
-            CREATE INDEX IF NOT EXISTS idx_unsub_email 
-                ON email_unsubscribes(LOWER(email));
+            CREATE INDEX idx_notif_recipients_notif ON notification_recipients(notification_id);
+            CREATE INDEX idx_unsub_email ON email_unsubscribes(LOWER(email));
         `);
-        console.log(' Đã khởi tạo bảng notifications');
+        console.log('✅ Đã khởi tạo lại bảng notifications với cấu trúc chuẩn');
     } catch (err) {
         console.error('❌ Lỗi tạo bảng notification:', err.message);
     }
@@ -4412,7 +4413,7 @@ async function processNotificationQueue(notificationId) {
 
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
     try {
-        // 1. Lấy dữ liệu từ Frontend (subject có thể không có nếu gửi từ tab Hệ thống)
+        // 1. Lấy dữ liệu từ Frontend
         const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
 
         // 2. Kiểm tra PIN
@@ -4425,10 +4426,8 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             return res.status(400).json({ success: false, error: 'Thiếu tiêu đề' });
         }
 
-        // Nếu không có subject (do tab Hệ thống không gửi), tự động lấy bằng title
         const finalSubject = (subject && subject.trim()) ? subject.trim() : title.trim();
         const finalTitle = title.trim();
-        
         const finalContent = (content && content.trim()) ? content.trim() : `<p>${finalTitle}</p>`;
         const contentText = stripHtml(finalContent);
 
@@ -4457,10 +4456,15 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         const beforeCount = recipients.length;
         recipients = recipients.filter(r => !unsubSet.has(r.email.toLowerCase()));
 
-        // Lọc bỏ các bản ghi rác (đề phòng lỗi dữ liệu cũ)
-        recipients = recipients.filter(r => r.username && r.email && String(r.username).trim() !== '' && String(r.email).trim() !== '');
+        // Lọc bỏ hoàn toàn dữ liệu rác trước khi insert
+        const finalRecipients = recipients.filter(r => 
+            r.username && 
+            r.email && 
+            String(r.username).trim() !== '' && 
+            String(r.email).trim() !== ''
+        );
 
-        if (recipients.length === 0) {
+        if (finalRecipients.length === 0) {
             return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe hoặc lỗi dữ liệu)' });
         }
 
@@ -4477,33 +4481,39 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
                 targetType,
                 targetType === 'specific' ? usernames : null,
                 req.admin.username, 
-                recipients.length
+                finalRecipients.length
             ]
         );
         
         const notifId = notifInsert[0].id;
         console.log(`✅ [Notification] Đã tạo ID #${notifId} với nội dung dài ${finalContent.length} ký tự`);
-        const values = recipients.map((_, i) =>
-            `($1::int, $${i * 3 + 2}::text, $${i * 3 + 3}::text, 'unread', 'pending')`
+
+        // 7. Tạo danh sách người nhận (Bảng notification_recipients)
+        // Ép kiểu tường minh cho TẤT CẢ các tham số để tránh lỗi "could not determine data type"
+        const values = finalRecipients.map((_, i) =>
+            `($1::int, $${i * 3 + 2}::text, $${i * 3 + 3}::text, 'unread'::varchar, 'pending'::varchar)`
         ).join(',');
         
         const params = [notifId];
-        recipients.forEach(r => {
+        finalRecipients.forEach(r => {
             params.push(String(r.username).trim(), String(r.email).trim()); 
         });
-        console.log(`📝 [Notification] Đang insert ${recipients.length} người nhận...`);
+        
+        console.log(`📝 [Notification] Insert ${finalRecipients.length} người nhận với ${values.split(',').length} tham số...`);
 
         await pool.query(
             `INSERT INTO notification_recipients (notification_id, username, email, read_status, email_status) VALUES ${values}`,
             params
         );
+
+        // 8. Xử lý theo loại thông báo (Email / Hệ thống / Tất cả)
         if (type === 'email' || type === 'all') {
             setImmediate(() => processNotificationQueue(notifId));
             console.log(`📧 [Notification] Đã xếp hàng gửi Email cho thông báo #${notifId}`);
         } else {
             await pool.query(
                 `UPDATE notifications SET status = 'completed', total_sent = $1, completed_at = NOW() WHERE id = $2`,
-                [recipients.length, notifId]
+                [finalRecipients.length, notifId]
             );
             await pool.query(
                 `UPDATE notification_recipients SET email_status = 'no_email' WHERE notification_id = $1`,
@@ -4511,14 +4521,16 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             );
             console.log(`💻 [Notification] Đã lưu thông báo Hệ thống #${notifId} (Không gửi mail)`);
         }
+
+        // 9. Trả kết quả về cho Frontend
         res.json({
             success: true,
             notificationId: notifId,
-            totalRecipients: recipients.length,
-            filteredUnsubscribed: beforeCount - recipients.length,
+            totalRecipients: finalRecipients.length,
+            filteredUnsubscribed: beforeCount - finalRecipients.length,
             message: (type === 'email' || type === 'all') 
-                ? `Đã xếp hàng gửi Email tới ${recipients.length} người.` 
-                : `Đã gửi thông báo Hệ thống tới ${recipients.length} người.`
+                ? `Đã xếp hàng gửi Email tới ${finalRecipients.length} người.` 
+                : `Đã gửi thông báo Hệ thống tới ${finalRecipients.length} người.`
         });
 
     } catch (err) {
