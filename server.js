@@ -1362,16 +1362,31 @@ async function requireUserSession(req, res, next) {
             return res.status(401).json({ success: false, error: 'Chưa đăng nhập', code: 'NO_TOKEN' });
         }
         const token = authHeader.substring(7);
-        const { rows } = await pool.query('SELECT * FROM sessions WHERE token = $1', [token]);
+        const { rows } = await pool.query(`
+            SELECT s.*, u.status AS user_status
+            FROM sessions s
+            LEFT JOIN users u ON LOWER(s.username) = LOWER(u.username)
+            WHERE s.token = $1
+        `, [token]);
+
         if (rows.length === 0) {
             return res.status(401).json({ success: false, error: 'Phiên không hợp lệ', code: 'INVALID_TOKEN' });
         }
         const session = rows[0];
+        if (session.user_status === 'banned') {
+            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+            return res.status(403).json({ 
+                success: false, 
+                error: 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ Admin để được hỗ trợ.', 
+                code: 'ACCOUNT_BANNED' 
+            });
+        }
         const now = Date.now();
         const lastActivity = new Date(session.last_activity).getTime();
         const createdAt = new Date(session.created_at).getTime();
         const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
         const isRememberedSession = expiresAt && (expiresAt - createdAt > 2 * 24 * 60 * 60 * 1000);
+
         if (!isRememberedSession && (now - lastActivity > SESSION_IDLE_TIMEOUT_MS)) {
             return res.status(401).json({ success: false, error: 'Phiên đã hết hạn do không hoạt động quá 60 phút.', code: 'IDLE_TIMEOUT' });
         }
@@ -1390,7 +1405,6 @@ async function requireUserSession(req, res, next) {
         return res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 }
-
 function verifyAdmin(username, password) {
     if (username !== ADMIN_USERNAME) return false;
     try {
@@ -1665,6 +1679,8 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         const kycPending = Number(kycRows[0].count);
         const { rows: allUsers } = await pool.query('SELECT * FROM users');
         const totalUsers = allUsers.length;
+        const bannedUsers = allUsers.filter(u => u.status === 'banned').length;
+        const faUsers = 0; 
 
         let cashIn = 0, actualRevenue = 0, totalIncurred = 0;
         const spenderMap = new Map();
@@ -1679,7 +1695,6 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
                     cashIn += amt;
                 }
             });
-
             const purchases = safeParseJSON(u.purchase_history);
             const spent = purchases.reduce((s, p) => {
                 const price = Number(p.price) || 0;
@@ -1690,11 +1705,18 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         });
         const { rows: orderRows } = await pool.query('SELECT * FROM orders');
         const totalOrders = orderRows.length;
-        const paidOrdersList = orderRows.filter(o => o.status === 'paid' || o.status === 'completed'); // Gộp đơn đã thanh toán và hoàn thành
+        const paidOrdersList = orderRows.filter(o => o.status === 'paid' || o.status === 'completed');
         const pendingOrdersList = orderRows.filter(o => o.status === 'pending');
         const underpaidOrdersList = orderRows.filter(o => o.status === 'underpaid');
         const rejectedOrdersList = orderRows.filter(o => o.status === 'rejected' || o.status === 'cancelled');
         const pendingAmount = pendingOrdersList.reduce((sum, o) => sum + Number(o.amount), 0);
+        const totalProcessedOrders = paidOrdersList.length + rejectedOrdersList.length;
+        const successOrders = paidOrdersList.length;
+        let actualPerformance = 100;
+        
+        if (totalProcessedOrders > 0) {
+            actualPerformance = ((successOrders / totalProcessedOrders) * 100).toFixed(1);
+        }
 
         let orderRevenue = 0;
         paidOrdersList.forEach(o => {
@@ -1750,7 +1772,10 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
         const totalRealRevenue = actualRevenue + orderRevenue;
         const netProfit = totalRealRevenue - inputCost - totalIncurred;
         res.json({
-            success: true, totalUsers, kycPending, totalFeedbacks,
+            success: true, 
+            totalUsers, 
+            kycPending, 
+            totalFeedbacks,
             totalRevenue: totalRealRevenue,
             cashIn, 
             incurred: totalIncurred,
@@ -1762,6 +1787,10 @@ app.post('/api/admin/stats', requireAdminToken, async (req, res) => {
             paidOrders: paidOrdersList.length,
             underpaidOrdersList: underpaidOrdersList.length,
             revenue7d,
+            bannedUsers: bannedUsers, 
+            faUsers: faUsers,
+            performance: Number(actualPerformance),
+
             orderStatus: {
                 paid: orderRows.filter(o => o.status === 'paid').length, 
                 completed: orderRows.filter(o => o.status === 'completed').length,
@@ -1980,6 +2009,46 @@ app.post('/api/create-order', async (req, res) => {
         });
     } catch (err) {
         console.error('Lỗi tạo đơn hàng:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/admin/toggle-user-status', requireAdminToken, async (req, res) => {
+    try {
+        const { username, status, pin } = req.body;
+        if (!verifyPin(pin)) {
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
+        if (!username || typeof username !== 'string') {
+            return res.status(400).json({ success: false, error: 'Thiếu username' });
+        }
+        if (!['active', 'banned'].includes(status)) {
+            return res.status(400).json({ success: false, error: 'Status phải là "active" hoặc "banned"' });
+        }
+        const { rowCount } = await pool.query(
+            'UPDATE users SET status = $1 WHERE LOWER(username) = LOWER($2)',
+            [status, username]
+        );
+
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy user' });
+        }
+        if (status === 'banned') {
+            const delResult = await pool.query(
+                'DELETE FROM sessions WHERE LOWER(username) = LOWER($1)',
+                [username]
+            );
+            console.log(`🔒 [ADMIN] ${req.admin.username} đã KHÓA tài khoản ${username} (xóa ${delResult.rowCount} session) | IP=${req.ip}`);
+        } else {
+            console.log(`🔓 [ADMIN] ${req.admin.username} đã MỞ KHÓA tài khoản ${username} | IP=${req.ip}`);
+        }
+
+        res.json({
+            success: true,
+            message: `Đã ${status === 'banned' ? 'KHÓA' : 'MỞ KHÓA'} tài khoản ${username} thành công`
+        });
+    } catch (err) {
+        console.error('Toggle user status error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -2799,6 +2868,9 @@ app.post('/api/login', async (req, res) => {
             }
         }
         if (!passwordMatch) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+        if (dbUser.status === 'banned') {
+    return res.status(403).json({ success: false, error: 'Tài khoản đã bị khóa.' });
+}
 
         const sessionToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = rememberMe 
