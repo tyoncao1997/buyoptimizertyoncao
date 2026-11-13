@@ -4314,7 +4314,6 @@ async function processNotificationQueue(notificationId) {
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
     try {
         const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
-
         if (!verifyPin(pin)) {
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
         }
@@ -4327,7 +4326,6 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         if (content.length > 50000) {
             return res.status(400).json({ success: false, error: 'Nội dung quá dài (tối đa 50k ký tự)' });
         }
-
         let recipients = [];
         if (targetType === 'specific') {
             if (!Array.isArray(usernames) || usernames.length === 0) {
@@ -4340,14 +4338,12 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             );
             recipients = rows;
         } else {
-
             const { rows } = await pool.query(
                 `SELECT username, full_name, email FROM users 
                  WHERE email IS NOT NULL AND email <> ''`
             );
             recipients = rows;
         }
-
         const { rows: unsubRows } = await pool.query('SELECT LOWER(email) AS email FROM email_unsubscribes');
         const unsubSet = new Set(unsubRows.map(r => r.email));
         const beforeCount = recipients.length;
@@ -4356,7 +4352,6 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         if (recipients.length === 0) {
             return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe)' });
         }
-
         const { rows: notifInsert } = await pool.query(
             `INSERT INTO notifications 
              (title, subject, content_html, content_text, target_type, target_usernames, sent_by, total_recipients, status)
@@ -4373,7 +4368,6 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             ]
         );
         const notifId = notifInsert[0].id;
-
         const values = recipients.map((_, i) =>
             `($1, $${i * 3 + 2}, $${i * 3 + 3}, $${i * 3 + 4})`
         ).join(',');
@@ -4381,12 +4375,10 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         recipients.forEach(r => {
             params.push(r.username, r.email, 'pending');
         });
-
         await pool.query(
             `INSERT INTO notification_recipients (notification_id, username, email, status) VALUES ${values}`,
             params
         );
-
         console.log(`📨 Admin ${req.admin.username} tạo notification #${notifId} | Type: ${type} | ${recipients.length} recipients`);
         if (type === 'email' || type === 'all') {
             setImmediate(() => processNotificationQueue(notifId));
@@ -4396,12 +4388,12 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
                 [recipients.length, notifId]
             );
             await pool.query(
-                `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE recipient_id = $1`,
+                `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE notification_id = $1`,
                 [notifId]
             );
+            
             console.log(`✅ Đã lưu thông báo hệ thống #${notifId} (Không gửi mail)`);
         }
-
         res.json({
             success: true,
             notificationId: notifId,
@@ -4409,6 +4401,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             filteredUnsubscribed: beforeCount - recipients.length,
             message: `Đã xếp hàng gửi tới ${recipients.length} người. Quá trình gửi diễn ra nền.`
         });
+
     } catch (err) {
         console.error('❌ Lỗi tạo notification:', err);
         res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
