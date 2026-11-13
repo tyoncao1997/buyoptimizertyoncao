@@ -2862,9 +2862,14 @@ app.get('/api/user/:username', requireUserSession, async (req, res) => {
             success: true,
             user: {
                 username: dbUser.username,
+                avatar: dbUser.avatar_url || '',
                 balance: Number(dbUser.balance),
                 fullName: dbUser.full_name,
                 email: dbUser.email || '',
+                phone: dbUser.phone || '', 
+                telegram: dbUser.telegram || '',
+                job: dbUser.job || '',  
+                hometown: dbUser.hometown || '',  
                 kyc_status: dbUser.kyc_status || 'unverified',
                 depositHistory: safeParseJSON(dbUser.deposit_history),
                 purchaseHistory: safeParseJSON(dbUser.purchase_history)
@@ -3421,6 +3426,29 @@ app.get('/api/download-all', requireUserSession, async (req, res) => {
     } catch (error) {
         console.error('Lỗi hệ thống khi tải file:', error);
         if (!res.headersSent) res.status(500).send('Lỗi kết nối server.');
+    }
+});
+
+app.post('/api/admin/update-user-info', requireAdminToken, async (req, res) => {
+    try {
+        const { username, fullName, phone, telegram, job, hometown } = req.body;
+        
+        if (!username) return res.status(400).json({ success: false, error: 'Thiếu username' });
+
+        const { rowCount } = await pool.query(`
+            UPDATE users 
+            SET full_name = $1, phone = $2, telegram = $3, job = $4, hometown = $5
+            WHERE LOWER(username) = LOWER($6)
+        `, [fullName || '', phone || '', telegram || '', job || '', hometown || '', username]);
+
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+        }
+
+        res.json({ success: true, message: 'Cập nhật thông tin thành công!' });
+    } catch (err) {
+        console.error('Update user info error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
@@ -4444,6 +4472,7 @@ app.post('/api/user/google-me', async (req, res) => {
     try {
         const { token } = req.body;
         if (!token) return res.status(400).json({ success: false, error: 'Thiếu token' });
+        
         const { rows: tempRows } = await pool.query(
             'SELECT * FROM google_temp_tokens WHERE token = $1 AND expires_at > NOW()',
             [token]
@@ -4452,9 +4481,9 @@ app.post('/api/user/google-me', async (req, res) => {
         if (tempRows.length === 0) {
             return res.status(401).json({ success: false, error: 'Token Google không hợp lệ hoặc đã hết hạn' });
         }
-
-        const { email, full_name: fullName } = tempRows[0];
+        const { email, full_name: fullName, picture } = tempRows[0];
         await pool.query('DELETE FROM google_temp_tokens WHERE token = $1', [token]);
+        
         let { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
         let dbUser = rows[0];
 
@@ -4465,14 +4494,18 @@ app.post('/api/user/google-me', async (req, res) => {
                 baseUsername = baseUsername + Math.floor(1000 + Math.random() * 9000);
             }
             const insertQuery = `
-                INSERT INTO users (username, password, full_name, email, balance, purchase_history, deposit_history, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING *
+                INSERT INTO users (username, password, full_name, email, balance, purchase_history, deposit_history, avatar_url, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING *
             `;
             const { rows: newRows } = await pool.query(insertQuery, [
-                baseUsername, '', fullName, email, 0, JSON.stringify([]), JSON.stringify([])
+                baseUsername, '', fullName, email, 0, JSON.stringify([]), JSON.stringify([]), picture || null
             ]);
             dbUser = newRows[0];
+        } else if (!dbUser.avatar_url && picture) {
+            await pool.query('UPDATE users SET avatar_url = $1 WHERE username = $2', [picture, dbUser.username]);
+            dbUser.avatar_url = picture;
         }
+
         const sessionToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
         
@@ -4490,6 +4523,8 @@ app.post('/api/user/google-me', async (req, res) => {
                 fullName: dbUser.full_name,
                 email: dbUser.email,
                 balance: Number(dbUser.balance),
+                // THÊM: Trả avatar về cho Frontend
+                avatar: dbUser.avatar_url || null, 
                 depositHistory: safeParseJSON(dbUser.deposit_history),
                 purchaseHistory: safeParseJSON(dbUser.purchase_history)
             },
@@ -4499,6 +4534,28 @@ app.post('/api/user/google-me', async (req, res) => {
 
     } catch (err) {
         console.error('Google login error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/user/update-avatar', requireUserSession, async (req, res) => {
+    try {
+        const { username, avatarBase64 } = req.body;
+        
+        if (req.username.toLowerCase() !== username.toLowerCase()) {
+            return res.status(403).json({ success: false, error: 'Không có quyền' });
+        }
+        if (!avatarBase64 || !avatarBase64.startsWith('data:image/')) {
+            return res.status(400).json({ success: false, error: 'Ảnh không hợp lệ' });
+        }
+        if (avatarBase64.length > 2.5 * 1024 * 1024) {
+            return res.status(400).json({ success: false, error: 'Ảnh quá lớn (tối đa 2MB)' });
+        }
+
+        await pool.query('UPDATE users SET avatar_url = $1 WHERE LOWER(username) = LOWER($2)', [avatarBase64, username]);
+        res.json({ success: true, message: 'Cập nhật ảnh đại diện thành công!' });
+    } catch (err) {
+        console.error('Update avatar error:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
