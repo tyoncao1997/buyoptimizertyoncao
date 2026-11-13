@@ -1405,6 +1405,7 @@ async function requireAuthOnly(req, res, next) {
             return res.status(401).json({ success: false, error: 'Chưa đăng nhập', code: 'NO_TOKEN' });
         }
         const token = authHeader.substring(7);
+
         const { rows } = await pool.query(`
             SELECT s.*, u.status AS user_status
             FROM sessions s
@@ -1415,17 +1416,13 @@ async function requireAuthOnly(req, res, next) {
         if (rows.length === 0) {
             return res.status(401).json({ success: false, error: 'Phiên không hợp lệ', code: 'INVALID_TOKEN' });
         }
-        const session = rows[0];
         
+        const session = rows[0];
         const now = Date.now();
-        const lastActivity = new Date(session.last_activity).getTime();
         const createdAt = new Date(session.created_at).getTime();
         const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
         const isRememberedSession = expiresAt && (expiresAt - createdAt > 2 * 24 * 60 * 60 * 1000);
 
-        if (!isRememberedSession && (now - lastActivity > SESSION_IDLE_TIMEOUT_MS)) {
-            return res.status(401).json({ success: false, error: 'Phiên đã hết hạn do không hoạt động quá 60 phút.', code: 'IDLE_TIMEOUT' });
-        }
         if (now > expiresAt) {
             await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
             return res.status(401).json({ success: false, error: 'Phiên đã hết hạn tuyệt đối. Vui lòng đăng nhập lại.', code: 'ABSOLUTE_TIMEOUT' });
