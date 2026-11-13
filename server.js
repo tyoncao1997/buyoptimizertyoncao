@@ -4470,7 +4470,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         console.log(`✅ [Notification] Đã tạo ID #${notifId} với nội dung dài ${finalContent.length} ký tự`);
 
         const values = recipients.map((_, i) =>
-            `($1, $${i * 3 + 2}, $${i * 3 + 3}, 'unread', 'pending')`
+        `($1::int, $${i * 3 + 2}::text, $${i * 3 + 3}::text, 'unread', 'pending')`
         ).join(',');
         
         const params = [notifId];
