@@ -4491,7 +4491,7 @@ async function processNotificationQueue(notificationId) {
 }
 
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
-    // BƯỚC 1: Validate dữ liệu đầu vào TRƯỚC KHI kết nối DB (tiết kiệm tài nguyên)
+    // BƯỚC 1: Validate dữ liệu đầu vào
     const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
 
     if (!verifyPin(pin)) {
@@ -4511,63 +4511,44 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
     const contentText = stripHtml(finalContent);
     const startTime = Date.now();
 
-    // BƯỚC 3: Kết nối DB với timeout
+    // BƯỚC 3: Kết nối DB
     const client = await pool.connect();
     try {
-        // Cấu hình timeout cho transaction (30 giây)
-        await client.query('SET LOCAL statement_timeout = 30000');
+        await client.query('SET LOCAL statement_timeout = 30000'); // Timeout 30s
 
         // BƯỚC 4: Lấy danh sách người nhận
         let recipients = [];
         if (targetType === 'specific') {
-            const cleanUsernames = usernames
-                .map(u => String(u).trim().toLowerCase())
-                .filter(u => u.length > 0);
-            
-            if (cleanUsernames.length === 0) {
-                throw new Error('Danh sách username không hợp lệ');
-            }
+            const cleanUsernames = usernames.map(u => String(u).trim().toLowerCase()).filter(u => u.length > 0);
+            if (cleanUsernames.length === 0) throw new Error('Danh sách username không hợp lệ');
 
             const { rows } = await client.query(
                 `SELECT username, full_name, email FROM users 
-                 WHERE LOWER(username) = ANY($1::text[]) 
-                   AND email IS NOT NULL 
-                   AND email <> ''`,
+                 WHERE LOWER(username) = ANY($1::text[]) AND email IS NOT NULL AND email <> ''`,
                 [cleanUsernames]
             );
             recipients = rows;
         } else {
-            // Lấy TẤT CẢ người dùng có email
             const { rows } = await client.query(
-                `SELECT username, full_name, email FROM users 
-                 WHERE email IS NOT NULL 
-                   AND email <> ''`
+                `SELECT username, full_name, email FROM users WHERE email IS NOT NULL AND email <> ''`
             );
             recipients = rows;
         }
 
-        console.log(`🔍 [Notification] Tìm thấy ${recipients.length} người dùng có email`);
-
         // BƯỚC 5: Lọc unsubscribe
-        const { rows: unsubRows } = await client.query(
-            'SELECT LOWER(email) AS email FROM email_unsubscribes'
-        );
+        const { rows: unsubRows } = await client.query('SELECT LOWER(email) AS email FROM email_unsubscribes');
         const unsubSet = new Set(unsubRows.map(r => r.email));
         const beforeCount = recipients.length;
         recipients = recipients.filter(r => !unsubSet.has(r.email.toLowerCase()));
 
-        // BƯỚC 6: Lọc dữ liệu rác + Loại bỏ trùng lặp email
+        // BƯỚC 6: Lọc dữ liệu rác + Loại bỏ trùng lặp
         const seenEmails = new Set();
         const finalRecipients = recipients.filter(r => {
             if (!r.username || !r.email) return false;
             const cleanUsername = String(r.username).trim().normalize('NFC');
             const cleanEmail = String(r.email).trim().toLowerCase().normalize('NFC');
-            
-            if (!cleanUsername || !cleanEmail) return false;
-            if (seenEmails.has(cleanEmail)) return false;
-            
+            if (!cleanUsername || !cleanEmail || seenEmails.has(cleanEmail)) return false;
             seenEmails.add(cleanEmail);
-            // Ghi đè lại giá trị đã chuẩn hóa
             r.username = cleanUsername;
             r.email = cleanEmail;
             return true;
@@ -4576,7 +4557,6 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         if (finalRecipients.length === 0) {
             throw new Error('Không có người nhận hợp lệ (đã lọc unsubscribe, trùng lặp hoặc dữ liệu rỗng)');
         }
-
         console.log(`✅ [Notification] Sau khi lọc: ${finalRecipients.length} người nhận hợp lệ`);
 
         // BƯỚC 7: Bắt đầu TRANSACTION
@@ -4586,73 +4566,42 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         const { rows: notifInsert } = await client.query(
             `INSERT INTO notifications 
              (title, subject, content_html, content_text, target_type, target_usernames, sent_by, total_recipients, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') 
-             RETURNING id`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING id`,
             [
-                finalTitle, 
-                finalSubject, 
-                finalContent, 
-                contentText, 
-                targetType,
+                finalTitle, finalSubject, finalContent, contentText, targetType,
                 targetType === 'specific' ? usernames : null,
-                req.admin.username, 
-                finalRecipients.length
+                req.admin.username, finalRecipients.length
             ]
         );
         const notifId = notifInsert[0].id;
         console.log(`✅ [Notification] Đã tạo ID #${notifId} | ${finalRecipients.length} người | Loại: ${type}`);
 
-        // 7.2: Insert danh sách người nhận theo lô (BATCH_SIZE = 500)
-        const BATCH_SIZE = 500;
+        // 7.2: Insert TỪNG NGƯỜI MỘT (Phương pháp an toàn nhất, không bao giờ lỗi $4)
         let insertedCount = 0;
-
-        for (let i = 0; i < finalRecipients.length; i += BATCH_SIZE) {
-            const batch = finalRecipients.slice(i, i + BATCH_SIZE);
-            
-            // Tạo câu lệnh VALUES động với ép kiểu tường minh cho TẤT CẢ tham số
-            const values = batch.map((_, idx) =>
-                `($1::int, $${idx * 3 + 2}::text, $${idx * 3 + 3}::text, 'unread'::varchar, 'pending'::varchar)`
-            ).join(',');
-
-            const params = [notifId];
-            batch.forEach(r => {
-                params.push(r.username, r.email);
-            });
-
+        for (const r of finalRecipients) {
             await client.query(
                 `INSERT INTO notification_recipients 
                  (notification_id, username, email, read_status, email_status) 
-                 VALUES ${values}`,
-                params
+                 VALUES ($1::int, $2::text, $3::text, 'unread'::varchar, 'pending'::varchar)`,
+                [notifId, String(r.username).trim(), String(r.email).trim()]
             );
-            insertedCount += batch.length;
-            console.log(`📦 [Notification] Đã insert lô ${Math.ceil((i+1)/BATCH_SIZE)}: ${insertedCount}/${finalRecipients.length}`);
+            insertedCount++;
         }
-
         console.log(`📝 [Notification] Đã insert thành công ${insertedCount}/${finalRecipients.length} người nhận`);
 
         // BƯỚC 8: Xử lý theo loại thông báo
         if (type === 'email' || type === 'all') {
-            await client.query(
-                `UPDATE notifications SET status = 'sending' WHERE id = $1`,
-                [notifId]
-            );
+            await client.query(`UPDATE notifications SET status = 'sending' WHERE id = $1`, [notifId]);
             await client.query('COMMIT');
-            
-            // Xếp hàng gửi email chạy nền
             setImmediate(() => processNotificationQueue(notifId));
             console.log(`📧 [Notification] Đã COMMIT & xếp hàng gửi Email #${notifId}`);
         } else {
             await client.query(
-                `UPDATE notifications 
-                 SET status = 'completed', total_sent = $1, completed_at = NOW() 
-                 WHERE id = $2`,
+                `UPDATE notifications SET status = 'completed', total_sent = $1, completed_at = NOW() WHERE id = $2`,
                 [finalRecipients.length, notifId]
             );
             await client.query(
-                `UPDATE notification_recipients 
-                 SET email_status = 'no_email' 
-                 WHERE notification_id = $1`,
+                `UPDATE notification_recipients SET email_status = 'no_email' WHERE notification_id = $1`,
                 [notifId]
             );
             await client.query('COMMIT');
@@ -4674,23 +4623,13 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
 
     } catch (err) {
         try { await client.query('ROLLBACK'); } catch (_) {}
-        
         console.error('❌ [Notification] Lỗi:', err.message);
         console.error('❌ [Notification] Stack:', err.stack);
         
-        // Phân loại lỗi để trả về thông báo phù hợp
-        let userMessage = 'Lỗi server không xác định.';
-        if (err.code === '42P18') {
-            userMessage = 'Lỗi cấu trúc bảng (parameter type). Vui lòng liên hệ admin để fix database.';
-        } else if (err.code === '23505') {
-            userMessage = 'Lỗi trùng lặp dữ liệu. Vui lòng thử lại.';
-        } else if (err.message.includes('timeout')) {
-            userMessage = 'Quá thời gian xử lý (30s). Vui lòng giảm số lượng người nhận.';
-        } else if (err.message.includes('Không có người nhận')) {
-            userMessage = err.message;
-        } else {
-            userMessage = err.message;
-        }
+        let userMessage = err.message;
+        if (err.code === '42P18') userMessage = 'Lỗi cấu trúc bảng (parameter type). Vui lòng liên hệ admin.';
+        else if (err.code === '23505') userMessage = 'Lỗi trùng lặp dữ liệu. Vui lòng thử lại.';
+        else if (err.message.includes('timeout')) userMessage = 'Quá thời gian xử lý (30s). Vui lòng giảm số lượng người nhận.';
 
         res.status(500).json({ 
             success: false, 
