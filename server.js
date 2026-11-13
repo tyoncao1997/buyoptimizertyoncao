@@ -973,8 +973,13 @@ const pollingLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, max: 500,
     message: { error: 'Quá nhiều request. Vui lòng thử lại sau.' }
 });
+const notificationLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, max: 1000,
+    message: { error: 'Quá nhiều request thông báo. Vui lòng thử lại sau.' }
+});
 
 app.use('/api/order-status/', pollingLimiter);
+app.use('/api/user/notifications', notificationLimiter);
 app.use('/api/admin/', adminLimiter);
 app.use('/api/', globalLimiter);
 
@@ -2104,24 +2109,6 @@ app.post('/api/admin/toggle-user-status', requireAdminToken, async (req, res) =>
     }
 });
 
-app.get('/api/order-status/:orderCode', async (req, res) => {
-    try {
-        const { orderCode } = req.params;
-        const { rows } = await pool.query('SELECT * FROM orders WHERE order_code = $1', [orderCode]);
-        if (rows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
-        const o = rows[0];
-        res.json({
-            success: true, orderCode: o.order_code, status: o.status,
-            key: (o.status === 'paid' || o.status === 'completed') ? o.key : null,
-            amount: Number(o.amount), paidAmount: Number(o.paid_amount || 0),
-            paidAt: o.paid_at, planName: o.plan_name
-        });
-    } catch (err) {
-        console.error('Lỗi check order:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
-    }
-});
-
 async function handleSePayWebhook(req, res) {
     try {
         const signature = req.headers['x-sepay-signature'];
@@ -2974,40 +2961,53 @@ app.post('/api/logout', async (req, res) => {
 app.get('/api/user/notifications', requireAuthOnly, async (req, res) => { 
     try {
         const { rows } = await pool.query(`
-            SELECT n.id, n.title, n.subject, n.content_html, n.created_at, r.status as read_status
+            SELECT 
+                n.id, 
+                n.title, 
+                n.subject, 
+                n.content_html, 
+                n.content_text,  -- THÊM TRƯỜNG NÀY
+                n.created_at, 
+                r.status as read_status
             FROM notifications n
             JOIN notification_recipients r ON n.id = r.notification_id
             WHERE LOWER(r.username) = LOWER($1)
             ORDER BY n.created_at DESC
             LIMIT 50
         `, [req.username]);
-        const unreadCount = rows.filter(n => n.read_status !== 'read').length;
-        res.json({ success: true, notifications: rows, unreadCount });
+        const notifications = rows.map(n => ({
+            ...n,
+            content_html: n.content_html || n.content_text || '',
+            content_text: n.content_text || ''
+        }));
+        
+        const unreadCount = notifications.filter(n => n.read_status !== 'read').length;
+        res.json({ success: true, notifications, unreadCount });
     } catch (err) {
         console.error('Lỗi lấy thông báo user:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
-app.post('/api/user/notifications/read', requireAuthOnly, async (req, res) => {
+app.delete('/api/user/notifications/:id', requireAuthOnly, async (req, res) => {
     try {
-        const { notificationId } = req.body;
-        if (notificationId) {
-            await pool.query(`
-                UPDATE notification_recipients 
-                SET status = 'read' 
-                WHERE LOWER(username) = LOWER($1) AND notification_id = $2
-            `, [req.username, notificationId]);
-        } else {
-            await pool.query(`
-                UPDATE notification_recipients 
-                SET status = 'read' 
-                WHERE LOWER(username) = LOWER($1)
-            `, [req.username]);
+        const notificationId = parseInt(req.params.id);
+        if (isNaN(notificationId)) {
+            return res.status(400).json({ success: false, error: 'ID không hợp lệ' });
         }
-        res.json({ success: true });
+
+        const { rowCount } = await pool.query(`
+            DELETE FROM notification_recipients 
+            WHERE LOWER(username) = LOWER($1) AND notification_id = $2
+        `, [req.username, notificationId]);
+
+        if (rowCount === 0) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy thông báo' });
+        }
+
+        res.json({ success: true, message: 'Đã xóa thông báo' });
     } catch (err) {
-        console.error('Lỗi đánh dấu đã đọc:', err);
+        console.error('Lỗi xóa thông báo:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -4096,15 +4096,15 @@ async function initNotificationTables() {
                 id SERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
                 subject TEXT NOT NULL,
-                content_html TEXT NOT NULL,
-                content_text TEXT,
-                target_type VARCHAR(20) DEFAULT 'all',  -- 'all' | 'specific' | 'active'
-                target_usernames TEXT[],                 -- NULL nếu gửi all
+                content_html TEXT,           -- Cho phép NULL
+                content_text TEXT,           -- Cho phép NULL
+                target_type VARCHAR(20) DEFAULT 'all',
+                target_usernames TEXT[],
                 sent_by TEXT NOT NULL,
                 total_recipients INTEGER DEFAULT 0,
                 total_sent INTEGER DEFAULT 0,
                 total_failed INTEGER DEFAULT 0,
-                status VARCHAR(20) DEFAULT 'pending',    -- pending | sending | completed | failed
+                status VARCHAR(20) DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT NOW(),
                 completed_at TIMESTAMP
             );
@@ -4114,7 +4114,7 @@ async function initNotificationTables() {
                 notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
                 username TEXT NOT NULL,
                 email TEXT NOT NULL,
-                status VARCHAR(20) DEFAULT 'pending',    -- pending | sent | failed
+                status VARCHAR(20) DEFAULT 'pending',
                 error_message TEXT,
                 sent_at TIMESTAMP
             );
