@@ -1373,14 +1373,6 @@ async function requireUserSession(req, res, next) {
             return res.status(401).json({ success: false, error: 'Phiên không hợp lệ', code: 'INVALID_TOKEN' });
         }
         const session = rows[0];
-        if (session.user_status === 'banned') {
-            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
-            return res.status(403).json({ 
-                success: false, 
-                error: 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ Admin để được hỗ trợ.', 
-                code: 'ACCOUNT_BANNED' 
-            });
-        }
         const now = Date.now();
         const lastActivity = new Date(session.last_activity).getTime();
         const createdAt = new Date(session.created_at).getTime();
@@ -1405,6 +1397,24 @@ async function requireUserSession(req, res, next) {
         return res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 }
+
+async function requireActiveUser(req, res, next) {
+    try {
+        const { rows } = await pool.query('SELECT status FROM users WHERE LOWER(username) = LOWER($1)', [req.username]);
+        
+        if (rows.length > 0 && rows[0].status === 'banned') {
+            return res.status(403).json({ 
+                success: false, 
+                error: 'Tài khoản của bạn đang bị tạm khóa. Không thể thực hiện giao dịch!', 
+                code: 'ACCOUNT_RESTRICTED' 
+            });
+        }
+        next();
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+}
+
 function verifyAdmin(username, password) {
     if (username !== ADMIN_USERNAME) return false;
     try {
@@ -2868,10 +2878,7 @@ app.post('/api/login', async (req, res) => {
             }
         }
         if (!passwordMatch) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
-        if (dbUser.status === 'banned') {
-    return res.status(403).json({ success: false, error: 'Tài khoản đã bị khóa.' });
-}
-
+        
         const sessionToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = rememberMe 
             ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
@@ -2892,6 +2899,7 @@ app.post('/api/login', async (req, res) => {
             fullName: dbUser.full_name,
             email: dbUser.email || '',
             balance: Number(dbUser.balance),
+            status: dbUser.status || 'active',
             depositHistory, purchaseHistory
         };
         
@@ -2942,6 +2950,7 @@ app.get('/api/user/:username', requireUserSession, async (req, res) => {
                 telegram: dbUser.telegram || '',
                 job: dbUser.job || '',  
                 hometown: dbUser.hometown || '',  
+                status: dbUser.status || 'active',
                 kyc_status: dbUser.kyc_status || 'unverified',
                 depositHistory: safeParseJSON(dbUser.deposit_history),
                 purchaseHistory: safeParseJSON(dbUser.purchase_history)
@@ -3075,7 +3084,7 @@ app.post('/api/user/submit-kyc', requireUserSession, async (req, res) => {
     }
 });
 
-app.post('/api/pay2s-create-order', async (req, res) => {
+app.post('/api/pay2s-create-order', requireActiveUser, async (req, res) => {
     try {
         const { username, amount } = req.body;
         if (!username || !amount || amount < 10000) {
@@ -3201,7 +3210,7 @@ app.post('/api/pay2s-webhook', async (req, res) => {
     }
 });
 
-app.post('/api/webhub-create-order', async (req, res) => {
+app.post('/api/webhub-create-order', requireActiveUser, async (req, res) => {
     try {
         const { username, amount } = req.body;
         if (!username || !amount || amount < 10000) {
@@ -3302,7 +3311,7 @@ app.post('/api/webhub-webhook', async (req, res) => {
     }
 });
 
-app.post('/api/buy-product', requireUserSession, async (req, res) => {
+app.post('/api/buy-product', requireUserSession, requireActiveUser, async (req, res) => {
     try {
         const { username, productId, price, productName } = req.body;
 
@@ -3397,7 +3406,7 @@ app.post('/api/buy-product', requireUserSession, async (req, res) => {
     }
 });
 
-app.get('/api/download/:productId', requireUserSession, async (req, res) => {
+app.get('/api/download/:productId', requireUserSession, requireActiveUser, async (req, res) => {
     const productId = String(req.params.productId || '').trim();
     const username = req.username;
 
