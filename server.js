@@ -1405,7 +1405,7 @@ async function requireActiveUser(req, res, next) {
         if (rows.length > 0 && rows[0].status === 'banned') {
             return res.status(403).json({ 
                 success: false, 
-                error: 'Tài khoản của bạn đang bị tạm khóa. Không thể thực hiện giao dịch!', 
+                error: 'Tài khoản của bạn đang bị khóa. Không thể thực hiện giao dịch!', 
                 code: 'ACCOUNT_RESTRICTED' 
             });
         }
