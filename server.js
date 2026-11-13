@@ -4415,130 +4415,134 @@ async function processNotificationQueue(notificationId) {
 }
 
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
+
+    const client = await pool.connect();
     try {
-        // 1. Lấy dữ liệu từ Frontend
+
         const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
 
-        // 2. Kiểm tra PIN
         if (!verifyPin(pin)) {
+            client.release();
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
         }
-
-        // 3. Validate dữ liệu đầu vào
         if (!title || !title.trim()) {
+            client.release();
             return res.status(400).json({ success: false, error: 'Thiếu tiêu đề' });
         }
 
-        const finalSubject = (subject && subject.trim()) ? subject.trim() : title.trim();
         const finalTitle = title.trim();
+        const finalSubject = (subject && subject.trim()) ? subject.trim() : finalTitle;
         const finalContent = (content && content.trim()) ? content.trim() : `<p>${finalTitle}</p>`;
         const contentText = stripHtml(finalContent);
 
-        // 4. Lấy danh sách người nhận
         let recipients = [];
         if (targetType === 'specific') {
             if (!Array.isArray(usernames) || usernames.length === 0) {
+                client.release();
                 return res.status(400).json({ success: false, error: 'Chưa chọn người nhận' });
             }
-            const { rows } = await pool.query(
+            const { rows } = await client.query(
                 `SELECT username, full_name, email FROM users 
                  WHERE LOWER(username) = ANY($1::text[]) AND email IS NOT NULL AND email <> ''`,
                 [usernames.map(u => String(u).toLowerCase())]
             );
             recipients = rows;
         } else {
-            const { rows } = await pool.query(
+
+            const { rows } = await client.query(
                 `SELECT username, full_name, email FROM users WHERE email IS NOT NULL AND email <> ''`
             );
             recipients = rows;
         }
 
-        // 5. Lọc những người đã hủy nhận thông báo (Unsubscribe)
-        const { rows: unsubRows } = await pool.query('SELECT LOWER(email) AS email FROM email_unsubscribes');
+        const { rows: unsubRows } = await client.query('SELECT LOWER(email) AS email FROM email_unsubscribes');
         const unsubSet = new Set(unsubRows.map(r => r.email));
         const beforeCount = recipients.length;
         recipients = recipients.filter(r => !unsubSet.has(r.email.toLowerCase()));
 
-        // Lọc bỏ hoàn toàn dữ liệu rác trước khi insert
         const finalRecipients = recipients.filter(r => 
-            r.username && 
-            r.email && 
-            String(r.username).trim() !== '' && 
-            String(r.email).trim() !== ''
+            r.username && r.email && String(r.username).trim() && String(r.email).trim()
         );
 
         if (finalRecipients.length === 0) {
-            return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe hoặc lỗi dữ liệu)' });
+            client.release();
+            return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ' });
         }
 
-        // 6. Tạo bản ghi thông báo (Bảng notifications)
-        const { rows: notifInsert } = await pool.query(
+        await client.query('BEGIN');
+
+        const { rows: notifInsert } = await client.query(
             `INSERT INTO notifications 
              (title, subject, content_html, content_text, target_type, target_usernames, sent_by, total_recipients, status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending') RETURNING id`,
             [
-                finalTitle, 
-                finalSubject, 
-                finalContent, 
-                contentText, 
-                targetType,
+                finalTitle, finalSubject, finalContent, contentText, targetType,
                 targetType === 'specific' ? usernames : null,
-                req.admin.username, 
-                finalRecipients.length
+                req.admin.username, finalRecipients.length
             ]
         );
-        
         const notifId = notifInsert[0].id;
-        console.log(`✅ [Notification] Đã tạo ID #${notifId} với nội dung dài ${finalContent.length} ký tự`);
+        console.log(`✅ [Notification] Đã tạo ID #${notifId} | Tổng: ${finalRecipients.length} người | Loại: ${type}`);
 
-        // 7. Tạo danh sách người nhận (Bảng notification_recipients)
-        // Ép kiểu tường minh cho TẤT CẢ các tham số để tránh lỗi "could not determine data type"
-        const values = finalRecipients.map((_, i) =>
-            `($1::int, $${i * 3 + 2}::text, $${i * 3 + 3}::text, 'unread'::varchar, 'pending'::varchar)`
-        ).join(',');
-        
-        const params = [notifId];
-        finalRecipients.forEach(r => {
-            params.push(String(r.username).trim(), String(r.email).trim()); 
-        });
-        
-        console.log(`📝 [Notification] Insert ${finalRecipients.length} người nhận với ${values.split(',').length} tham số...`);
+        const BATCH_SIZE = 100;
+        let insertedCount = 0;
 
-        await pool.query(
-            `INSERT INTO notification_recipients (notification_id, username, email, read_status, email_status) VALUES ${values}`,
-            params
-        );
+        for (let i = 0; i < finalRecipients.length; i += BATCH_SIZE) {
+            const batch = finalRecipients.slice(i, i + BATCH_SIZE);
 
-        // 8. Xử lý theo loại thông báo (Email / Hệ thống / Tất cả)
+            const values = batch.map((_, idx) =>
+                `($1::int, $${idx * 3 + 2}::text, $${idx * 3 + 3}::text, 'unread'::varchar, 'pending'::varchar)`
+            ).join(',');
+
+            const params = [notifId];
+            batch.forEach(r => {
+                params.push(String(r.username).trim(), String(r.email).trim());
+            });
+
+            await client.query(
+                `INSERT INTO notification_recipients (notification_id, username, email, read_status, email_status) VALUES ${values}`,
+                params
+            );
+            insertedCount += batch.length;
+        }
+
+        console.log(`📝 [Notification] Đã insert thành công ${insertedCount}/${finalRecipients.length} người nhận`);
         if (type === 'email' || type === 'all') {
+            await client.query(
+                `UPDATE notifications SET status = 'sending' WHERE id = $1`,
+                [notifId]
+            );
+            await client.query('COMMIT');
             setImmediate(() => processNotificationQueue(notifId));
-            console.log(`📧 [Notification] Đã xếp hàng gửi Email cho thông báo #${notifId}`);
+            console.log(`📧 [Notification] Đã COMMIT & xếp hàng gửi Email #${notifId}`);
         } else {
-            await pool.query(
+            await client.query(
                 `UPDATE notifications SET status = 'completed', total_sent = $1, completed_at = NOW() WHERE id = $2`,
                 [finalRecipients.length, notifId]
             );
-            await pool.query(
+            await client.query(
                 `UPDATE notification_recipients SET email_status = 'no_email' WHERE notification_id = $1`,
                 [notifId]
             );
-            console.log(`💻 [Notification] Đã lưu thông báo Hệ thống #${notifId} (Không gửi mail)`);
+            await client.query('COMMIT');
+            console.log(`💻 [Notification] Đã COMMIT thông báo Hệ thống #${notifId}`);
         }
-
-        // 9. Trả kết quả về cho Frontend
         res.json({
             success: true,
             notificationId: notifId,
             totalRecipients: finalRecipients.length,
             filteredUnsubscribed: beforeCount - finalRecipients.length,
-            message: (type === 'email' || type === 'all') 
-                ? `Đã xếp hàng gửi Email tới ${finalRecipients.length} người.` 
-                : `Đã gửi thông báo Hệ thống tới ${finalRecipients.length} người.`
+            message: (type === 'email' || type === 'all')
+                ? `✅ Đã gửi tới ${finalRecipients.length} người (đang xử lý nền).`
+                : `✅ Đã lưu thông báo Hệ thống cho ${finalRecipients.length} người.`
         });
 
     } catch (err) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
         console.error('❌ Lỗi tạo notification:', err);
         res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+    } finally {
+        client.release();
     }
 });
 
