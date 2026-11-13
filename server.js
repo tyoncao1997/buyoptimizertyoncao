@@ -3533,6 +3533,7 @@ app.post('/api/admin/users', requireAdminToken, async (req, res) => {
             email: u.email || '',
             balance: Number(u.balance),
             avatar: u.avatar_url || '',
+            status: u.status || 'active',
             purchase_history: safeParseJSON(u.purchase_history),
             deposit_history: safeParseJSON(u.deposit_history),
             createdAt: u.created_at,
