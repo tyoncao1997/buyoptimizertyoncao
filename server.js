@@ -4388,7 +4388,6 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         );
 
         console.log(`📨 Admin ${req.admin.username} tạo notification #${notifId} | Type: ${type} | ${recipients.length} recipients`);
-
         if (type === 'email' || type === 'all') {
             setImmediate(() => processNotificationQueue(notifId));
         } else {
@@ -4397,10 +4396,10 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
                 [recipients.length, notifId]
             );
             await pool.query(
-                `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE notification_id = $1`,
+                `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE recipient_id = $1`,
                 [notifId]
             );
-            console.log(`Đã lưu thông báo hệ thống #${notifId} (Không gửi mail)`);
+            console.log(`✅ Đã lưu thông báo hệ thống #${notifId} (Không gửi mail)`);
         }
 
         res.json({
