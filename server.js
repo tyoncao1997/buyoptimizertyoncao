@@ -3450,7 +3450,7 @@ app.get('/api/download/:productId', requireUserSession, requireActiveUser, async
     }
 });
 
-app.get('/api/download-all', requireUserSession, async (req, res) => {
+app.get('/api/download-all', requireUserSession, requireActiveUser, async (req, res) => {
     const { ids } = req.query;
     const username = req.username;
 
