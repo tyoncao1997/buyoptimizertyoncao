@@ -4313,7 +4313,7 @@ async function processNotificationQueue(notificationId) {
 
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
     try {
-        const { pin, title, subject, content, targetType = 'all', usernames = [] } = req.body;
+        const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
 
         if (!verifyPin(pin)) {
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
@@ -4387,9 +4387,21 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             params
         );
 
-        console.log(`📨 Admin ${req.admin.username} tạo notification #${notifId} (${recipients.length} recipients, filtered ${beforeCount - recipients.length} unsub)`);
+        console.log(`📨 Admin ${req.admin.username} tạo notification #${notifId} | Type: ${type} | ${recipients.length} recipients`);
 
-        setImmediate(() => processNotificationQueue(notifId));
+        if (type === 'email' || type === 'all') {
+            setImmediate(() => processNotificationQueue(notifId));
+        } else {
+            await pool.query(
+                `UPDATE notifications SET status = 'completed', total_sent = $1, completed_at = NOW() WHERE id = $2`,
+                [recipients.length, notifId]
+            );
+            await pool.query(
+                `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE notification_id = $1`,
+                [notifId]
+            );
+            console.log(`Đã lưu thông báo hệ thống #${notifId} (Không gửi mail)`);
+        }
 
         res.json({
             success: true,
