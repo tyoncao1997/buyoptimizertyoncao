@@ -132,7 +132,7 @@ async function registerTelegramWebhook(baseUrl) {
             allowed_updates: ['message'],
             drop_pending_updates: false
         });
-        console.log(`✅ Đã đăng ký Telegram Webhook: ${baseUrl}/api/telegram/webhook`);
+        console.log(` Đã đăng ký Telegram Webhook: ${baseUrl}/api/telegram/webhook`);
     } catch (err) {
         console.error('❌ Lỗi đăng ký Telegram Webhook:', err.message);
     }
@@ -223,7 +223,7 @@ async function sendEmailCore(to, subject, htmlContent, retries = 3) {
                 throw new Error(errData.error?.message || 'Gmail API error');
             }
 
-            console.log(`✅ [Email] Đã gửi đến ${to}: ${subject} (Lần thử: ${attempt})`);
+            console.log(` [Email] Đã gửi đến ${to}: ${subject} (Lần thử: ${attempt})`);
             await writeEmailLogToDB(to, subject, 'SUCCESS');
             return true;
         } catch (error) {
@@ -1280,7 +1280,7 @@ async function initDB() {
     if (!pool) return;
     try {
         const { rows } = await pool.query('SELECT COUNT(*) FROM users');
-        console.log(`✅ Đã kết nối Supabase. Tổng số Users: ${rows[0].count}`);
+        console.log(` Đã kết nối Supabase. Tổng số Users: ${rows[0].count}`);
     } catch (err) {
         console.error('❌ Lỗi kết nối Supabase:', err.message);
     }
@@ -1643,7 +1643,7 @@ app.post('/api/admin/google-login', loginLimiter, async (req, res) => {
             { username: email, email, name: payload.name, picture: payload.picture, role: 'admin', method: 'google' },
             JWT_SECRET, { expiresIn: '8h' }
         );
-        console.log(`✅ [Admin Login] ${email} - IP=${req.ip}`);
+        console.log(` [Admin Login] ${email} - IP=${req.ip}`);
         res.json({ success: true, token, email });
     } catch (err) {
         console.error('❌ Google login error:', err.message);
@@ -1896,7 +1896,7 @@ app.post('/api/admin/login', loginLimiter, (req, res) => {
             return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu' });
         }
         const token = jwt.sign({ username: ADMIN_USERNAME, role: 'admin' }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
-        console.log(`✅ [Login Success] admin="${username}" IP=${req.ip}`);
+        console.log(` [Login Success] admin="${username}" IP=${req.ip}`);
         res.json({ success: true, token, expiresIn: JWT_EXPIRES_IN });
     } catch {
         res.status(500).json({ error: 'Lỗi server' });
@@ -2069,7 +2069,7 @@ async function handleSePayWebhook(req, res) {
                  WHERE order_code=$4`,
                 [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
             );
-            console.log(`✅✅✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
+            console.log(` [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
         } else {
             const note = `Thanh toán thiếu: cần ${requiredAmount}đ, đã nhận ${totalReceived}đ`;
             await pool.query(
@@ -2142,7 +2142,7 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
             [new Date().toISOString(), req.admin.username, note, orderCode]
         );
 
-        console.log(`✅ [ADMIN] ${req.admin.username} xác nhận đơn ${orderCode}`);
+        console.log(` [ADMIN] ${req.admin.username} xác nhận đơn ${orderCode}`);
         res.json({ success: true, message: `Đã xác nhận đơn ${orderCode}. Key đã kích hoạt!` });
     } catch (err) {
         console.error('Admin confirm order error:', err);
@@ -2167,7 +2167,7 @@ app.post('/api/admin/complete-order', requireAdminToken, async (req, res) => {
             [note, orderCode]
         );
 
-        console.log(`✅ [ADMIN] ${req.admin.username} đã hoàn tất đơn ${orderCode}`);
+        console.log(` [ADMIN] ${req.admin.username} đã hoàn tất đơn ${orderCode}`);
         res.json({ success: true, message: `Đã đánh dấu hoàn tất đơn ${orderCode}.` });
     } catch (err) {
         console.error('Admin complete order error:', err);
@@ -2823,7 +2823,7 @@ app.post('/api/login', async (req, res) => {
             depositHistory, purchaseHistory
         };
         
-        console.log(`✅ [Login] ${dbUser.username} - Remember: ${rememberMe ? 'YES' : 'NO'}`);
+        console.log(` [Login] ${dbUser.username} - Remember: ${rememberMe ? 'YES' : 'NO'}`);
         res.json({ 
             success: true, 
             user: userData, 
@@ -3892,7 +3892,7 @@ app.post('/api/admin/google-token', async (req, res) => {
             { expiresIn: '8h' }
         );
 
-        console.log(`✅ [Admin Login Redirect] ${email} - IP=${req.ip}`);
+        console.log(` [Admin Login Redirect] ${email} - IP=${req.ip}`);
         res.json({ success: true, token, email });
     } catch (err) {
         console.error('❌ Lỗi đổi token Google:', err);
@@ -3963,7 +3963,7 @@ async function initNotificationTables() {
             CREATE INDEX IF NOT EXISTS idx_unsub_email 
                 ON email_unsubscribes(LOWER(email));
         `);
-        console.log('✅ Đã khởi tạo bảng notifications');
+        console.log(' Đã khởi tạo bảng notifications');
     } catch (err) {
         console.error('❌ Lỗi tạo bảng notification:', err.message);
     }
@@ -4217,7 +4217,7 @@ async function processNotificationQueue(notificationId) {
             [sent, failed, notificationId]
         );
 
-        console.log(`✅ Notification #${notificationId}: ${sent} sent, ${failed} failed`);
+        console.log(` Notification #${notificationId}: ${sent} sent, ${failed} failed`);
     } catch (err) {
         console.error(`❌ Notification #${notificationId} error:`, err.message);
         await pool.query(
@@ -4381,7 +4381,7 @@ app.get('/api/unsubscribe', async (req, res) => {
 <style>body{font-family:sans-serif;background:#f4f6f8;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
 .box{background:#fff;padding:40px;border-radius:14px;box-shadow:0 4px 24px rgba(0,0,0,0.08);text-align:center;max-width:440px;}
 h1{color:#0f172a;font-size:22px;margin:0 0 12px;}p{color:#64748b;line-height:1.6;margin:0;}</style></head>
-<body><div class="box"><h1>✅ Đã hủy nhận thông báo</h1>
+<body><div class="box"><h1> Đã hủy nhận thông báo</h1>
 <p>Email <strong>${escapeHtml(email)}</strong> sẽ không nhận thêm thông báo từ TyonCao. Bạn vẫn có thể đăng nhập website bình thường.</p></div></body></html>`);
     } catch (err) {
         console.error('Unsubscribe error:', err);
@@ -4572,7 +4572,7 @@ async function startServer() {
     await initNotificationTables();
 
     const server = app.listen(PORT, async () => {
-        console.log(`\n✅ TYON SERVER chạy tại http://localhost:${PORT}`);
+        console.log(`\n TYON SERVER chạy tại http://localhost:${PORT}`);
         console.log(`🔐 JWT Security: BẬT`);
         console.log(`🛡️ Rate Limit: BẬT`);
         console.log(`📧 Email (Gmail API): ${process.env.GMAIL_CLIENT_ID ? 'Đã cấu hình' : 'CHƯA cấu hình'}`);
