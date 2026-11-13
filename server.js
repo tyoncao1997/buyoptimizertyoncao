@@ -2962,19 +2962,16 @@ app.get('/api/user/notifications', requireAuthOnly, async (req, res) => {
     try {
         const { rows } = await pool.query(`
             SELECT 
-                n.id, 
-                n.title, 
-                n.subject, 
-                n.content_html, 
-                n.content_text,  -- THÊM TRƯỜNG NÀY
-                n.created_at, 
-                r.status as read_status
+                n.id, n.title, n.subject, n.content_html, n.content_text, n.created_at, 
+                r.read_status, -- LẤY CỘT NÀY
+                r.email_status
             FROM notifications n
             JOIN notification_recipients r ON n.id = r.notification_id
             WHERE LOWER(r.username) = LOWER($1)
             ORDER BY n.created_at DESC
             LIMIT 50
         `, [req.username]);
+        
         const notifications = rows.map(n => ({
             ...n,
             content_html: n.content_html || n.content_text || '',
@@ -2985,6 +2982,21 @@ app.get('/api/user/notifications', requireAuthOnly, async (req, res) => {
         res.json({ success: true, notifications, unreadCount });
     } catch (err) {
         console.error('Lỗi lấy thông báo user:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/user/notifications/read', requireAuthOnly, async (req, res) => {
+    try {
+        await pool.query(`
+            UPDATE notification_recipients 
+            SET read_status = 'read' 
+            WHERE LOWER(username) = LOWER($1) AND read_status != 'read'
+        `, [req.username]);
+        
+        res.json({ success: true, message: 'Đã đánh dấu tất cả là đã đọc' });
+    } catch (err) {
+        console.error('Lỗi đánh dấu đã đọc:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
@@ -4110,14 +4122,15 @@ async function initNotificationTables() {
             );
 
             CREATE TABLE IF NOT EXISTS notification_recipients (
-                id SERIAL PRIMARY KEY,
-                notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
-                username TEXT NOT NULL,
-                email TEXT NOT NULL,
-                status VARCHAR(20) DEFAULT 'pending',
-                error_message TEXT,
-                sent_at TIMESTAMP
-            );
+            id SERIAL PRIMARY KEY,
+            notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
+            username TEXT NOT NULL,
+            email TEXT NOT NULL,
+            read_status VARCHAR(20) DEFAULT 'unread', -- Cột riêng cho Web (unread/read)
+            email_status VARCHAR(20) DEFAULT 'pending', -- Cột riêng cho Email (pending/sent/failed)
+            error_message TEXT,
+            sent_at TIMESTAMP
+        );
 
             CREATE TABLE IF NOT EXISTS email_unsubscribes (
                 id SERIAL PRIMARY KEY,
@@ -4400,38 +4413,21 @@ async function processNotificationQueue(notificationId) {
 app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) => {
     try {
         const { pin, title, subject, content, targetType = 'all', usernames = [], type = 'all' } = req.body;
-        
-        // 1. Validate PIN
+
         if (!verifyPin(pin)) {
             return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
         }
-        
-        // 2. Validate các trường bắt buộc
+
         if (!title || !title.trim()) {
             return res.status(400).json({ success: false, error: 'Thiếu tiêu đề' });
         }
         if (!subject || !subject.trim()) {
             return res.status(400).json({ success: false, error: 'Thiếu chủ đề' });
         }
-        
-        // 3. QUAN TRỌNG: Đảm bảo content luôn có giá trị
-        // Nếu admin không nhập content, tự động tạo nội dung mặc định từ title
-        const finalContent = (content && content.trim()) 
-            ? content.trim() 
-            : `<p>${title.trim()}</p>`;  // Fallback: dùng title làm nội dung
-        
-        // 4. Tạo text thuần từ HTML
+
+        const finalContent = (content && content.trim()) ? content.trim() : `<p>${title.trim()}</p>`;
         const contentText = stripHtml(finalContent);
-        
-        // 5. Log để debug
-        console.log('📝 [Notification] Tạo thông báo mới:');
-        console.log('  - Title:', title);
-        console.log('  - Subject:', subject);
-        console.log('  - Content HTML (độ dài):', finalContent.length);
-        console.log('  - Content Text (độ dài):', contentText.length);
-        console.log('  - Content HTML (100 ký tự đầu):', finalContent.substring(0, 100));
-        
-        // 6. Lấy danh sách người nhận
+
         let recipients = [];
         if (targetType === 'specific') {
             if (!Array.isArray(usernames) || usernames.length === 0) {
@@ -4445,8 +4441,7 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             recipients = rows;
         } else {
             const { rows } = await pool.query(
-                `SELECT username, full_name, email FROM users 
-                 WHERE email IS NOT NULL AND email <> ''`
+                `SELECT username, full_name, email FROM users WHERE email IS NOT NULL AND email <> ''`
             );
             recipients = rows;
         }
@@ -4459,20 +4454,15 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         if (recipients.length === 0) {
             return res.status(400).json({ success: false, error: 'Không có người nhận hợp lệ (đã lọc unsubscribe)' });
         }
-        
+
         const { rows: notifInsert } = await pool.query(
             `INSERT INTO notifications 
              (title, subject, content_html, content_text, target_type, target_usernames, sent_by, total_recipients, status)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending') RETURNING id`,
             [
-                title.trim(),
-                subject.trim(),
-                finalContent,     
-                contentText,     
-                targetType,
+                title.trim(), subject.trim(), finalContent, contentText, targetType,
                 targetType === 'specific' ? usernames : null,
-                req.admin.username,
-                recipients.length
+                req.admin.username, recipients.length
             ]
         );
         
@@ -4480,29 +4470,31 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
         console.log(`✅ [Notification] Đã tạo ID #${notifId} với nội dung dài ${finalContent.length} ký tự`);
 
         const values = recipients.map((_, i) =>
-            `($1, $${i * 3 + 2}, $${i * 3 + 3}, $${i * 3 + 4})`
+            `($1, $${i * 3 + 2}, $${i * 3 + 3}, 'unread', 'pending')`
         ).join(',');
+        
         const params = [notifId];
         recipients.forEach(r => {
-            params.push(r.username, r.email, 'pending');
+            params.push(r.username, r.email);
         });
+
         await pool.query(
-            `INSERT INTO notification_recipients (notification_id, username, email, status) VALUES ${values}`,
+            `INSERT INTO notification_recipients (notification_id, username, email, read_status, email_status) VALUES ${values}`,
             params
         );
-
         if (type === 'email' || type === 'all') {
             setImmediate(() => processNotificationQueue(notifId));
+            console.log(`📧 [Notification] Đã xếp hàng gửi Email cho thông báo #${notifId}`);
         } else {
             await pool.query(
                 `UPDATE notifications SET status = 'completed', total_sent = $1, completed_at = NOW() WHERE id = $2`,
                 [recipients.length, notifId]
             );
             await pool.query(
-                `UPDATE notification_recipients SET status = 'sent', sent_at = NOW() WHERE notification_id = $1`,
+                `UPDATE notification_recipients SET email_status = 'no_email' WHERE notification_id = $1`,
                 [notifId]
             );
-            console.log(`✅ Đã lưu thông báo hệ thống #${notifId} (Không gửi mail)`);
+            console.log(`💻 [Notification] Đã lưu thông báo Hệ thống #${notifId} (Không gửi mail)`);
         }
         
         res.json({
@@ -4510,7 +4502,9 @@ app.post('/api/admin/notifications/send', requireAdminToken, async (req, res) =>
             notificationId: notifId,
             totalRecipients: recipients.length,
             filteredUnsubscribed: beforeCount - recipients.length,
-            message: `Đã xếp hàng gửi tới ${recipients.length} người. Quá trình gửi diễn ra nền.`
+            message: type === 'email' || type === 'all' 
+                ? `Đã xếp hàng gửi Email tới ${recipients.length} người.` 
+                : `Đã gửi thông báo Hệ thống tới ${recipients.length} người.`
         });
 
     } catch (err) {
