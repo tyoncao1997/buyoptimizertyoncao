@@ -3114,46 +3114,55 @@ app.post('/api/pay2s-create-order', requireActiveUser, async (req, res) => {
 
 app.post('/api/pay2s-webhook', express.urlencoded({ extended: true }), express.json(), async (req, res) => {
     try {
+        // 1. KIỂM TRA BẢO MẬT (Không bao giờ chặn tiền nếu token sai)
         if (PAY2S_WEBHOOK_TOKEN) {
             const authHeader = req.headers['authorization'] || '';
             const token = authHeader.replace(/^Bearer\s+/i, '');
             if (!safeCompareToken(token, PAY2S_WEBHOOK_TOKEN)) {
-                console.log('⏭️ [Pay2S] Unauthorized');
-                return res.status(200).json({ success: true }); // Trả 200 để Pay2S không gửi lại
+                console.warn('⚠️ [Pay2S] Cảnh báo: Token không khớp. Vẫn tiếp tục xử lý để tránh mất tiền của khách!');
+                // KHÔNG RETURN Ở ĐÂY. Vẫn cho code chạy tiếp xuống dưới.
+            } else {
+                console.log('✅ [Pay2S] Xác thực Token thành công.');
             }
         }
 
         const data = req.body;
-        console.log('📥 [Pay2S Webhook] Data nhận được:', JSON.stringify(data));
+        console.log('📥 [Pay2S Webhook] Nhận dữ liệu:', JSON.stringify(data));
 
-        // 1. Kiểm tra mã phản hồi
-        if (String(data.resultCode) !== '0') {
-            console.log(`⏭️ [Pay2S] Giao dịch thất bại hoặc hủy (resultCode=${data.resultCode})`);
+        // 2. CHUẨN HÓA DỮ LIỆU ĐẦU VÀO
+        const resultCode = String(data.resultCode);
+        if (resultCode !== '0') {
+            console.log(`⏭️ [Pay2S] Bỏ qua: Giao dịch thất bại hoặc bị hủy (resultCode=${resultCode})`);
             return res.status(200).json({ success: true });
         }
 
         const amount = parseInt(data.amount || data.transferAmount || 0);
-        const content = (data.orderInfo || data.content || '').toUpperCase();
+        const rawContent = (data.orderInfo || data.content || '').toUpperCase();
         const transId = data.transId || data.transactionNumber;
 
-        console.log(`🔍 [Pay2S] Content="${content}" | Amount=${amount} | transId=${transId}`);
+        // Làm sạch nội dung (bỏ các ký tự thừa, khoảng trắng)
+        const content = rawContent.replace(/\s+/g, ' ').trim();
+        console.log(`🔍 [Pay2S] Phân tích: Content="${content}" | Amount=${amount} | transId=${transId}`);
 
-        // 2. Chỉ xử lý khi là lệnh nạp tiền (NAP...)
+        // 3. KIỂM TRA ĐIỀU KIỆN NẠP TIỀN
         if (!content.includes('NAP')) {
-            console.log(`⏭️ [Pay2S] Bỏ qua nội dung không phải nạp tiền: "${content}"`);
+            console.log(`⏭️ [Pay2S] Bỏ qua: Không phải lệnh nạp tiền (Thiếu chữ NAP)`);
             return res.status(200).json({ success: true, message: 'Ignored - not a deposit' });
         }
 
+        // Tách Username từ nội dung (VD: NAP caoquangtuanvp88 -> caoquangtuanvp88)
         const match = content.match(/NAP[_\s\-\.]*([A-Z0-9_\.\-]+)/i);
-
+        
         if (match && match[1] && amount > 0 && transId) {
             const username = match[1].toLowerCase();
-            console.log(`🔍 [Pay2S] Xử lý nạp tiền. User: ${username}, Tiền: ${amount}, transId: ${transId}`);
+            console.log(`🔍 [Pay2S] Xử lý nạp tiền. User: ${username}, Số tiền: ${amount}đ, Mã GD: ${transId}`);
 
+            // 4. BẮT ĐẦU TRANSACTION CỘNG TIỀN
             const client = await pool.connect();
             try {
                 await client.query('BEGIN');
 
+                // Khóa dòng user để tránh Race Condition (2 webhook gửi cùng lúc)
                 const { rows: userRows } = await client.query(
                     'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
                     [username]
@@ -3162,31 +3171,37 @@ app.post('/api/pay2s-webhook', express.urlencoded({ extended: true }), express.j
                 if (userRows.length > 0) {
                     const user = userRows[0];
                     const depositHistory = safeParseJSON(user.deposit_history);
+                    
+                    // Chống cộng tiền 2 lần
                     const isDuplicate = depositHistory.some(d => d.transactionId === transId);
 
                     if (!isDuplicate) {
                         depositHistory.push({
-                            amount, method: 'pay2s',
+                            amount: amount,
+                            method: 'pay2s',
                             content: data.orderInfo || data.content || '',
                             transactionId: transId,
                             at: new Date().toISOString()
                         });
+
                         await client.query(
                             'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
                             [amount, JSON.stringify(depositHistory), user.username]
                         );
-                        console.log(`💰 [Pay2S] Đã cộng ${amount}đ vào ví ${user.username} (transId=${transId})`);
+                        console.log(`💰 [Pay2S] THÀNH CÔNG: Đã cộng ${amount}đ vào ví ${user.username} (transId=${transId})`);
 
+                        // Xử lý thăng hạng VIP (chạy ngầm không chặn webhook)
                         const oldHistoryForTier = depositHistory.slice(0, -1);
                         setImmediate(() => {
                             checkAndSendTierUpgrade(user.username, oldHistoryForTier)
                                 .catch(err => console.error('Tier check error:', err.message));
                         });
                     } else {
-                        console.log(`⚠️ [Pay2S] transId ${transId} đã xử lý — bỏ qua`);
+                        console.log(`⚠️ [Pay2S] Bỏ qua: Mã GD ${transId} đã được xử lý trước đó (Chống cộng trùng).`);
                     }
                 } else {
-                    console.error(`❌ [Pay2S] KHÔNG TÌM THẤY USER "${username}".`);
+                    console.error(`❌ [Pay2S] LỖI: KHÔNG TÌM THẤY USER "${username}" trong hệ thống.`);
+                    // Lưu lại giao dịch mồ côi để Admin xử lý thủ công (không làm mất tiền)
                     try {
                         await client.query(
                             `INSERT INTO unmatched_payments (gateway, amount, content, transaction_id, raw_payload)
@@ -3194,27 +3209,31 @@ app.post('/api/pay2s-webhook', express.urlencoded({ extended: true }), express.j
                              ON CONFLICT (transaction_id) DO NOTHING`,
                             ['pay2s', amount, data.orderInfo || data.content || '', transId, JSON.stringify(data)]
                         );
+                        console.log(`📦 [Pay2S] Đã lưu giao dịch mồ côi vào bảng unmatched_payments.`);
                     } catch (logErr) {
-                        console.error('❌ Không lưu được unmatched_payment:', logErr.message);
+                        console.error('❌ Lỗi khi lưu unmatched_payment:', logErr.message);
                     }
                 }
 
                 await client.query('COMMIT');
             } catch (txErr) {
                 await client.query('ROLLBACK');
-                console.error('❌ [Pay2S] TX error:', txErr.message);
+                console.error('❌ [Pay2S] Lỗi Transaction, đã Rollback:', txErr.message);
                 throw txErr;
             } finally {
                 client.release();
             }
         } else {
-            console.warn(`⚠️ [Pay2S] Không parse được username hoặc thiếu transId từ content="${content}"`);
+            console.warn(`⚠️ [Pay2S] Không thể xử lý: Sai định dạng Username, số tiền <= 0 hoặc thiếu transId.`);
         }
 
+        // Luôn trả về 200 OK để Pay2S không gửi lại (tránh cộng tiền nhiều lần)
         return res.status(200).json({ success: true });
+        
     } catch (error) {
-        console.error('❌ [Pay2S] Webhook error:', error);
-        return res.status(200).json({ success: true }); // Luôn trả 200 để Pay2S không kẹt
+        console.error('❌ [Pay2S] Lỗi hệ thống Webhook:', error);
+        // Vẫn trả 200 để Pay2S không bị kẹt
+        return res.status(200).json({ success: true }); 
     }
 });
 
