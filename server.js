@@ -2244,12 +2244,13 @@ async function handleSePayWebhook(req, res) {
         const content = (data.content || data.description || '').toUpperCase();
         const transactionId = data.id || data.referenceCode || data.transactionId || 'N/A';
 
-        // ✅ FIX: CHỈ XỬ LÝ KHI LÀ MÃ ĐƠN HÀNG (TYON...)
-        if (!content.includes('TYON')) {
-            console.log(`⏭️ [SePay] Bỏ qua nội dung không phải đơn hàng: "${content}"`);
-            return res.status(200).json({ success: true, message: 'Ignored - not an order code' });
+        // 1. CHỐNG NHẦM LẪN: Nếu là lệnh nạp tiền (NAP), bỏ qua vì Pay2S xử lý
+        if (content.includes('NAP')) {
+            console.log(`⏭️ [SePay] Bỏ qua lệnh nạp tiền (để Pay2S xử lý): "${content}"`);
+            return res.status(200).json({ success: true, message: 'Ignored - deposit via Pay2S' });
         }
 
+        // 2. CHỈ XỬ LÝ ĐƠN HÀNG: Phải có mã TYON
         const tyonMatch = content.match(/TYON[A-Z0-9]{6,}/);
         const extractedCode = tyonMatch ? tyonMatch[0] : null;
 
@@ -2282,57 +2283,14 @@ async function handleSePayWebhook(req, res) {
         const totalReceived = currentPaidAmount + amount;
 
         if (totalReceived >= requiredAmount) {
-            const client = await pool.connect();
-            try {
-                await client.query('BEGIN');
-                
-                // Cập nhật đơn hàng
-                await client.query(
-                    `UPDATE orders 
-                     SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
-                     WHERE order_code=$4`,
-                    [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
-                );
-                
-                // ✅ FIX: Cộng tiền vào ví luôn nếu đây là đơn nạp tiền (nếu bạn muốn)
-                // Nếu đơn hàng của bạn không cần cộng ví thì xóa đoạn dưới này đi.
-                const targetUsername = o.customer_username;
-                if (targetUsername) {
-                    const { rows: userRows } = await client.query(
-                        'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
-                        [targetUsername]
-                    );
-                    if (userRows.length > 0) {
-                        const user = userRows[0];
-                        const depositHistory = safeParseJSON(user.deposit_history);
-                        const isDuplicate = depositHistory.some(d => d.transactionId === transactionId);
-                        
-                        if (!isDuplicate) {
-                            depositHistory.push({
-                                amount: totalReceived,
-                                method: 'sepay_qr',
-                                content: `Thanh toán đơn QR: ${o.order_code}`,
-                                transactionId,
-                                orderCode: o.order_code,
-                                at: new Date().toISOString()
-                            });
-                            await client.query(
-                                'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
-                                [totalReceived, JSON.stringify(depositHistory), user.username]
-                            );
-                            console.log(`💰 [SePay] Đã cộng ${totalReceived}đ vào ví ${user.username}`);
-                        }
-                    }
-                }
-
-                await client.query('COMMIT');
-                console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ VÀ XỬ LÝ XONG!`);
-            } catch (txErr) {
-                await client.query('ROLLBACK');
-                throw txErr;
-            } finally {
-                client.release();
-            }
+            // Cập nhật trạng thái đơn hàng thành paid
+            await pool.query(
+                `UPDATE orders 
+                 SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
+                 WHERE order_code=$4`,
+                [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
+            );
+            console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
         } else {
             const note = `Thanh toán thiếu: cần ${requiredAmount}đ, đã nhận ${totalReceived}đ`;
             await pool.query(
