@@ -4906,6 +4906,147 @@ app.post('/api/user/update-avatar', requireUserSession, async (req, res) => {
     }
 });
 
+app.post('/api/video-tasks/submit', requireUserSession, requireActiveUser, async (req, res) => {
+    try {
+        const { videoUrl, platform, note } = req.body;
+        const username = req.username;
+
+        if (!videoUrl) {
+            return res.status(400).json({ success: false, error: 'Vui lòng nhập link video' });
+        }
+
+        const { rows: existing } = await pool.query(
+            "SELECT id FROM video_tasks WHERE LOWER(username) = LOWER($1) AND status = 'pending'",
+            [username]
+        );
+
+        if (existing.length > 0) {
+            return res.status(400).json({ success: false, error: 'Bạn đã có một video đang chờ duyệt. Vui lòng đợi Admin xử lý.' });
+        }
+
+        await pool.query(
+            `INSERT INTO video_tasks (username, video_url, platform, note, status, amount) 
+             VALUES ($1, $2, $3, $4, 'pending', 25000)`,
+            [username, videoUrl, platform || 'Khác', note || '']
+        );
+
+        res.json({ success: true, message: 'Gửi video thành công! Vui lòng chờ Admin duyệt.' });
+    } catch (err) {
+        console.error('Submit video task error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.get('/api/video-tasks/my-history', requireUserSession, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            "SELECT * FROM video_tasks WHERE LOWER(username) = LOWER($1) ORDER BY created_at DESC",
+            [req.username]
+        );
+        res.json({ success: true, tasks: rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/admin/video-tasks/list', requireAdminToken, async (req, res) => {
+    try {
+        const { status = 'all' } = req.body;
+        let query = "SELECT * FROM video_tasks";
+        let params = [];
+
+        if (status !== 'all') {
+            query += " WHERE status = $1";
+            params.push(status);
+        }
+        
+        query += " ORDER BY created_at DESC";
+        
+        const { rows } = await pool.query(query, params);
+        res.json({ success: true, tasks: rows });
+    } catch (err) {
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.post('/api/admin/video-tasks/review', requireAdminToken, async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { taskId, action, pin } = req.body;
+        
+        if (!verifyPin(pin)) {
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
+
+        await client.query('BEGIN');
+
+        const { rows: taskRows } = await client.query(
+            "SELECT * FROM video_tasks WHERE id = $1 FOR UPDATE",
+            [taskId]
+        );
+
+        if (taskRows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy nhiệm vụ' });
+        }
+
+        const task = taskRows[0];
+        if (task.status !== 'pending') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, error: 'Nhiệm vụ này đã được xử lý rồi' });
+        }
+
+        if (action === 'approve') {
+            await client.query(
+                "UPDATE video_tasks SET status = 'approved', reviewed_at = NOW(), reviewed_by = $1 WHERE id = $2",
+                [req.admin.username, taskId]
+            );
+
+            const amount = Number(task.amount);
+            const { rows: userRows } = await client.query(
+                "SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE",
+                [task.username]
+            );
+
+            if (userRows.length > 0) {
+                const user = userRows[0];
+                const depositHistory = safeParseJSON(user.deposit_history);
+                depositHistory.push({
+                    amount: amount,
+                    method: 'event_video',
+                    content: `Thưởng Video Event #${taskId}`,
+                    transactionId: 'VIDEO_' + Date.now(),
+                    at: new Date().toISOString(),
+                    addedBy: req.admin.username
+                });
+
+                await client.query(
+                    "UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3",
+                    [amount, JSON.stringify(depositHistory), user.username]
+                );
+            }
+
+            await client.query('COMMIT');
+            res.json({ success: true, message: `Đã duyệt và cộng ${new Intl.NumberFormat('vi-VN').format(task.amount)}đ cho ${task.username}` });
+
+        } else {
+            await client.query(
+                "UPDATE video_tasks SET status = 'rejected', reviewed_at = NOW(), reviewed_by = $1 WHERE id = $2",
+                [req.admin.username, taskId]
+            );
+            await client.query('COMMIT');
+            res.json({ success: true, message: 'Đã từ chối video này.' });
+        }
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Review video task error:', err);
+        res.status(500).json({ success: false, error: 'Lỗi server' });
+    } finally {
+        client.release();
+    }
+});
+
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => {
     console.error('❌ Server error:', err);
