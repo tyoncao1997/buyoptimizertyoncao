@@ -1109,26 +1109,32 @@ async function requireAuthOnly(req, res, next) {
             WHERE s.token = $1
         `, [token]);
 
+        // 1. Token không tồn tại trong DB → 401
         if (rows.length === 0) {
             return res.status(401).json({ success: false, error: 'Phiên không hợp lệ', code: 'INVALID_TOKEN' });
         }
+        
         const session = rows[0];
         
+        // 2. User không tồn tại trong bảng users → 401 (token rác)
         if (!session.user_status) {
-    return res.status(401).json({ success: false, error: 'Phiên không hợp lệ hoặc tài khoản không tồn tại', code: 'INVALID_SESSION' });
-}
-if (session.user_status === 'banned') {
-    return res.status(403).json({ success: false, error: 'Tài khoản đã bị khóa', code: 'ACCOUNT_BANNED' });
-}
-
-        const now = Date.now();
-        const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
-
-        if (now > expiresAt) {
-            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
-            return res.status(401).json({ success: false, error: 'Phiên đã hết hạn tuyệt đối.', code: 'ABSOLUTE_TIMEOUT' });
+            return res.status(401).json({ success: false, error: 'Tài khoản không tồn tại', code: 'INVALID_SESSION' });
         }
         
+        // 3. User bị banned → 403 (có quyền truy cập nhưng bị chặn)
+        if (session.user_status === 'banned') {
+            return res.status(403).json({ success: false, error: 'Tài khoản của bạn đã bị khóa', code: 'ACCOUNT_BANNED' });
+        }
+
+        // 4. Token hết hạn → 401
+        const now = Date.now();
+        const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
+        if (now > expiresAt) {
+            await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+            return res.status(401).json({ success: false, error: 'Phiên đã hết hạn', code: 'ABSOLUTE_TIMEOUT' });
+        }
+        
+        // Cập nhật last_activity
         pool.query('UPDATE sessions SET last_activity = NOW() WHERE token = $1', [token])
             .catch(err => console.error('Heartbeat failed:', err.message));
 
@@ -1140,7 +1146,6 @@ if (session.user_status === 'banned') {
         return res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 }
-
 
 async function requireActiveUser(req, res, next) {
     try {
