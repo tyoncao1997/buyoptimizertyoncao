@@ -1109,12 +1109,15 @@ async function requireAuthOnly(req, res, next) {
             WHERE s.token = $1
         `, [token]);
 
-        // Bổ sung kiểm tra user tồn tại
-        if (rows.length === 0 || !rows[0].user_status) {
-            return res.status(401).json({ success: false, error: 'Phiên không hợp lệ hoặc tài khoản không tồn tại', code: 'INVALID_SESSION' });
+        if (rows.length === 0) {
+            return res.status(401).json({ success: false, error: 'Phiên không hợp lệ', code: 'INVALID_TOKEN' });
         }
-        
         const session = rows[0];
+        
+        if (!session.user_status || session.user_status === 'banned') {
+            return res.status(403).json({ success: false, error: 'Không có quyền truy cập', code: 'ACCOUNT_RESTRICTED' });
+        }
+
         const now = Date.now();
         const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
 
@@ -1122,7 +1125,7 @@ async function requireAuthOnly(req, res, next) {
             await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
             return res.status(401).json({ success: false, error: 'Phiên đã hết hạn tuyệt đối.', code: 'ABSOLUTE_TIMEOUT' });
         }
-
+        
         pool.query('UPDATE sessions SET last_activity = NOW() WHERE token = $1', [token])
             .catch(err => console.error('Heartbeat failed:', err.message));
 
@@ -1134,6 +1137,7 @@ async function requireAuthOnly(req, res, next) {
         return res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 }
+
 
 async function requireActiveUser(req, res, next) {
     try {
