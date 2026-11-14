@@ -1114,9 +1114,12 @@ async function requireAuthOnly(req, res, next) {
         }
         const session = rows[0];
         
-        if (!session.user_status || session.user_status === 'banned') {
-            return res.status(403).json({ success: false, error: 'Không có quyền truy cập', code: 'ACCOUNT_RESTRICTED' });
-        }
+        if (!session.user_status) {
+    return res.status(401).json({ success: false, error: 'Phiên không hợp lệ hoặc tài khoản không tồn tại', code: 'INVALID_SESSION' });
+}
+if (session.user_status === 'banned') {
+    return res.status(403).json({ success: false, error: 'Tài khoản đã bị khóa', code: 'ACCOUNT_BANNED' });
+}
 
         const now = Date.now();
         const expiresAt = session.expires_at ? new Date(session.expires_at).getTime() : null;
