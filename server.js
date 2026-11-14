@@ -2292,14 +2292,73 @@ console.log(`✅ [SePay] MATCH đơn: ${rows[0].order_code} (amount=${rows[0].am
         const totalReceived = currentPaidAmount + amount;
 
         if (totalReceived >= requiredAmount) {
-            await pool.query(
-                `UPDATE orders 
-                 SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
-                 WHERE order_code=$4`,
-                [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
+    // ✅ FIX: Cập nhật đơn + CỘNG TIỀN vào ví user
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        // Bước 1: Cập nhật đơn hàng
+        await client.query(
+            `UPDATE orders 
+             SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
+             WHERE order_code=$4`,
+            [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
+        );
+        
+        // Bước 2: Cộng tiền vào ví user (nếu có customer_username)
+        const targetUsername = o.customer_username;
+        if (targetUsername) {
+            const { rows: userRows } = await client.query(
+                'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
+                [targetUsername]
             );
-            console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
-        } else {
+            
+            if (userRows.length > 0) {
+                const user = userRows[0];
+                const depositHistory = safeParseJSON(user.deposit_history);
+                const isDuplicate = depositHistory.some(d => d.transactionId === transactionId);
+                
+                if (!isDuplicate) {
+                    depositHistory.push({
+                        amount: totalReceived,
+                        method: 'sepay_qr',
+                        content: `Thanh toán đơn QR: ${o.order_code}`,
+                        transactionId,
+                        orderCode: o.order_code,
+                        at: new Date().toISOString()
+                    });
+                    
+                    await client.query(
+                        'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
+                        [totalReceived, JSON.stringify(depositHistory), user.username]
+                    );
+                    
+                    console.log(`💰 [SePay] Đã cộng ${totalReceived}đ vào ví ${user.username} (đơn ${o.order_code})`);
+                    
+                    // Check tier upgrade
+                    const oldHistoryForTier = depositHistory.slice(0, -1);
+                    setImmediate(() => {
+                        checkAndSendTierUpgrade(user.username, oldHistoryForTier)
+                            .catch(err => console.error('Tier check error:', err.message));
+                    });
+                } else {
+                    console.log(`⚠️ [SePay] transId ${transactionId} đã cộng rồi — bỏ qua`);
+                }
+            } else {
+                console.warn(`⚠️ [SePay] Không tìm thấy user ${targetUsername} để cộng tiền`);
+            }
+        }
+        
+        await client.query('COMMIT');
+        console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ VÀ CỘNG TIỀN!`);
+    } catch (txErr) {
+        await client.query('ROLLBACK');
+        console.error('❌ [SePay] TX error khi cộng tiền:', txErr.message);
+        throw txErr;
+    } finally {
+        client.release();
+    }
+} else {
             const note = `Thanh toán thiếu: cần ${requiredAmount}đ, đã nhận ${totalReceived}đ`;
             await pool.query(
                 `UPDATE orders SET status='underpaid', paid_amount=$1, transaction_id=$2, note=$3 WHERE order_code=$4`,
