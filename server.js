@@ -1121,7 +1121,7 @@ async function requireAuthOnly(req, res, next) {
             return res.status(401).json({ success: false, error: 'Tài khoản không tồn tại', code: 'INVALID_SESSION' });
         }
         
-        // 3. User bị banned → 403 (có quyền truy cập nhưng bị chặn)
+        // 3. User bị banned → 403 (CHỈ KHI status === 'banned')
         if (session.user_status === 'banned') {
             return res.status(403).json({ success: false, error: 'Tài khoản của bạn đã bị khóa', code: 'ACCOUNT_BANNED' });
         }
