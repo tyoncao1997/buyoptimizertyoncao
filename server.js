@@ -19,6 +19,8 @@ const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
 const googleTempUsers = new Map(); 
+const BAND_DURATION_DAYS = 7;
+const BAND_DURATION_MS = BAND_DURATION_DAYS * 24 * 60 * 60 * 1000;
 
 if (!TELEGRAM_ENABLED) {
     console.warn('⚠️ Telegram Bot chưa cấu hình đầy đủ (cần TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, TELEGRAM_BOT_USERNAME)');
@@ -4869,7 +4871,6 @@ app.post('/api/user/google-me', async (req, res) => {
                 fullName: dbUser.full_name,
                 email: dbUser.email,
                 balance: Number(dbUser.balance),
-                // THÊM: Trả avatar về cho Frontend
                 avatar: dbUser.avatar_url || null, 
                 depositHistory: safeParseJSON(dbUser.deposit_history),
                 purchaseHistory: safeParseJSON(dbUser.purchase_history)
@@ -5046,6 +5047,399 @@ app.post('/api/admin/video-tasks/review', requireAdminToken, async (req, res) =>
         client.release();
     }
 });
+
+app.post('/api/admin/band-user-warning', verifyAdminToken, async (req, res) => {
+  try {
+    const { username, reason, pin } = req.body;
+
+    if (!verifyAdminPin(pin)) {
+      return res.status(403).json({ error: 'Mã PIN Admin không đúng' });
+    }
+    
+    if (!username || !reason) {
+      return res.status(400).json({ error: 'Thiếu username hoặc lý do' });
+    }
+    
+    const db = getDatabase();
+    const user = db.users?.find(u => u.username === username);
+    if (!user) {
+      return res.status(404).json({ error: 'Không tìm thấy người dùng' });
+    }
+    
+    if (user.status === 'banned') {
+      return res.status(400).json({ error: 'Tài khoản đã bị khóa' });
+    }
+
+    const scheduledBandAt = Date.now() + BAND_DURATION_MS;
+    const bandId = 'band_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+
+    if (!db.bandSchedules) db.bandSchedules = [];
+    if (!db.appeals) db.appeals = [];
+
+    db.bandSchedules = db.bandSchedules.filter(b => b.username !== username || b.status !== 'pending');
+    
+    const bandSchedule = {
+      id: bandId,
+      username,
+      reason,
+      scheduledAt: scheduledBandAt,
+      createdAt: Date.now(),
+      status: 'pending',
+      appealId: null,
+      createdBy: 'admin'
+    };
+    db.bandSchedules.push(bandSchedule);
+
+    const notifId = 'notif_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    const notifContent = `
+      <div style="font-family: system-ui, sans-serif; line-height: 1.7;">
+        <p><strong style="color:#ef4444; font-size: 16px;">⚠️ CẢNH BÁO VI PHẠM</strong></p>
+        <p>Xin chào <strong>${escapeHtml(username)}</strong>,</p>
+        <p>Tài khoản của bạn <strong style="color:#ef4444;">sẽ bị BAND sau 7 ngày</strong> vì có hành vi vi phạm chính sách của chúng tôi.</p>
+        <p><strong>Lý do cụ thể:</strong></p>
+        <blockquote style="border-left: 3px solid #ef4444; padding: 8px 16px; background: rgba(239,68,68,0.1); border-radius: 6px; margin: 12px 0;">
+          ${escapeHtml(reason)}
+        </blockquote>
+        <p>Bạn có thể <strong>kháng cáo</strong> trong vòng 7 ngày. Nếu kháng cáo của bạn không được chấp thuận, tài khoản sẽ buộc bị khóa.</p>
+        <p style="color:#64748b; font-size: 13px; margin-top: 20px;">
+          ⏰ Hạn chót: <strong>${new Date(scheduledBandAt).toLocaleString('vi-VN')}</strong>
+        </p>
+        <p style="margin-top: 20px;">Xin cảm ơn!</p>
+      </div>
+    `;
+    
+    if (!db.userNotifications) db.userNotifications = [];
+    db.userNotifications.push({
+      id: notifId,
+      username,
+      title: 'Cảnh báo: Tài khoản sẽ bị khóa sau 7 ngày',
+      content_html: notifContent,
+      content_text: stripHtml(notifContent),
+      type: 'band_warning',
+      band_id: bandId,
+      read_status: 'unread',
+      created_at: new Date().toISOString(),
+      has_appeal: true
+    });
+    
+    saveDatabase(db);
+
+    if (user.email) {
+      sendBandWarningEmail(user.email, username, reason, scheduledBandAt).catch(console.error);
+    }
+    
+    res.json({
+      success: true,
+      message: `Đã gửi cảnh báo band tới ${username}. Sẽ tự động khóa sau 7 ngày nếu không kháng cáo thành công.`,
+      bandId,
+      scheduledAt: scheduledBandAt
+    });
+    
+  } catch (err) {
+    console.error('band-user-warning error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/user/appeal-band', verifyUserToken, async (req, res) => {
+  try {
+    const { bandId, content, confirmed } = req.body;
+    const username = req.user.username;
+    
+    if (!confirmed) {
+      return res.status(400).json({ error: 'Bạn phải xác nhận nội dung là sự thật' });
+    }
+    
+    if (!content || content.trim().length < 20) {
+      return res.status(400).json({ error: 'Nội dung kháng cáo phải ít nhất 20 ký tự' });
+    }
+    
+    const db = getDatabase();
+    if (!db.bandSchedules) db.bandSchedules = [];
+    if (!db.appeals) db.appeals = [];
+    
+    const band = db.bandSchedules.find(b => b.id === bandId && b.username === username);
+    if (!band) {
+      return res.status(404).json({ error: 'Không tìm thấy cảnh báo band' });
+    }
+    
+    if (band.status !== 'pending') {
+      return res.status(400).json({ error: 'Cảnh báo này đã được xử lý' });
+    }
+
+    const existingAppeal = db.appeals.find(a => a.bandId === bandId && a.username === username);
+    if (existingAppeal && existingAppeal.status === 'pending') {
+      return res.status(400).json({ error: 'Bạn đã gửi kháng cáo, vui lòng chờ xử lý' });
+    }
+    
+    const appealId = 'appeal_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    const appeal = {
+      id: appealId,
+      bandId,
+      username,
+      content: content.trim(),
+      confirmed: true,
+      status: 'pending',
+      createdAt: Date.now(),
+      reviewedAt: null,
+      reviewedBy: null,
+      adminNote: null
+    };
+    db.appeals.push(appeal);
+    
+    band.appealId = appealId;
+    band.status = 'appealing';
+    if (!db.userNotifications) db.userNotifications = [];
+    db.userNotifications.push({
+      id: 'notif_' + Date.now(),
+      username,
+      title: '📩 Đã nhận kháng cáo của bạn',
+      content_html: `<p>Kháng cáo của bạn đã được ghi nhận. Chúng tôi sẽ xem xét trong thời gian sớm nhất.</p><p>Mã kháng cáo: <strong>${appealId}</strong></p>`,
+      content_text: 'Kháng cáo của bạn đã được ghi nhận.',
+      type: 'appeal_received',
+      read_status: 'unread',
+      created_at: new Date().toISOString()
+    });
+    
+    saveDatabase(db);
+
+    res.json({
+      success: true,
+      message: 'Đã gửi kháng cáo thành công! Vui lòng chờ xét duyệt.',
+      appealId
+    });
+    
+  } catch (err) {
+    console.error('appeal-band error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/appeals/list', verifyAdminToken, async (req, res) => {
+  try {
+    const { status = 'all' } = req.body;
+    const db = getDatabase();
+    
+    let appeals = db.appeals || [];
+    if (status !== 'all') {
+      appeals = appeals.filter(a => a.status === status);
+    }
+
+    const enriched = appeals.map(a => {
+      const user = (db.users || []).find(u => u.username === a.username);
+      const band = (db.bandSchedules || []).find(b => b.id === a.bandId);
+      return {
+        ...a,
+        user_email: user?.email || '',
+        user_fullname: user?.fullName || '',
+        user_avatar: user?.avatar || '',
+        band_reason: band?.reason || '',
+        band_scheduled_at: band?.scheduledAt || null,
+        band_status: band?.status || 'unknown',
+        days_left: band ? Math.max(0, Math.ceil((band.scheduledAt - Date.now()) / (24*60*60*1000))) : 0
+      };
+    }).sort((a, b) => b.createdAt - a.createdAt);
+    
+    res.json({ success: true, appeals: enriched });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/appeals/review', verifyAdminToken, async (req, res) => {
+  try {
+    const { appealId, action, adminNote, pin } = req.body;
+    
+    if (!verifyAdminPin(pin)) {
+      return res.status(403).json({ error: 'Mã PIN Admin không đúng' });
+    }
+    
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'Action không hợp lệ' });
+    }
+    
+    const db = getDatabase();
+    const appeal = (db.appeals || []).find(a => a.id === appealId);
+    if (!appeal) {
+      return res.status(404).json({ error: 'Không tìm thấy kháng cáo' });
+    }
+    
+    if (appeal.status !== 'pending') {
+      return res.status(400).json({ error: 'Kháng cáo đã được xử lý' });
+    }
+    
+    const band = (db.bandSchedules || []).find(b => b.id === appeal.bandId);
+    const user = (db.users || []).find(u => u.username === appeal.username);
+    
+    appeal.status = action === 'approve' ? 'approved' : 'rejected';
+    appeal.reviewedAt = Date.now();
+    appeal.reviewedBy = req.admin.email || 'admin';
+    appeal.adminNote = adminNote || '';
+    
+    if (action === 'approve') {
+
+      if (band) {
+        band.status = 'cancelled';
+        band.cancelledAt = Date.now();
+        band.cancelledReason = 'appeal_approved';
+      }
+      
+      if (!db.userNotifications) db.userNotifications = [];
+      db.userNotifications.push({
+        id: 'notif_' + Date.now(),
+        username: appeal.username,
+        title: '✅ Kháng cáo được chấp thuận',
+        content_html: `<div style="line-height:1.7;">
+          <p><strong style="color:#22c55e;">🎉 Tin vui!</strong></p>
+          <p>Kháng cáo của bạn đã được <strong style="color:#22c55e;">CHẤP THUẬN</strong>.</p>
+          <p>Tài khoản của bạn sẽ <strong>KHÔNG</strong> bị khóa. Cảnh báo band đã được hủy bỏ.</p>
+          ${adminNote ? `<p><strong>Ghi chú từ Admin:</strong> ${escapeHtml(adminNote)}</p>` : ''}
+          <p>Vui lòng tuân thủ đúng chính sách để tránh vi phạm trong tương lai.</p>
+          <p>Xin cảm ơn!</p>
+        </div>`,
+        content_text: 'Kháng cáo của bạn đã được chấp thuận. Tài khoản không bị khóa.',
+        type: 'appeal_approved',
+        read_status: 'unread',
+        created_at: new Date().toISOString()
+      });
+      
+    } else {
+
+      if (band) {
+        band.status = 'rejected';
+      }
+
+      const shouldBandNow = band && Date.now() >= band.scheduledAt;
+      
+      if (shouldBandNow && user) {
+        user.status = 'banned';
+        user.bannedAt = Date.now();
+        user.banReason = band.reason;
+      }
+      
+      if (!db.userNotifications) db.userNotifications = [];
+      db.userNotifications.push({
+        id: 'notif_' + Date.now(),
+        username: appeal.username,
+        title: shouldBandNow ? '🚫 Tài khoản đã bị khóa' : '❌ Kháng cáo bị từ chối',
+        content_html: `<div style="line-height:1.7;">
+          <p><strong style="color:#ef4444;">Kháng cáo của bạn đã bị TỪ CHỐI</strong></p>
+          ${adminNote ? `<p><strong>Lý do:</strong> ${escapeHtml(adminNote)}</p>` : ''}
+          ${shouldBandNow 
+            ? '<p>Tài khoản của bạn đã bị khóa do hết hạn kháng cáo.</p>'
+            : `<p>Tài khoản sẽ bị khóa vào <strong>${band ? new Date(band.scheduledAt).toLocaleString('vi-VN') : 'thời gian sắp tới'}</strong>.</p>`}
+          <p>Xin cảm ơn!</p>
+        </div>`,
+        content_text: 'Kháng cáo bị từ chối.',
+        type: 'appeal_rejected',
+        read_status: 'unread',
+        created_at: new Date().toISOString()
+      });
+    }
+    
+    saveDatabase(db);
+    
+    res.json({
+      success: true,
+      message: action === 'approve' ? 'Đã chấp thuận kháng cáo. Band đã được hủy.' : 'Đã từ chối kháng cáo.',
+      action
+    });
+    
+  } catch (err) {
+    console.error('appeals/review error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+async function checkAndExecuteBands() {
+  try {
+    const db = getDatabase();
+    if (!db.bandSchedules) return;
+    
+    const now = Date.now();
+    let changed = false;
+    
+    for (const band of db.bandSchedules) {
+      if (band.status !== 'pending' && band.status !== 'appealing') continue;
+      if (now < band.scheduledAt) continue;
+
+      const appeal = (db.appeals || []).find(a => a.bandId === band.id);
+      if (appeal && appeal.status === 'approved') {
+        band.status = 'cancelled';
+        changed = true;
+        continue;
+      }
+      
+      if (appeal && appeal.status === 'pending') {
+        continue;
+      }
+
+      const user = (db.users || []).find(u => u.username === band.username);
+      if (user && user.status !== 'banned') {
+        user.status = 'banned';
+        user.bannedAt = now;
+        user.banReason = band.reason;
+        band.status = 'executed';
+        changed = true;
+
+        if (!db.userNotifications) db.userNotifications = [];
+        db.userNotifications.push({
+          id: 'notif_' + Date.now(),
+          username: band.username,
+          title: '🚫 Tài khoản của bạn đã bị khóa',
+          content_html: `<p>Tài khoản của bạn đã bị khóa vì vi phạm chính sách.</p><p>Lý do: ${escapeHtml(band.reason)}</p>`,
+          content_text: 'Tài khoản đã bị khóa.',
+          type: 'band_executed',
+          read_status: 'unread',
+          created_at: new Date().toISOString()
+        });
+      }
+    }
+    
+    if (changed) saveDatabase(db);
+  } catch (err) {
+    console.error('checkAndExecuteBands error:', err);
+  }
+}
+
+setInterval(checkAndExecuteBands, 60 * 60 * 1000);
+setTimeout(checkAndExecuteBands, 30000);
+
+async function sendBandWarningEmail(email, username, reason, scheduledAt) {
+  if (!email) return;
+  try {
+    await sendEmail({
+      to: email,
+      subject: '⚠️ Cảnh báo: Tài khoản của bạn sẽ bị khóa sau 7 ngày',
+      html: `
+        <h2 style="color: #ef4444;">⚠️ CẢNH BÁO VI PHẠM</h2>
+        <p>Xin chào <strong>${username}</strong>,</p>
+        <p>Tài khoản của bạn <strong style="color:#ef4444;">sẽ bị BAND sau 7 ngày</strong> vì vi phạm chính sách.</p>
+        <p><strong>Lý do:</strong> ${reason}</p>
+        <p>Bạn có thể đăng nhập vào website để <strong>kháng cáo</strong>.</p>
+        <p><strong>Hạn chót:</strong> ${new Date(scheduledAt).toLocaleString('vi-VN')}</p>
+        <p>Xin cảm ơn!</p>
+      `
+    });
+  } catch (e) {
+    console.error('sendBandWarningEmail:', e);
+  }
+}
+
+/* Helper escapeHtml & stripHtml */
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+function stripHtml(html) {
+  return String(html || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function verifyAdminPin(pin) {
+  const ADMIN_PIN = process.env.ADMIN_PIN || '';
+  return String(pin) === ADMIN_PIN;
+}
 
 app.use((req, res) => res.status(404).json({ error: 'API không tồn tại: ' + req.path }));
 app.use((err, req, res, next) => {
