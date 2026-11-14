@@ -3112,36 +3112,33 @@ app.post('/api/pay2s-create-order', requireActiveUser, async (req, res) => {
     }
 });
 
-app.post('/api/pay2s-webhook', async (req, res) => {
+app.post('/api/pay2s-webhook', express.urlencoded({ extended: true }), express.json(), async (req, res) => {
     try {
         if (PAY2S_WEBHOOK_TOKEN) {
             const authHeader = req.headers['authorization'] || '';
             const token = authHeader.replace(/^Bearer\s+/i, '');
             if (!safeCompareToken(token, PAY2S_WEBHOOK_TOKEN)) {
-                return res.status(401).json({ success: false, message: 'Unauthorized' });
+                console.log('⏭️ [Pay2S] Unauthorized');
+                return res.status(200).json({ success: true }); // Trả 200 để Pay2S không gửi lại
             }
         }
 
         const data = req.body;
+        console.log('📥 [Pay2S Webhook] Data nhận được:', JSON.stringify(data));
 
-        // Verify Signature
-        if (data.m2signature) {
-            const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
-            const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawHash).digest('hex');
-            if (expectedSignature !== data.m2signature) {
-                console.error('❌ [Pay2S] SIGNATURE MISMATCH!');
-                return res.status(400).json({ success: false, message: 'Invalid signature' });
-            }
-        }
-
+        // 1. Kiểm tra mã phản hồi
         if (String(data.resultCode) !== '0') {
+            console.log(`⏭️ [Pay2S] Giao dịch thất bại hoặc hủy (resultCode=${data.resultCode})`);
             return res.status(200).json({ success: true });
         }
 
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.orderInfo || data.content || '').toUpperCase();
-        
-        // ✅ FIX: CHỈ XỬ LÝ KHI LÀ NẠP TIỀN (NAP...)
+        const transId = data.transId || data.transactionNumber;
+
+        console.log(`🔍 [Pay2S] Content="${content}" | Amount=${amount} | transId=${transId}`);
+
+        // 2. Chỉ xử lý khi là lệnh nạp tiền (NAP...)
         if (!content.includes('NAP')) {
             console.log(`⏭️ [Pay2S] Bỏ qua nội dung không phải nạp tiền: "${content}"`);
             return res.status(200).json({ success: true, message: 'Ignored - not a deposit' });
@@ -3149,15 +3146,9 @@ app.post('/api/pay2s-webhook', async (req, res) => {
 
         const match = content.match(/NAP[_\s\-\.]*([A-Z0-9_\.\-]+)/i);
 
-        if (match && match[1] && amount > 0) {
+        if (match && match[1] && amount > 0 && transId) {
             const username = match[1].toLowerCase();
-            const transId = data.transId || data.transactionNumber;
-
             console.log(`🔍 [Pay2S] Xử lý nạp tiền. User: ${username}, Tiền: ${amount}, transId: ${transId}`);
-
-            if (!transId) {
-                return res.status(200).json({ success: true });
-            }
 
             const client = await pool.connect();
             try {
@@ -3217,13 +3208,13 @@ app.post('/api/pay2s-webhook', async (req, res) => {
                 client.release();
             }
         } else {
-            console.warn(`⚠️ [Pay2S] Không parse được username từ content="${content}"`);
+            console.warn(`⚠️ [Pay2S] Không parse được username hoặc thiếu transId từ content="${content}"`);
         }
 
         return res.status(200).json({ success: true });
     } catch (error) {
         console.error('❌ [Pay2S] Webhook error:', error);
-        return res.status(500).json({ success: false });
+        return res.status(200).json({ success: true }); // Luôn trả 200 để Pay2S không kẹt
     }
 });
 
