@@ -3133,94 +3133,108 @@ app.post('/api/pay2s-webhook', async (req, res) => {
 
         const data = req.body;
 
+        // ==================== VERIFY SIGNATURE ====================
         if (data.m2signature) {
-    const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
-    const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawHash).digest('hex');
-    if (expectedSignature !== data.m2signature) {
-        console.error('❌ [Pay2S] SIGNATURE MISMATCH!');
-        console.error('  rawHash:', rawHash);
-        console.error('  expected:', expectedSignature);
-        console.error('  received:', data.m2signature);
-        console.error('  Full payload:', JSON.stringify(data));
-        return res.status(400).json({ success: false, message: 'Invalid signature' });
-    }
-    console.log('✅ [Pay2S] Signature OK');
-}
+            const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
+            const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawHash).digest('hex');
+            if (expectedSignature !== data.m2signature) {
+                console.error('❌ [Pay2S] SIGNATURE MISMATCH!');
+                console.error('  rawHash:', rawHash);
+                console.error('  expected:', expectedSignature);
+                console.error('  received:', data.m2signature);
+                console.error('  Full payload:', JSON.stringify(data));
+                return res.status(400).json({ success: false, message: 'Invalid signature' });
+            }
+            console.log('✅ [Pay2S] Signature OK');
+        }
 
-        if (String(data.resultCode) !== '0') return res.status(200).json({ success: true });
+        // ==================== CHỈ XỬ LÝ KHI resultCode === 0 ====================
+        if (String(data.resultCode) !== '0') {
+            return res.status(200).json({ success: true });
+        }
 
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.orderInfo || data.content || '').toUpperCase();
         const match = content.match(/NAP[_\s\-\.]*([A-Z0-9_\.\-]+)/i);
 
         if (match && match[1] && amount > 0) {
-    const username = match[1].toLowerCase();
-    const transId = data.transId || data.transactionNumber;
+            const username = match[1].toLowerCase();
+            const transId = data.transId || data.transactionNumber;
 
-    if (!transId) {
-        console.warn('⚠️ [Pay2S] Webhook không có transId — bỏ qua');
-        return res.status(200).json({ success: true });
-    }
+            console.log(`🔍 [Pay2S] content="${content}" | username="${username}" | amount=${amount} | transId=${transId}`);
 
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
+            if (!transId) {
+                console.warn('⚠️ [Pay2S] Webhook không có transId — bỏ qua');
+                return res.status(200).json({ success: true });
+            }
 
-        const { rows: userRows } = await client.query(
-            'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
-            [username]
-        );
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
 
-        if (userRows.length > 0) {
-            const user = userRows[0];
-            const depositHistory = safeParseJSON(user.deposit_history);
-            const isDuplicate = depositHistory.some(d => d.transactionId === transId);
-
-            if (!isDuplicate) {
-                depositHistory.push({
-                    amount, method: 'pay2s',
-                    content: data.orderInfo || data.content || '',
-                    transactionId: transId,
-                    at: new Date().toISOString()
-                });
-                await client.query(
-                    'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
-                    [amount, JSON.stringify(depositHistory), user.username]
+                const { rows: userRows } = await client.query(
+                    'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
+                    [username]
                 );
-                console.log(`💰 [Pay2S] Đã cộng ${amount}đ cho ${user.username} (transId=${transId})`);
 
-                const oldHistoryForTier = depositHistory.slice(0, -1);
-                setImmediate(() => {
-                    checkAndSendTierUpgrade(user.username, oldHistoryForTier)
-                        .catch(err => console.error('Tier check error:', err.message));
-                });
-            } else {
-                console.log(`⚠️ [Pay2S] transId ${transId} đã xử lý — bỏ qua`);
+                if (userRows.length > 0) {
+                    const user = userRows[0];
+                    const depositHistory = safeParseJSON(user.deposit_history);
+                    const isDuplicate = depositHistory.some(d => d.transactionId === transId);
+
+                    if (!isDuplicate) {
+                        depositHistory.push({
+                            amount, method: 'pay2s',
+                            content: data.orderInfo || data.content || '',
+                            transactionId: transId,
+                            at: new Date().toISOString()
+                        });
+                        await client.query(
+                            'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
+                            [amount, JSON.stringify(depositHistory), user.username]
+                        );
+                        console.log(`💰 [Pay2S] Đã cộng ${amount}đ cho ${user.username} (transId=${transId})`);
+
+                        const oldHistoryForTier = depositHistory.slice(0, -1);
+                        setImmediate(() => {
+                            checkAndSendTierUpgrade(user.username, oldHistoryForTier)
+                                .catch(err => console.error('Tier check error:', err.message));
+                        });
+                    } else {
+                        console.log(`⚠️ [Pay2S] transId ${transId} đã xử lý — bỏ qua`);
+                    }
+                } else {
+                    console.error(`❌ [Pay2S] KHÔNG TÌM THẤY USER "${username}". Lưu vào unmatched_payments.`);
+                    try {
+                        await client.query(
+                            `INSERT INTO unmatched_payments (gateway, amount, content, transaction_id, raw_payload)
+                             VALUES ($1, $2, $3, $4, $5)
+                             ON CONFLICT (transaction_id) DO NOTHING`,
+                            ['pay2s', amount, data.orderInfo || data.content || '', transId, JSON.stringify(data)]
+                        );
+                    } catch (logErr) {
+                        console.error('❌ Không lưu được unmatched_payment:', logErr.message);
+                    }
+                }
+
+                await client.query('COMMIT');
+            } catch (txErr) {
+                await client.query('ROLLBACK');
+                console.error('❌ [Pay2S] TX error:', txErr.message);
+                throw txErr;
+            } finally {
+                client.release();
             }
         } else {
-            console.error(`❌ [Pay2S] KHÔNG TÌM THẤY USER "${username}". Lưu vào unmatched_payments.`);
-            try {
-                await client.query(
-                    `INSERT INTO unmatched_payments (gateway, amount, content, transaction_id, raw_payload)
-                     VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT (transaction_id) DO NOTHING`,
-                    ['pay2s', amount, data.orderInfo || data.content || '', transId, JSON.stringify(data)]
-                );
-            } catch (logErr) {
-                console.error('❌ Không lưu được unmatched_payment:', logErr.message);
-            }
+            console.warn(`⚠️ [Pay2S] Không parse được username từ content="${content}", amount=${amount}`);
         }
 
-        await client.query('COMMIT');
-    } catch (txErr) {
-        await client.query('ROLLBACK');
-        console.error('❌ [Pay2S] TX error:', txErr.message);
-        throw txErr;
-    } finally {
-        client.release();
+        return res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('❌ [Pay2S] Webhook error:', error);
+        return res.status(500).json({ success: false });
     }
-}
-res.status(200).json({ success: true });
+});
 
 app.post('/api/webhub-create-order', requireActiveUser, async (req, res) => {
     try {
