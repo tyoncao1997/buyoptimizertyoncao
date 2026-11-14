@@ -1109,8 +1109,9 @@ async function requireAuthOnly(req, res, next) {
             WHERE s.token = $1
         `, [token]);
 
-        if (rows.length === 0) {
-            return res.status(401).json({ success: false, error: 'Phiên không hợp lệ', code: 'INVALID_TOKEN' });
+        // Bổ sung kiểm tra user tồn tại
+        if (rows.length === 0 || !rows[0].user_status) {
+            return res.status(401).json({ success: false, error: 'Phiên không hợp lệ hoặc tài khoản không tồn tại', code: 'INVALID_SESSION' });
         }
         
         const session = rows[0];
@@ -1121,6 +1122,7 @@ async function requireAuthOnly(req, res, next) {
             await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
             return res.status(401).json({ success: false, error: 'Phiên đã hết hạn tuyệt đối.', code: 'ABSOLUTE_TIMEOUT' });
         }
+
         pool.query('UPDATE sessions SET last_activity = NOW() WHERE token = $1', [token])
             .catch(err => console.error('Heartbeat failed:', err.message));
 
