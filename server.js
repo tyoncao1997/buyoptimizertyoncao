@@ -2231,60 +2231,50 @@ async function handleSePayWebhook(req, res) {
                 console.error('❌ [SePay] Signature KHÔNG KHỚP!');
                 return res.status(401).json({ success: false, error: 'Invalid signature' });
             }
-        } else {
-            console.warn('⚠️ [SePay] Thiếu signature/timestamp/secret');
         }
 
         const data = JSON.parse(rawBody);
         console.log('📥 [SePay Webhook] Data:', JSON.stringify(data));
 
         if (data.transferType !== 'in') {
-            return res.status(200).json({ success: true, message: 'Ignored - not incoming' });
+            return res.status(200).json({ success: true, message: 'Ignored' });
         }
 
         const amount = parseInt(data.transferAmount);
         const content = (data.content || data.description || '').toUpperCase();
         const transactionId = data.id || data.referenceCode || data.transactionId || 'N/A';
 
-        console.log(`💰 [SePay] Nhận ${amount}đ, Nội dung: "${content}"`);
-        const cleanContent = content.replace(/[^A-Z0-9]/g, '');
-const tyonMatch = content.match(/TYON[A-Z0-9]{6,}/);
-const extractedCode = tyonMatch ? tyonMatch[0] : null;
+        // ✅ FIX: CHỈ XỬ LÝ KHI LÀ MÃ ĐƠN HÀNG (TYON...)
+        if (!content.includes('TYON')) {
+            console.log(`⏭️ [SePay] Bỏ qua nội dung không phải đơn hàng: "${content}"`);
+            return res.status(200).json({ success: true, message: 'Ignored - not an order code' });
+        }
 
-console.log(`🔍 [SePay] Content gốc: "${content}"`);
-console.log(`🔍 [SePay] cleanContent: "${cleanContent}"`);
-console.log(`🔍 [SePay] extractedCode: "${extractedCode}"`);
+        const tyonMatch = content.match(/TYON[A-Z0-9]{6,}/);
+        const extractedCode = tyonMatch ? tyonMatch[0] : null;
 
-let { rows } = await pool.query(
-    `SELECT * FROM orders 
-     WHERE status IN ('pending', 'underpaid')
-       AND (
-           -- Ưu tiên 1: mã đơn trích xuất được = order_code (bỏ dấu cách)
-           ($1 <> '' AND UPPER(REPLACE(order_code,' ','')) = $1)
-           -- Ưu tiên 2: order_code nằm trong content
-           OR $2 LIKE '%' || UPPER(REPLACE(order_code,' ','')) || '%'
-           -- Ưu tiên 3: content nằm trong order_code (trường hợp hiếm)
-           OR UPPER(REPLACE(order_code,' ','')) LIKE '%' || $3 || '%'
-       )
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    [extractedCode || '', content.trim(), cleanContent]
-);
+        if (!extractedCode) {
+            return res.status(200).json({ success: true, message: 'No TYON code found' });
+        }
 
-if (rows.length === 0) {
-    console.error(`❌ [SePay] KHÔNG MATCH ĐƠN. content="${content}", cleanContent="${cleanContent}", extractedCode="${extractedCode}"`);
-    try {
-        const { rows: pendingList } = await pool.query(
-            `SELECT order_code, amount FROM orders 
-             WHERE status IN ('pending', 'underpaid') 
-             ORDER BY created_at DESC LIMIT 5`
+        console.log(`🔍 [SePay] Xử lý đơn hàng. Mã: ${extractedCode}, Tiền: ${amount}`);
+
+        let { rows } = await pool.query(
+            `SELECT * FROM orders 
+             WHERE status IN ('pending', 'underpaid')
+               AND (
+                   UPPER(REPLACE(order_code,' ','')) = $1
+                   OR $2 LIKE '%' || UPPER(REPLACE(order_code,' ','')) || '%'
+               )
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [extractedCode, content.trim()]
         );
-        console.error(`❌ [SePay] 5 đơn pending gần nhất:`, pendingList);
-    } catch (_) {}
-    return res.status(200).json({ success: true, message: 'No matching order' });
-}
 
-console.log(`✅ [SePay] MATCH đơn: ${rows[0].order_code} (amount=${rows[0].amount}, paid=${rows[0].paid_amount || 0})`);
+        if (rows.length === 0) {
+            console.error(`❌ [SePay] KHÔNG TÌM THẤY ĐƠN. Content="${content}"`);
+            return res.status(200).json({ success: true, message: 'No matching order' });
+        }
 
         const o = rows[0];
         const requiredAmount = Number(o.amount);
@@ -2292,73 +2282,58 @@ console.log(`✅ [SePay] MATCH đơn: ${rows[0].order_code} (amount=${rows[0].am
         const totalReceived = currentPaidAmount + amount;
 
         if (totalReceived >= requiredAmount) {
-    // ✅ FIX: Cập nhật đơn + CỘNG TIỀN vào ví user
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-        
-        // Bước 1: Cập nhật đơn hàng
-        await client.query(
-            `UPDATE orders 
-             SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
-             WHERE order_code=$4`,
-            [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
-        );
-        
-        // Bước 2: Cộng tiền vào ví user (nếu có customer_username)
-        const targetUsername = o.customer_username;
-        if (targetUsername) {
-            const { rows: userRows } = await client.query(
-                'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
-                [targetUsername]
-            );
-            
-            if (userRows.length > 0) {
-                const user = userRows[0];
-                const depositHistory = safeParseJSON(user.deposit_history);
-                const isDuplicate = depositHistory.some(d => d.transactionId === transactionId);
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
                 
-                if (!isDuplicate) {
-                    depositHistory.push({
-                        amount: totalReceived,
-                        method: 'sepay_qr',
-                        content: `Thanh toán đơn QR: ${o.order_code}`,
-                        transactionId,
-                        orderCode: o.order_code,
-                        at: new Date().toISOString()
-                    });
-                    
-                    await client.query(
-                        'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
-                        [totalReceived, JSON.stringify(depositHistory), user.username]
+                // Cập nhật đơn hàng
+                await client.query(
+                    `UPDATE orders 
+                     SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
+                     WHERE order_code=$4`,
+                    [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
+                );
+                
+                // ✅ FIX: Cộng tiền vào ví luôn nếu đây là đơn nạp tiền (nếu bạn muốn)
+                // Nếu đơn hàng của bạn không cần cộng ví thì xóa đoạn dưới này đi.
+                const targetUsername = o.customer_username;
+                if (targetUsername) {
+                    const { rows: userRows } = await client.query(
+                        'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
+                        [targetUsername]
                     );
-                    
-                    console.log(`💰 [SePay] Đã cộng ${totalReceived}đ vào ví ${user.username} (đơn ${o.order_code})`);
-                    
-                    // Check tier upgrade
-                    const oldHistoryForTier = depositHistory.slice(0, -1);
-                    setImmediate(() => {
-                        checkAndSendTierUpgrade(user.username, oldHistoryForTier)
-                            .catch(err => console.error('Tier check error:', err.message));
-                    });
-                } else {
-                    console.log(`⚠️ [SePay] transId ${transactionId} đã cộng rồi — bỏ qua`);
+                    if (userRows.length > 0) {
+                        const user = userRows[0];
+                        const depositHistory = safeParseJSON(user.deposit_history);
+                        const isDuplicate = depositHistory.some(d => d.transactionId === transactionId);
+                        
+                        if (!isDuplicate) {
+                            depositHistory.push({
+                                amount: totalReceived,
+                                method: 'sepay_qr',
+                                content: `Thanh toán đơn QR: ${o.order_code}`,
+                                transactionId,
+                                orderCode: o.order_code,
+                                at: new Date().toISOString()
+                            });
+                            await client.query(
+                                'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
+                                [totalReceived, JSON.stringify(depositHistory), user.username]
+                            );
+                            console.log(`💰 [SePay] Đã cộng ${totalReceived}đ vào ví ${user.username}`);
+                        }
+                    }
                 }
-            } else {
-                console.warn(`⚠️ [SePay] Không tìm thấy user ${targetUsername} để cộng tiền`);
+
+                await client.query('COMMIT');
+                console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ VÀ XỬ LÝ XONG!`);
+            } catch (txErr) {
+                await client.query('ROLLBACK');
+                throw txErr;
+            } finally {
+                client.release();
             }
-        }
-        
-        await client.query('COMMIT');
-        console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ VÀ CỘNG TIỀN!`);
-    } catch (txErr) {
-        await client.query('ROLLBACK');
-        console.error('❌ [SePay] TX error khi cộng tiền:', txErr.message);
-        throw txErr;
-    } finally {
-        client.release();
-    }
-} else {
+        } else {
             const note = `Thanh toán thiếu: cần ${requiredAmount}đ, đã nhận ${totalReceived}đ`;
             await pool.query(
                 `UPDATE orders SET status='underpaid', paid_amount=$1, transaction_id=$2, note=$3 WHERE order_code=$4`,
@@ -2373,7 +2348,6 @@ console.log(`✅ [SePay] MATCH đơn: ${rows[0].order_code} (amount=${rows[0].am
         return res.status(500).json({ success: false, error: 'Internal error' });
     }
 }
-
 /* ═══════════════════════════════════════════════════════════════════════════
    SECTION 26: KYC
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -3192,38 +3166,38 @@ app.post('/api/pay2s-webhook', async (req, res) => {
 
         const data = req.body;
 
-        // ==================== VERIFY SIGNATURE ====================
+        // Verify Signature
         if (data.m2signature) {
             const rawHash = `accessKey=${data.accessKey}&amount=${data.amount}&extraData=${data.extraData || ''}&message=${data.message}&orderId=${data.orderId}&orderInfo=${data.orderInfo}&orderType=${data.orderType}&partnerCode=${data.partnerCode}&payType=${data.payType}&requestId=${data.requestId}&responseTime=${data.responseTime}&resultCode=${data.resultCode}&transId=${data.transId}`;
             const expectedSignature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawHash).digest('hex');
             if (expectedSignature !== data.m2signature) {
                 console.error('❌ [Pay2S] SIGNATURE MISMATCH!');
-                console.error('  rawHash:', rawHash);
-                console.error('  expected:', expectedSignature);
-                console.error('  received:', data.m2signature);
-                console.error('  Full payload:', JSON.stringify(data));
                 return res.status(400).json({ success: false, message: 'Invalid signature' });
             }
-            console.log('✅ [Pay2S] Signature OK');
         }
 
-        // ==================== CHỈ XỬ LÝ KHI resultCode === 0 ====================
         if (String(data.resultCode) !== '0') {
             return res.status(200).json({ success: true });
         }
 
         const amount = parseInt(data.amount || data.transferAmount || 0);
         const content = (data.orderInfo || data.content || '').toUpperCase();
+        
+        // ✅ FIX: CHỈ XỬ LÝ KHI LÀ NẠP TIỀN (NAP...)
+        if (!content.includes('NAP')) {
+            console.log(`⏭️ [Pay2S] Bỏ qua nội dung không phải nạp tiền: "${content}"`);
+            return res.status(200).json({ success: true, message: 'Ignored - not a deposit' });
+        }
+
         const match = content.match(/NAP[_\s\-\.]*([A-Z0-9_\.\-]+)/i);
 
         if (match && match[1] && amount > 0) {
             const username = match[1].toLowerCase();
             const transId = data.transId || data.transactionNumber;
 
-            console.log(`🔍 [Pay2S] content="${content}" | username="${username}" | amount=${amount} | transId=${transId}`);
+            console.log(`🔍 [Pay2S] Xử lý nạp tiền. User: ${username}, Tiền: ${amount}, transId: ${transId}`);
 
             if (!transId) {
-                console.warn('⚠️ [Pay2S] Webhook không có transId — bỏ qua');
                 return res.status(200).json({ success: true });
             }
 
@@ -3252,7 +3226,7 @@ app.post('/api/pay2s-webhook', async (req, res) => {
                             'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
                             [amount, JSON.stringify(depositHistory), user.username]
                         );
-                        console.log(`💰 [Pay2S] Đã cộng ${amount}đ cho ${user.username} (transId=${transId})`);
+                        console.log(`💰 [Pay2S] Đã cộng ${amount}đ vào ví ${user.username} (transId=${transId})`);
 
                         const oldHistoryForTier = depositHistory.slice(0, -1);
                         setImmediate(() => {
@@ -3263,7 +3237,7 @@ app.post('/api/pay2s-webhook', async (req, res) => {
                         console.log(`⚠️ [Pay2S] transId ${transId} đã xử lý — bỏ qua`);
                     }
                 } else {
-                    console.error(`❌ [Pay2S] KHÔNG TÌM THẤY USER "${username}". Lưu vào unmatched_payments.`);
+                    console.error(`❌ [Pay2S] KHÔNG TÌM THẤY USER "${username}".`);
                     try {
                         await client.query(
                             `INSERT INTO unmatched_payments (gateway, amount, content, transaction_id, raw_payload)
@@ -3285,7 +3259,7 @@ app.post('/api/pay2s-webhook', async (req, res) => {
                 client.release();
             }
         } else {
-            console.warn(`⚠️ [Pay2S] Không parse được username từ content="${content}", amount=${amount}`);
+            console.warn(`⚠️ [Pay2S] Không parse được username từ content="${content}"`);
         }
 
         return res.status(200).json({ success: true });
