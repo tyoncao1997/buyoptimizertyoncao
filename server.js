@@ -18,8 +18,203 @@ const { OAuth2Client } = require('google-auth-library');
 const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
-const { notifyAdminNewPaidOrder, setupTelegramWebhook } = require('./telegram-admin-bot');
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
+const { Telegraf, Markup } = require('telegraf');
+
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const ADMIN_ID  = process.env.TELEGRAM_ADMIN_ID;
+const ADMIN_PIN = process.env.ADMIN_PIN;
+const API_BASE  = process.env.API_BASE;
+
+if (!BOT_TOKEN || !ADMIN_ID) {
+  console.warn('⚠️ Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_ADMIN_ID — bot tắt');
+}
+
+let bot;
+if (BOT_TOKEN) {
+    bot = new Telegraf(BOT_TOKEN);
+} else {
+    console.warn('⚠️ Không có TELEGRAM_BOT_TOKEN — bot Telegram không hoạt động');
+    bot = new Telegraf('dummy:token');
+}
+
+const fmtMoney = n => new Intl.NumberFormat('vi-VN').format(n || 0) + 'đ';
+const isAdmin  = id => String(id) === String(ADMIN_ID);
+
+async function callApi(endpoint, body = {}) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+async function notifyAdminNewPaidOrder(order) {
+  if (!BOT_TOKEN || !ADMIN_ID) return;
+
+  const text = [
+    '🔔 <b>ĐƠN MỚI ĐÃ THANH TOÁN</b>',
+    '',
+    `📦 Mã đơn: <code>${order.orderCode}</code>`,
+    `👤 Khách: ${order.customerName || order.customerUsername || 'N/A'}`,
+    `📱 SĐT: ${order.customerPhone || 'N/A'}`,
+    `💰 Số tiền: <b>${fmtMoney(order.amount)}</b>`,
+    `🎯 Gói: ${order.planName || order.plan || 'N/A'}`,
+    order.remoteTool ? `🖥️ ${order.remoteTool}: <code>${order.remoteId}</code> / <code>${order.remotePass}</code>` : '',
+    `⏰ ${new Date(order.paidAt || Date.now()).toLocaleString('vi-VN')}`
+  ].filter(Boolean).join('\n');
+
+  const keyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback('✅ Hoàn thành', `complete:${order.orderCode}`),
+      Markup.button.callback('❌ Từ chối', `reject:${order.orderCode}`)
+    ]
+  ]);
+
+  try {
+    await bot.telegram.sendMessage(ADMIN_ID, text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard.reply_markup
+    });
+    console.log(`[TG] Đã báo admin đơn ${order.orderCode}`);
+  } catch (err) {
+    console.error('[TG] Lỗi gửi:', err.message);
+  }
+}
+bot.start(async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.reply('⛔ Bot này chỉ dành cho admin.');
+  }
+  await ctx.reply(
+    '👑 <b>TYON Admin Bot</b>\n\n' +
+    'Bot sẽ tự động thông báo khi có đơn đã thanh toán chờ xử lý.\n\n' +
+    'Lệnh:\n' +
+    '/pending — Xem đơn đang chờ\n' +
+    '/help — Trợ giúp',
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.help(async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  await ctx.reply(
+    '📖 <b>Hướng dẫn:</b>\n\n' +
+    '• Khi có đơn mới → bot tự gửi tin nhắn\n' +
+    '• Bấm ✅ Hoàn thành hoặc ❌ Từ chối\n' +
+    '• Nhập mã PIN admin để xác nhận\n\n' +
+    '/pending — Xem đơn chờ xử lý',
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.command('cancel', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+  if (pendingActions.has(ctx.from.id)) {
+    pendingActions.delete(ctx.from.id);
+    await ctx.reply('✅ Đã hủy thao tác đang chờ.');
+  } else {
+    await ctx.reply('ℹ️ Không có thao tác nào đang chờ.');
+  }
+});
+
+bot.command('pending', async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return;
+
+  try {
+    const data = await callApi('/api/admin/orders');
+    const pending = (data.orders || []).filter(o =>
+      o.status === 'paid' || o.status === 'pending'
+    );
+
+    if (pending.length === 0) {
+      return ctx.reply('✨ Không có đơn nào đang chờ xử lý.');
+    }
+
+    const list = pending.slice(0, 15).map(o =>
+      `• <code>${o.orderCode}</code> — ${fmtMoney(o.amount)} — ${o.customerName || 'N/A'}`
+    ).join('\n');
+
+    await ctx.reply(
+      `📋 <b>Đơn chờ xử lý (${pending.length}):</b>\n\n${list}`,
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    await ctx.reply('❌ Lỗi kết nối server: ' + err.message);
+  }
+});
+
+const pendingActions = new Map();
+
+bot.action(/^(complete|reject):(.+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) {
+    return ctx.answerCbQuery('⛔ Bạn không có quyền.');
+  }
+
+  const [, action, orderCode] = ctx.match;
+  const actionName = action === 'complete' ? 'HOÀN THÀNH' : 'TỪ CHỐI';
+
+  await ctx.answerCbQuery();
+    await ctx.reply(
+    `🔐 Nhập mã PIN admin để <b>${actionName}</b> đơn <code>${orderCode}</code>:`,
+    { parse_mode: 'HTML' }
+  );
+});
+const pendingActions = new Map();
+bot.on('text', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isAdmin(userId)) return;
+
+  const pending = pendingActions.get(userId);
+  if (!pending) {
+    return ctx.reply('ℹ️ Không có thao tác nào đang chờ. Dùng /pending để xem đơn.');
+  }
+
+  const pin = ctx.message.text.trim();
+  pendingActions.delete(userId);
+
+  if (pin !== String(ADMIN_PIN)) {
+    return ctx.reply('❌ PIN không đúng. Đã hủy thao tác.');
+  }
+
+  const endpoint = pending.action === 'complete'
+    ? '/api/admin/complete-order'
+    : '/api/admin/reject-order';
+
+  try {
+    const data = await callApi(endpoint, { orderCode: pending.orderCode, pin });
+
+    if (data.success) {
+      await ctx.reply(
+        `✅ ${data.message || 'Thành công!'}\nĐơn: <code>${pending.orderCode}</code>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.reply(`❌ ${data.error || 'Lỗi xử lý'}`);
+    }
+  } catch (err) {
+    await ctx.reply('❌ Lỗi kết nối server: ' + err.message);
+  }
+});
+function setupTelegramWebhook(app) {
+  if (!BOT_TOKEN || !ADMIN_ID) {
+    console.warn('⚠️ Bỏ qua setup webhook (thiếu token/admin)');
+    return;
+  }
+
+const url = `${API_BASE}/api/telegram/webhook`;
+  bot.telegram.setWebhook(url, {
+    secret_token: TELEGRAM_WEBHOOK_SECRET,   // ⚠️ QUAN TRỌNG: phải khớp với SECTION 21
+    allowed_updates: ['message', 'callback_query']
+  })
+    .then(() => console.log(`✅ Telegram webhook set: ${url}`))
+    .catch(err => console.error('❌ Set webhook lỗi:', err.message));
+}
+
+module.exports = {
+  bot,
+  notifyAdminNewPaidOrder,
+  setupTelegramWebhook
+};
 
 if (!TELEGRAM_ENABLED) {
     console.warn('⚠️ Telegram Bot chưa cấu hình đầy đủ');
@@ -188,7 +383,6 @@ async function streamToBuffer(stream) {
 
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const ADMIN_PIN = process.env.ADMIN_PIN;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
 
@@ -215,7 +409,11 @@ const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT;
 const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE;
 const SEPAY_ACCOUNT_HOLDER = process.env.SEPAY_ACCOUNT_HOLDER;
 
-if (!SEPAY_WEBHOOK_SECRET) console.warn('⚠️ Thiếu SEPAY_WEBHOOK_SECRET - Webhook SePay sẽ không hoạt động!');
+if (!SEPAY_WEBHOOK_SECRET) {
+    console.error('❌ LỖI BẢO MẬT: Thiếu SEPAY_WEBHOOK_SECRET — webhook SePay không thể chạy an toàn.');
+    console.error('   Hãy thêm SEPAY_WEBHOOK_SECRET vào file .env rồi khởi động lại.');
+    process.exit(1);
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SECTION 8: GIST STORAGE (Keys / Feedbacks)
@@ -1215,7 +1413,9 @@ app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false 
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const globalLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, max: 200,
+    windowMs: 15 * 60 * 1000,
+    max: 200,
+    skip: (req) => req.path.startsWith('/api/admin/'),  
     message: { error: 'Quá nhiều request. Vui lòng thử lại sau 15 phút.' }
 });
 const adminLimiter = rateLimit({
@@ -2022,7 +2222,6 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
 
         if (isManualOrder && !wasAlreadyNotified && !wasUnderpaid) {
             try {
-                const { notifyAdminNewPaidOrder } = require('./telegram-admin-bot');
                 await notifyAdminNewPaidOrder({
                     orderCode:        order.order_code,
                     customerName:     order.customer_name,
@@ -2343,17 +2542,28 @@ async function handleSePayWebhook(req, res) {
 
         console.log(`🔍 [SePay] Xử lý đơn hàng. Mã: ${extractedCode}, Tiền: ${amount}`);
 
-        let { rows } = await pool.query(
-            `SELECT * FROM orders 
-             WHERE status IN ('pending', 'underpaid')
-               AND (
-                   UPPER(REPLACE(order_code,' ','')) = $1
-                   OR $2 LIKE '%' || UPPER(REPLACE(order_code,' ','')) || '%'
-               )
-             ORDER BY created_at DESC
-             LIMIT 1`,
-            [extractedCode, content.trim()]
-        );
+        const { rows: dupCheck } = await pool.query(
+    `SELECT 1 FROM orders 
+     WHERE transaction_id = $1 OR sepay_transaction_id = $1 
+     LIMIT 1`,
+    [transactionId]
+);
+if (dupCheck.length > 0) {
+    console.log(`⏭️ [SePay] Transaction ${transactionId} đã xử lý, bỏ qua`);
+    return res.status(200).json({ success: true, message: 'Duplicate transaction ignored' });
+}
+
+let { rows } = await pool.query(
+    `SELECT * FROM orders 
+     WHERE status IN ('pending', 'underpaid')
+       AND (
+           UPPER(REPLACE(order_code,' ','')) = $1
+           OR $2 LIKE '%' || UPPER(REPLACE(order_code,' ','')) || '%'
+       )
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [extractedCode, content.trim()]
+);
 
         if (rows.length === 0) {
             console.error(`❌ [SePay] KHÔNG TÌM THẤY ĐƠN. Content="${content}"`);
