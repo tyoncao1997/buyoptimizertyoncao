@@ -1633,7 +1633,7 @@ app.post('/api/telegram/webhook', express.json(), async (req, res) => {
         if (text === '/help') {
             await telegramApiCall('sendMessage', {
                 chat_id: chatId,
-                text: `📖 Hướng dẫn:\n/start - Nhận mã xác minh\n/help - Xem hướng dẫn\n\nWebsite: ${FRONTEND_URL}`
+                text: `📖 Hướng dẫn:\n/start - Nhận mã xác minh\n/help - Xem hướng dẫn\n\nWebsite: ${FRONTEND_URL}\nKHOÁ HỌC: ${KHOAHOC_URL}`
             });
             return res.sendStatus(200);
         }
