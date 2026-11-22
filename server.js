@@ -159,7 +159,6 @@ bot.action(/^(complete|reject):(.+)$/, async (ctx) => {
     { parse_mode: 'HTML' }
   );
 });
-const pendingActions = new Map();
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   if (!isAdmin(userId)) return;
