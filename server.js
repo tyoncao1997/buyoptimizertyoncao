@@ -1,8 +1,3 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   TYON OPTIMIZER — SERVER v3.0 ULTIMATE PLATINUM EDITION
-   Full rebuild — No missing features — All bugs fixed
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 require('dotenv').config();
 
 const express = require('express');
@@ -20,13 +15,10 @@ const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/c
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SECTION 1: CONSTANTS & ENVIRONMENT
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
+const { notifyAdminNewPaidOrder, setupTelegramWebhook } = require('./telegram-admin-bot');
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
 
 if (!TELEGRAM_ENABLED) {
@@ -55,11 +47,6 @@ const RESET_OTP_TTL_MS = 15 * 60 * 1000;
 
 const TG_OTP_TTL_MS = 5 * 60 * 1000;
 const TG_OTP_MAX_ATTEMPTS = 5;
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   SECTION 2: TIER CONFIGURATION
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 const TIER_CONFIG = {
     Member: {
         name: 'Member',
@@ -136,10 +123,6 @@ const TIER_CONFIG = {
     }
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   SECTION 3: DATABASE POOLS
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
@@ -157,10 +140,6 @@ const emailLogPool = new Pool({
     connectionTimeoutMillis: 10000
 });
 emailLogPool.on('error', (err) => console.error('❌ Email Log Pool error:', err.message));
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   SECTION 4: OAUTH CLIENTS
-   ═══════════════════════════════════════════════════════════════════════════ */
 
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
 if (!GOOGLE_CLIENT_ID) {
@@ -1284,6 +1263,7 @@ app.use(cors({
 app.post('/api/sepay-webhook', express.raw({ type: 'application/json' }), handleSePayWebhook);
 
 app.use(express.json({ limit: '50mb' }));
+setupTelegramWebhook(app);
 app.use(express.static(__dirname));
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1967,25 +1947,128 @@ app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
 });
 
 app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
+    let client;
     try {
         const { pin, orderCode } = req.body;
-        if (!verifyPin(pin)) return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
-
-        const { rows } = await pool.query('SELECT * FROM orders WHERE order_code = $1', [orderCode]);
-        if (rows.length === 0) return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
-        if (rows[0].status === 'paid') return res.status(400).json({ success: false, error: 'Đơn này đã xác nhận rồi' });
-
-        const note = (rows[0].note || '') + ' | Admin xác nhận thủ công';
-        await pool.query(
-            `UPDATE orders SET status='paid', paid_at=$1, confirmed_by=$2, note=$3 WHERE order_code=$4`,
-            [new Date().toISOString(), req.admin.username, note, orderCode]
+        if (!orderCode || typeof orderCode !== 'string') {
+            return res.status(400).json({ success: false, error: 'Thiếu mã đơn hàng' });
+        }
+        if (!verifyPin(pin)) {
+            console.warn(`🚫 [ADMIN CONFIRM] Sai PIN từ admin="${req.admin.username}" đơn=${orderCode}`);
+            return res.status(403).json({ success: false, error: 'Mã PIN không chính xác' });
+        }
+        client = await pool.connect();
+        await client.query('BEGIN');
+        const { rows } = await client.query(
+            'SELECT * FROM orders WHERE order_code = $1 FOR UPDATE',
+            [orderCode]
         );
 
-        console.log(`✅ [ADMIN] ${req.admin.username} xác nhận đơn ${orderCode}`);
-        res.json({ success: true, message: `Đã xác nhận đơn ${orderCode}.` });
+        if (rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy đơn hàng' });
+        }
+
+        const order = rows[0];
+        if (order.status === 'paid' || order.status === 'completed') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: `Đơn này đã ở trạng thái "${order.status}" rồi`,
+                currentStatus: order.status
+            });
+        }
+
+        if (order.status === 'cancelled' || order.status === 'rejected') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: 'Đơn đã bị hủy/từ chối, không thể xác nhận'
+            });
+        }
+        if (order.status !== 'pending' && order.status !== 'underpaid') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: `Không thể xác nhận đơn ở trạng thái "${order.status}"`
+            });
+        }
+        const requiredAmount = Number(order.amount) || 0;
+        const currentPaid    = Number(order.paid_amount || 0);
+        const finalPaidAmount = Math.max(currentPaid, requiredAmount);
+        const now = new Date().toISOString();
+        const auditNote = [
+            order.note || '',
+            `Admin ${req.admin.username} xác nhận thủ công lúc ${new Date(now).toLocaleString('vi-VN')}`,
+            `(trạng thái trước: ${order.status}, đã nhận: ${currentPaid}đ / cần: ${requiredAmount}đ)`
+        ].filter(Boolean).join(' | ');
+        await client.query(
+            `UPDATE orders SET
+                status       = 'paid',
+                paid_at      = $1,
+                paid_amount  = $2,
+                confirmed_by = $3,
+                note         = $4
+             WHERE order_code = $5`,
+            [now, finalPaidAmount, req.admin.username, auditNote, orderCode]
+        );
+
+        await client.query('COMMIT');
+
+        console.log(`✅ [ADMIN CONFIRM] ${req.admin.username} xác nhận đơn ${orderCode} (${currentPaid}đ → ${finalPaidAmount}đ)`);
+        const isManualOrder = !!(order.remote_tool && order.remote_id);
+        const wasUnderpaid  = order.status === 'underpaid';
+        const wasAlreadyNotified = (order.note || '').includes('[TG_NOTIFIED]');
+
+        if (isManualOrder && !wasAlreadyNotified && !wasUnderpaid) {
+            try {
+                const { notifyAdminNewPaidOrder } = require('./telegram-admin-bot');
+                await notifyAdminNewPaidOrder({
+                    orderCode:        order.order_code,
+                    customerName:     order.customer_name,
+                    customerUsername: order.customer_username,
+                    customerPhone:    order.customer_phone,
+                    amount:           finalPaidAmount,
+                    plan:             order.plan,
+                    planName:         order.plan_name,
+                    remoteTool:       order.remote_tool,
+                    remoteId:         order.remote_id,
+                    remotePass:       order.remote_pass,
+                    paidAt:           now
+                });
+                await pool.query(
+                    `UPDATE orders SET note = note || ' | [TG_NOTIFIED]' WHERE order_code = $1`,
+                    [orderCode]
+                );
+            } catch (tgErr) {
+                console.error('[TG] Lỗi thông báo admin:', tgErr.message);
+            }
+        }
+        return res.json({
+            success: true,
+            message: `Đã xác nhận đơn ${orderCode}.`,
+            order: {
+                orderCode:    order.order_code,
+                status:       'paid',
+                amount:       requiredAmount,
+                paidAmount:   finalPaidAmount,
+                customerName: order.customer_name,
+                planName:     order.plan_name,
+                confirmedBy:  req.admin.username,
+                paidAt:       now,
+                wasUnderpaid: wasUnderpaid,
+                previousPaid: currentPaid
+            }
+        });
+
     } catch (err) {
-        console.error('Admin confirm order error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
+        if (client) {
+            try { await client.query('ROLLBACK'); } catch (_) {}
+        }
+        console.error('❌ [ADMIN CONFIRM] Error:', err);
+        return res.status(500).json({ success: false, error: 'Lỗi server: ' + err.message });
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -2283,15 +2366,29 @@ async function handleSePayWebhook(req, res) {
         const totalReceived = currentPaidAmount + amount;
 
         if (totalReceived >= requiredAmount) {
-            // Cập nhật trạng thái đơn hàng thành paid
-            await pool.query(
-                `UPDATE orders 
-                 SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
-                 WHERE order_code=$4`,
-                [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
-            );
-            console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
-        } else {
+    await pool.query(
+        `UPDATE orders SET status='paid', paid_at=NOW(), paid_amount=$1, transaction_id=$2, sepay_transaction_id=$3 
+         WHERE order_code=$4`,
+        [totalReceived, transactionId, data.referenceCode || data.id || transactionId, o.order_code]
+    );
+    console.log(`✅ [SePay] ĐƠN ${o.order_code} ĐÃ THANH TOÁN ĐỦ!`);
+   const isManualOrder = !!(o.remote_tool && o.remote_id);
+    if (isManualOrder) {
+        notifyAdminNewPaidOrder({
+            orderCode:        o.order_code,
+            customerName:     o.customer_name,
+            customerUsername: o.customer_username,
+            customerPhone:    o.customer_phone,
+            amount:           requiredAmount,
+            plan:             o.plan,
+            planName:         o.plan_name,
+            remoteTool:       o.remote_tool,
+            remoteId:         o.remote_id,
+            remotePass:       o.remote_pass,
+            paidAt:           new Date().toISOString()
+        }).catch(err => console.error('notifyAdmin lỗi:', err.message));
+    }
+} else {
             const note = `Thanh toán thiếu: cần ${requiredAmount}đ, đã nhận ${totalReceived}đ`;
             await pool.query(
                 `UPDATE orders SET status='underpaid', paid_amount=$1, transaction_id=$2, note=$3 WHERE order_code=$4`,
