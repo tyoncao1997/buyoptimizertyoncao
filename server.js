@@ -39,12 +39,15 @@ let bot;
 if (BOT_TOKEN) {
     bot = new Telegraf(BOT_TOKEN);
     bot.use(async (ctx, next) => {
-        if (ctx.from && !isAdmin(ctx.from.id)) {
-            console.log(`🚫 Chặn người lạ: ${ctx.from.id}`);
-            return; 
+    if (ctx.from && !isAdmin(ctx.from.id)) {
+        console.log(`🚫 Chặn người lạ: ${ctx.from.id}`);
+        if (ctx.callbackQuery) {
+            return ctx.answerCbQuery('⛔ Bạn không có quyền dùng bot này.').catch(() => {});
         }
-        return next();
-    });
+        return;
+    }
+    return next();
+});
 
 } else {
     console.warn('⚠️ Không có TELEGRAM_BOT_TOKEN — bot Telegram không hoạt động');
@@ -151,18 +154,28 @@ Vui lòng chọn thao tác bạn muốn thực hiện:
 
 // Xử lý khi bấm nút "Tạo Job Nuôi FB Mới"
 bot.action('fb_create_job', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    await ctx.answerCbQuery();
+    try {
+        if (!isAdmin(ctx.from.id)) {
+            return await ctx.answerCbQuery('⛔ Bạn không có quyền.');
+        }
 
-    adminFbSessions.set(ctx.from.id, { step: 'WAITING_COOKIES' });
+        // Trả lời callback NGAY để tắt loading
+        await ctx.answerCbQuery();
 
-    await ctx.reply(
-        `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\n` +
-        `Vui lòng gửi danh sách Cookie (mỗi dòng 1 cookie).\n` +
-        `Ví dụ:\n<code>c_user=1000...; xs=...</code>\n\n` +
-        `Gõ /huy để hủy thao tác.`,
-        { parse_mode: 'HTML' }
-    );
+        adminFbSessions.set(ctx.from.id, { step: 'WAITING_COOKIES' });
+
+        await ctx.reply(
+            `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\n` +
+            `Vui lòng gửi danh sách Cookie (mỗi dòng 1 cookie).\n` +
+            `Ví dụ:\n<code>c_user=1000...; xs=...</code>\n\n` +
+            `Gõ /huy để hủy thao tác.`,
+            { parse_mode: 'HTML' }
+        );
+    } catch (err) {
+        console.error('❌ Lỗi fb_create_job:', err.message);
+        // Đảm bảo luôn trả lời callback dù có lỗi
+        try { await ctx.answerCbQuery('❌ Có lỗi xảy ra, vui lòng thử lại.'); } catch (_) {}
+    }
 });
 
 // Xử lý khi Admin nhắn tin (Lắng nghe text để nhận Cookie, Target, Cấu hình)
@@ -407,40 +420,202 @@ bot.action(/^(complete|reject):(.+)$/, async (ctx) => {
     { parse_mode: 'HTML' }
   );
 });
-bot.on('text', async (ctx) => {
-  const userId = ctx.from.id;
-  if (!isAdmin(userId)) return;
+// ═══════════════════════════════════════════════════════════════════════════
+// HANDLER TEXT DUY NHẤT — Xử lý mọi tin nhắn text từ Admin
+// Thứ tự ưu tiên:
+//   1. Xác nhận PIN cho đơn hàng (pendingActions)
+//   2. Session /nuoifb (Cookie → Target → Count)
+//   3. Fallback: next()
+// ═══════════════════════════════════════════════════════════════════════════
+bot.on('text', async (ctx, next) => {
+    const userId = ctx.from.id;
 
-  const pending = pendingActions.get(userId);
-  if (!pending) {
-    return ctx.reply('ℹ️ Không có thao tác nào đang chờ. Dùng /pending để xem đơn.');
-  }
+    // Chặn người lạ (middleware đầu file đã chặn, nhưng check lại cho chắc)
+    if (!isAdmin(userId)) return next();
 
-  const pin = ctx.message.text.trim();
-  pendingActions.delete(userId);
+    const text = ctx.message.text.trim();
 
-  if (pin !== String(ADMIN_PIN)) {
-    return ctx.reply('❌ PIN không đúng. Đã hủy thao tác.');
-  }
+    // ═══════════════════════════════════════════════════════════
+    // ƯU TIÊN 1: XÁC NHẬN PIN CHO ĐƠN HÀNG
+    // ═══════════════════════════════════════════════════════════
+    const pending = pendingActions.get(userId);
+    if (pending) {
+        pendingActions.delete(userId);
 
-  const endpoint = pending.action === 'complete'
-    ? '/api/admin/complete-order'
-    : '/api/admin/reject-order';
+        // Kiểm tra PIN
+        if (text !== String(ADMIN_PIN)) {
+            return ctx.reply('❌ PIN không đúng. Đã hủy thao tác.');
+        }
 
-  try {
-    const data = await callApi(endpoint, { orderCode: pending.orderCode, pin });
+        const endpoint = pending.action === 'complete'
+            ? '/api/admin/complete-order'
+            : '/api/admin/reject-order';
 
-    if (data.success) {
-      await ctx.reply(
-        `✅ ${data.message || 'Thành công!'}\nĐơn: <code>${pending.orderCode}</code>`,
-        { parse_mode: 'HTML' }
-      );
-    } else {
-      await ctx.reply(`❌ ${data.error || 'Lỗi xử lý'}`);
+        try {
+            const data = await callApi(endpoint, { orderCode: pending.orderCode, pin: text });
+
+            if (data.success) {
+                await ctx.reply(
+                    `✅ ${data.message || 'Thành công!'}\nĐơn: <code>${pending.orderCode}</code>`,
+                    { parse_mode: 'HTML' }
+                );
+            } else {
+                await ctx.reply(`❌ ${data.error || 'Lỗi xử lý'}`);
+            }
+        } catch (err) {
+            await ctx.reply('❌ Lỗi kết nối server: ' + err.message);
+        }
+
+        return; // Dừng, không xử lý tiếp
     }
-  } catch (err) {
-    await ctx.reply('❌ Lỗi kết nối server: ' + err.message);
-  }
+
+    // ═══════════════════════════════════════════════════════════
+    // ƯU TIÊN 2: SESSION /NUOIFB (Cookie → Target → Count)
+    // ═══════════════════════════════════════════════════════════
+    const session = adminFbSessions.get(userId);
+    if (!session) return next(); // Không có session → để handler khác xử lý
+
+    // Hủy thao tác
+    if (text === '/huy' || text.toLowerCase() === 'hủy') {
+        adminFbSessions.delete(userId);
+        return ctx.reply('✅ Đã hủy thao tác tạo Job.');
+    }
+
+    // Bước 1: Nhận Cookie
+    if (session.step === 'WAITING_COOKIES') {
+        const cookies = text.split('\n').map(c => c.trim()).filter(c => c.includes('c_user='));
+
+        if (cookies.length === 0) {
+            return ctx.reply('❌ Không tìm thấy cookie hợp lệ. Vui lòng gửi lại (phải chứa c_user=):');
+        }
+
+        session.cookies = cookies;
+        session.step = 'WAITING_TARGETS';
+
+        return ctx.reply(
+            `✅ Đã nhận ${cookies.length} cookie.\n\n` +
+            `🎯 <b>BƯỚC 2: NHẬP MỤC TIÊU</b>\n` +
+            `Mỗi dòng 1 mục tiêu theo định dạng: <code>loai|id|noi_dung</code>\n` +
+            `- loai: reaction, comment, friend, group\n` +
+            `Ví dụ:\n<code>reaction|123456789_987654321|LOVE</code>\n<code>friend|100012345678|</code>`,
+            { parse_mode: 'HTML' }
+        );
+    }
+
+    // Bước 2: Nhận Targets
+    if (session.step === 'WAITING_TARGETS') {
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+        const targets = [];
+
+        for (const line of lines) {
+            const parts = line.split('|');
+            if (parts.length >= 2) {
+                targets.push({
+                    loai: parts[0].trim().toLowerCase(),
+                    id: parts[1].trim(),
+                    noi_dung: parts[2] ? parts[2].trim() : ""
+                });
+            }
+        }
+
+        if (targets.length === 0) {
+            return ctx.reply('❌ Định dạng không đúng. Vui lòng gửi lại: loai|id|noi_dung');
+        }
+
+        session.targets = targets;
+        session.step = 'WAITING_COUNT';
+
+        return ctx.reply(
+            `✅ Đã nhận ${targets.length} mục tiêu.\n\n` +
+            `🔢 <b>BƯỚC 3: NHẬP SỐ LẦN CHẠY VÀ DELAY</b>\n` +
+            `Vui lòng nhập: <code>Số_lần | Delay(giây)</code>\n` +
+            `Ví dụ: <code>10 | 30</code> (Chạy 10 lần, nghỉ 30 giây mỗi lần)`,
+            { parse_mode: 'HTML' }
+        );
+    }
+
+    // Bước 3: Nhận số lần và delay
+    if (session.step === 'WAITING_COUNT') {
+        const parts = text.split('|');
+        if (parts.length !== 2) {
+            return ctx.reply('❌ Sai định dạng. Vui lòng nhập lại theo mẫu: 10 | 30');
+        }
+
+        const count = parseInt(parts[0].trim());
+        const delay = parseInt(parts[1].trim());
+
+        if (isNaN(count) || isNaN(delay) || count <= 0 || delay < 10) {
+            return ctx.reply('❌ Số lần phải > 0 và Delay tối thiểu 10 giây. Vui lòng nhập lại:');
+        }
+
+        // Lưu session và bắt đầu chạy
+        session.count = count;
+        session.delay = delay;
+        session.step = 'PROCESSING';
+
+        adminFbSessions.delete(userId); // Xóa session chờ nhập liệu
+
+        await ctx.reply(`⏳ Đang khởi tạo Job... Vui lòng chờ trong giây lát.`);
+
+        try {
+            const jobId = crypto.randomBytes(6).toString('hex');
+            const { spawn } = require('child_process');
+            const isWindows = process.platform === 'win32';
+            const pythonCmd = isWindows ? 'python' : 'python3';
+
+            const py = spawn(pythonCmd, [path.join(__dirname, 'fb_worker.py')], {
+                cwd: __dirname,
+                env: { ...process.env, PYTHONUNBUFFERED: '1' }
+            });
+
+            // Truyền dữ liệu cho Python
+            py.stdin.write(JSON.stringify({
+                job_id: jobId,
+                cookies: session.cookies,
+                targets: session.targets,
+                count: session.count,
+                delay: session.delay,
+                reactions: ['LIKE', 'LOVE'],
+                comments: ['👍', 'Hay quá']
+            }));
+            py.stdin.end();
+
+            session.currentJobId = jobId;
+
+            await ctx.reply(
+                `🚀 <b>ĐÃ BẮT ĐẦU CHẠY NGẦM!</b>\n\n` +
+                `Mã Job: <code>${jobId}</code>\n` +
+                `Số lần: ${count} | Delay: ${delay}s\n\n` +
+                `Dùng lệnh /checkjob để kiểm tra tiến độ.`,
+                { parse_mode: 'HTML' }
+            );
+
+            // Tự động gửi tin nhắn khi chạy xong
+            py.on('close', async (code) => {
+                const jobFile = path.join(__dirname, 'jobs', `${jobId}.json`);
+                if (fs.existsSync(jobFile)) {
+                    const jobData = JSON.parse(fs.readFileSync(jobFile, 'utf-8'));
+                    const statusEmoji = jobData.status === 'done' ? '✅' : '❌';
+                    await bot.telegram.sendMessage(userId,
+                        `${statusEmoji} <b>JOB ĐÃ KẾT THÚC</b>\n` +
+                        `Mã: <code>${jobId}</code>\n` +
+                        `Hoàn thành: ${jobData.done}/${jobData.count}\n` +
+                        `Trạng thái: ${jobData.status}`,
+                        { parse_mode: 'HTML' }
+                    );
+                }
+            });
+
+        } catch (error) {
+            console.error('Lỗi tạo job từ Telegram:', error);
+            await ctx.reply('❌ Có lỗi xảy ra khi khởi tạo Job: ' + error.message);
+        }
+
+        return;
+    }
+
+    // Nếu không khớp bước nào → next()
+    return next();
 });
 function setupTelegramWebhook(app) {
   if (!BOT_TOKEN || !ADMIN_ID) {
@@ -5993,6 +6168,7 @@ async function startServer() {
 }
 
 startServer();
+
 
 
 
