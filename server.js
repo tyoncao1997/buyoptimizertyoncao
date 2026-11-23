@@ -19,6 +19,7 @@ const { OAuth2Client } = require('google-auth-library');
 const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
+const adminFbSessions = new Map();
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
 const { Telegraf, Markup } = require('telegraf');
 
@@ -106,6 +107,221 @@ bot.help(async (ctx) => {
     '/pending — Xem đơn chờ xử lý',
     { parse_mode: 'HTML' }
   );
+});
+
+bot.command('nuoifb', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return; // Chỉ admin mới dùng được
+
+    const text = `
+🤖 <b>HỆ THỐNG NUÔI FB TỰ ĐỘNG</b>
+Vui lòng chọn thao tác bạn muốn thực hiện:
+    `;
+
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('➕ Tạo Job Nuôi FB Mới', 'fb_create_job')],
+        [Markup.button.callback('📊 Xem tiến độ Job đang chạy', 'fb_check_status')]
+    ]);
+
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard.reply_markup });
+});
+
+// Xử lý khi bấm nút "Tạo Job Nuôi FB Mới"
+bot.action('fb_create_job', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCbQuery();
+
+    adminFbSessions.set(ctx.from.id, { step: 'WAITING_COOKIES' });
+
+    await ctx.reply(
+        `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\n` +
+        `Vui lòng gửi danh sách Cookie (mỗi dòng 1 cookie).\n` +
+        `Ví dụ:\n<code>c_user=1000...; xs=...</code>\n\n` +
+        `Gõ /huy để hủy thao tác.`,
+        { parse_mode: 'HTML' }
+    );
+});
+
+// Xử lý khi Admin nhắn tin (Lắng nghe text để nhận Cookie, Target, Cấu hình)
+bot.on('text', async (ctx, next) => {
+    const userId = ctx.from.id;
+    if (!isAdmin(userId)) return next();
+
+    const session = adminFbSessions.get(userId);
+    if (!session) return next(); // Nếu không có phiên chờ thì bỏ qua (để bot xử lý lệnh khác)
+
+    const text = ctx.message.text.trim();
+
+    // Hủy thao tác
+    if (text === '/huy' || text.toLowerCase() === 'hủy') {
+        adminFbSessions.delete(userId);
+        return ctx.reply('✅ Đã hủy thao tác tạo Job.');
+    }
+
+    // Bước 1: Nhận Cookie
+    if (session.step === 'WAITING_COOKIES') {
+        const cookies = text.split('\n').map(c => c.trim()).filter(c => c.includes('c_user='));
+        
+        if (cookies.length === 0) {
+            return ctx.reply('❌ Không tìm thấy cookie hợp lệ. Vui lòng gửi lại (phải chứa c_user=):');
+        }
+
+        session.cookies = cookies;
+        session.step = 'WAITING_TARGETS';
+        
+        return ctx.reply(
+            `✅ Đã nhận ${cookies.length} cookie.\n\n` +
+            `🎯 <b>BƯỚC 2: NHẬP MỤC TIÊU</b>\n` +
+            `Mỗi dòng 1 mục tiêu theo định dạng: <code>loai|id|noi_dung</code>\n` +
+            `- loai: reaction, comment, friend, group\n` +
+            `Ví dụ:\n<code>reaction|123456789_987654321|LOVE</code>\n<code>friend|100012345678|</code>`,
+            { parse_mode: 'HTML' }
+        );
+    }
+
+    // Bước 2: Nhận Targets
+    if (session.step === 'WAITING_TARGETS') {
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+        const targets = [];
+
+        for (const line of lines) {
+            const parts = line.split('|');
+            if (parts.length >= 2) {
+                targets.push({
+                    loai: parts[0].trim().toLowerCase(),
+                    id: parts[1].trim(),
+                    noi_dung: parts[2] ? parts[2].trim() : ""
+                });
+            }
+        }
+
+        if (targets.length === 0) {
+            return ctx.reply('❌ Định dạng không đúng. Vui lòng gửi lại: loai|id|noi_dung');
+        }
+
+        session.targets = targets;
+        session.step = 'WAITING_COUNT';
+
+        return ctx.reply(
+            `✅ Đã nhận ${targets.length} mục tiêu.\n\n` +
+            `🔢 <b>BƯỚC 3: NHẬP SỐ LẦN CHẠY VÀ DELAY</b>\n` +
+            `Vui lòng nhập: <code>Số_lần | Delay(giây)</code>\n` +
+            `Ví dụ: <code>10 | 30</code> (Chạy 10 lần, nghỉ 30 giây mỗi lần)`,
+            { parse_mode: 'HTML' }
+        );
+    }
+
+    // Bước 3: Nhận số lần và delay
+    if (session.step === 'WAITING_COUNT') {
+        const parts = text.split('|');
+        if (parts.length !== 2) {
+            return ctx.reply('❌ Sai định dạng. Vui lòng nhập lại theo mẫu: 10 | 30');
+        }
+
+        const count = parseInt(parts[0].trim());
+        const delay = parseInt(parts[1].trim());
+
+        if (isNaN(count) || isNaN(delay) || count <= 0 || delay < 10) {
+            return ctx.reply('❌ Số lần phải > 0 và Delay tối thiểu 10 giây. Vui lòng nhập lại:');
+        }
+
+        // Lưu session và bắt đầu chạy
+        session.count = count;
+        session.delay = delay;
+        session.step = 'PROCESSING';
+        
+        adminFbSessions.delete(userId); // Xóa session chờ nhập liệu
+
+        await ctx.reply(`⏳ Đang khởi tạo Job... Vui lòng chờ trong giây lát.`);
+
+        try {
+            // Gọi API nội bộ (giống như web gọi)
+            const jobId = crypto.randomBytes(6).toString('hex');
+            const { spawn } = require('child_process');
+            
+            // Gọi file Python chạy ngầm
+            const py = spawn('python3', [path.join(__dirname, 'fb_worker.py')], {
+                cwd: __dirname,
+                env: { ...process.env, PYTHONUNBUFFERED: '1' }
+            });
+
+            // Truyền dữ liệu cho Python
+            py.stdin.write(JSON.stringify({
+                job_id: jobId,
+                cookies: session.cookies,
+                targets: session.targets,
+                count: session.count,
+                delay: session.delay,
+                reactions: ['LIKE', 'LOVE'], // Mặc định
+                comments: ['👍', 'Hay quá']  // Mặc định
+            }));
+            py.stdin.end();
+
+            // Lưu job_id vào bộ nhớ tạm của Admin này để theo dõi
+            session.currentJobId = jobId;
+
+            await ctx.reply(
+                `🚀 <b>ĐÃ BẮT ĐẦU CHẠY NGẦM!</b>\n\n` +
+                `Mã Job: <code>${jobId}</code>\n` +
+                `Số lần: ${count} | Delay: ${delay}s\n\n` +
+                `Dùng lệnh /checkjob để kiểm tra tiến độ.`,
+                { parse_mode: 'HTML' }
+            );
+
+            // Tự động gửi tin nhắn khi chạy xong (tuỳ chọn)
+            py.on('close', async (code) => {
+                const jobFile = path.join(__dirname, 'jobs', `${jobId}.json`);
+                if (fs.existsSync(jobFile)) {
+                    const jobData = JSON.parse(fs.readFileSync(jobFile, 'utf-8'));
+                    const statusEmoji = jobData.status === 'done' ? '✅' : '❌';
+                    await bot.telegram.sendMessage(userId, 
+                        `${statusEmoji} <b>JOB ĐÃ KẾT THÚC</b>\n` +
+                        `Mã: <code>${jobId}</code>\n` +
+                        `Hoàn thành: ${jobData.done}/${jobData.count}\n` +
+                        `Trạng thái: ${jobData.status}`,
+                        { parse_mode: 'HTML' }
+                    );
+                }
+            });
+
+        } catch (error) {
+            console.error('Lỗi tạo job từ Telegram:', error);
+            await ctx.reply('❌ Có lỗi xảy ra khi khởi tạo Job: ' + error.message);
+        }
+    }
+});
+
+// Lệnh /checkjob để xem tiến độ
+bot.command('checkjob', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+
+    // Lấy tất cả job đang có trong thư mục
+    const jobsDir = path.join(__dirname, 'jobs');
+    if (!fs.existsSync(jobsDir)) {
+        return ctx.reply('Chưa có job nào được tạo.');
+    }
+
+    const files = fs.readdirSync(jobsDir).filter(f => f.endsWith('.json'));
+    if (files.length === 0) {
+        return ctx.reply('Chưa có job nào được tạo.');
+    }
+
+    // Lấy 5 job mới nhất
+    const latestJobs = files
+        .map(f => ({ file: f, data: JSON.parse(fs.readFileSync(path.join(jobsDir, f), 'utf-8')) }))
+        .sort((a, b) => new Date(b.data.started_at) - new Date(a.data.started_at))
+        .slice(0, 5);
+
+    let message = `📊 <b>TIẾN ĐỘ 5 JOB GẦN NHẤT</b>\n\n`;
+    
+    latestJobs.forEach(j => {
+        const emoji = j.data.status === 'done' ? '✅' : (j.data.status === 'running' ? '⏳' : '❌');
+        message += `${emoji} Mã: <code>${j.data.job_id}</code>\n`;
+        message += `   Tiến độ: ${j.data.done}/${j.data.count} | Trạng thái: ${j.data.status}\n`;
+        if (j.data.error) message += `   Lỗi: ${j.data.error}\n`;
+        message += `\n`;
+    });
+
+    await ctx.reply(message, { parse_mode: 'HTML' });
 });
 
 bot.command('cancel', async (ctx) => {
@@ -5809,5 +6025,6 @@ async function startServer() {
 }
 
 startServer();
+
 
 
