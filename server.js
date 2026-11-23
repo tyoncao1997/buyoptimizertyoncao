@@ -21,8 +21,6 @@ const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
 const { Telegraf, Markup } = require('telegraf');
-const setupFbRoutes = require('./fb_api_routes');
-setupFbRoutes(app, { requireUserSession });
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID  = process.env.TELEGRAM_ADMIN_ID;
@@ -5760,6 +5758,9 @@ async function startServer() {
     await initDB();
     await initNotificationTables();
 
+    const setupFbRoutes = require('./fb_api_routes');
+    setupFbRoutes(app, { requireUserSession });
+
     const server = app.listen(PORT, async () => {
         console.log(`\n╔══════════════════════════════════════════════════════════════╗`);
         console.log(`║   🚀 TYON SERVER v3.0 — ULTIMATE PLATINUM EDITION              ║`);
@@ -5808,4 +5809,5 @@ async function startServer() {
 }
 
 startServer();
+
 
