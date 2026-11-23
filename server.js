@@ -29,7 +29,7 @@ const { Telegraf, Markup } = require('telegraf');
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID  = process.env.TELEGRAM_ADMIN_ID;
 const ADMIN_PIN = process.env.ADMIN_PIN;
-const API_BASE  = process.env.API_BASE;
+const API_BASE  = process.env.API_BASE || `http://localhost:${process.env.PORT || 3000}`;
 
 if (!BOT_TOKEN || !ADMIN_ID) {
   console.warn('⚠️ Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_ADMIN_ID — bot tắt');
@@ -154,28 +154,22 @@ Vui lòng chọn thao tác bạn muốn thực hiện:
 
 // Xử lý khi bấm nút "Tạo Job Nuôi FB Mới"
 bot.action('fb_create_job', async (ctx) => {
-    try {
-        if (!isAdmin(ctx.from.id)) {
-            return await ctx.answerCbQuery('⛔ Bạn không có quyền.');
-        }
-
-        // Trả lời callback NGAY để tắt loading
-        await ctx.answerCbQuery();
-
-        adminFbSessions.set(ctx.from.id, { step: 'WAITING_COOKIES' });
-
-        await ctx.reply(
-            `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\n` +
-            `Vui lòng gửi danh sách Cookie (mỗi dòng 1 cookie).\n` +
-            `Ví dụ:\n<code>c_user=1000...; xs=...</code>\n\n` +
-            `Gõ /huy để hủy thao tác.`,
-            { parse_mode: 'HTML' }
-        );
-    } catch (err) {
-        console.error('❌ Lỗi fb_create_job:', err.message);
-        // Đảm bảo luôn trả lời callback dù có lỗi
-        try { await ctx.answerCbQuery('❌ Có lỗi xảy ra, vui lòng thử lại.'); } catch (_) {}
+    if (!isAdmin(ctx.from.id)) {
+        return ctx.answerCbQuery('⛔ Bạn không có quyền.'); // Trả lời nếu không phải admin
     }
+    
+    // 🟢 QUAN TRỌNG: Phải gọi dòng này ĐẦU TIÊN để tắt loading trên nút bấm
+    await ctx.answerCbQuery(); 
+
+    adminFbSessions.set(ctx.from.id, { step: 'WAITING_COOKIES' });
+
+    await ctx.reply(
+        `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\n` +
+        `Vui lòng gửi danh sách Cookie (mỗi dòng 1 cookie).\n` +
+        `Ví dụ:\n<code>c_user=1000...; xs=...</code>\n\n` +
+        `Gõ /huy để hủy thao tác.`,
+        { parse_mode: 'HTML' }
+    );
 });
 
 // Xử lý khi Admin nhắn tin (Lắng nghe text để nhận Cookie, Target, Cấu hình)
@@ -6168,6 +6162,7 @@ async function startServer() {
 }
 
 startServer();
+
 
 
 
