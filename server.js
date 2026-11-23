@@ -129,16 +129,130 @@ Vui lòng chọn thao tác bạn muốn thực hiện:
 bot.action('fb_create_job', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
     await ctx.answerCbQuery();
-
     adminFbSessions.set(ctx.from.id, { step: 'WAITING_COOKIES' });
-
     await ctx.reply(
-        `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\n` +
-        `Vui lòng gửi danh sách Cookie (mỗi dòng 1 cookie).\n` +
-        `Ví dụ:\n<code>c_user=1000...; xs=...</code>\n\n` +
-        `Gõ /huy để hủy thao tác.`,
+        `📝 <b>BƯỚC 1: NHẬP COOKIE</b>\n\nGửi danh sách Cookie (mỗi dòng 1 cookie):\n<code>c_user=...; xs=...</code>\n\nGõ /huy để hủy.`,
         { parse_mode: 'HTML' }
     );
+});
+
+// BƯỚC 3 mới: Chọn loại tương tác
+if (session.step === 'WAITING_TARGETS') {
+    // ... parse targets như cũ ...
+    session.targets = targets;
+    session.step = 'WAITING_ACTION_TYPE';
+
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('❤️ Chỉ Reaction', 'action_reaction')],
+        [Markup.button.callback('💬 Chỉ Comment', 'action_comment')],
+        [Markup.button.callback('🎯 Cả hai', 'action_both')],
+        [Markup.button.callback('👥 Kết bạn', 'action_friend')],
+    ]);
+    return ctx.reply(
+        `✅ Đã nhận ${targets.length} mục tiêu.\n\n` +
+        `🎯 <b>BƯỚC 3: CHỌN LOẠI TƯƠNG TÁC</b>`,
+        { parse_mode: 'HTML', reply_markup: keyboard.reply_markup }
+    );
+}
+
+// Xử lý chọn loại action
+bot.action(/^action_(reaction|comment|both|friend)$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCbQuery();
+    const session = adminFbSessions.get(ctx.from.id);
+    if (!session) return ctx.reply('⚠️ Phiên đã hết hạn, bắt đầu lại bằng /nuoifb');
+
+    const actionType = ctx.match[1];
+    session.actionType = actionType;
+
+    if (actionType === 'reaction' || actionType === 'both') {
+        session.step = 'WAITING_REACTIONS';
+        const kb = Markup.inlineKeyboard([
+            [Markup.button.callback('👍 LIKE', 'react_like')],
+            [Markup.button.callback('❤️ LOVE', 'react_love')],
+            [Markup.button.callback('😆 HAHA', 'react_haha')],
+            [Markup.button.callback('😮 WOW', 'react_wow')],
+            [Markup.button.callback('😢 SAD', 'react_sad')],
+            [Markup.button.callback('😡 ANGRY', 'react_angry')],
+            [Markup.button.callback('🎲 Ngẫu nhiên tất cả', 'react_random')],
+            [Markup.button.callback('✅ Xong chọn reaction', 'react_done')],
+        ]);
+        session.reactions = [];
+        return ctx.reply(
+            `🎭 <b>BƯỚC 4: CHỌN LOẠI REACTION</b>\n\n` +
+            `Bấm để chọn (có thể chọn nhiều). Khi xong bấm <b>✅ Xong</b>.\n` +
+            `Đã chọn: <i>chưa có</i>`,
+            { parse_mode: 'HTML', reply_markup: kb.reply_markup }
+        );
+    } else {
+        // Chỉ comment → nhảy sang bước comment
+        session.step = 'WAITING_COMMENTS';
+        return ctx.reply(
+            `💬 <b>BƯỚC 4: NHẬP NỘI DUNG COMMENT</b>\n\n` +
+            `Mỗi dòng 1 nội dung. Bot sẽ random trong danh sách này.\n` +
+            `Ví dụ:\n<code>Hay quá\nTuyệt vời\n👍👍👍</code>\n\n` +
+            `Gõ /skip nếu không muốn comment.`,
+            { parse_mode: 'HTML' }
+        );
+    }
+});
+
+// Chọn reaction (toggle nhiều)
+bot.action(/^react_(like|love|haha|wow|sad|angry|random)$/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCbQuery();
+    const session = adminFbSessions.get(ctx.from.id);
+    if (!session || session.step !== 'WAITING_REACTIONS') return;
+
+    const r = ctx.match[1].toUpperCase();
+    if (r === 'RANDOM') {
+        session.reactions = ['LIKE', 'LOVE', 'HAHA', 'WOW', 'SAD', 'ANGRY'];
+    } else if (!session.reactions.includes(r)) {
+        session.reactions.push(r);
+    } else {
+        session.reactions = session.reactions.filter(x => x !== r);
+    }
+
+    const kb = Markup.inlineKeyboard([
+        [Markup.button.callback('👍 LIKE', 'react_like'), Markup.button.callback('❤️ LOVE', 'react_love')],
+        [Markup.button.callback('😆 HAHA', 'react_haha'), Markup.button.callback('😮 WOW', 'react_wow')],
+        [Markup.button.callback('😢 SAD', 'react_sad'), Markup.button.callback('😡 ANGRY', 'react_angry')],
+        [Markup.button.callback('🎲 Random tất cả', 'react_random')],
+        [Markup.button.callback('✅ Xong chọn reaction', 'react_done')],
+    ]);
+    await ctx.editMessageText(
+        `🎭 <b>BƯỚC 4: CHỌN LOẠI REACTION</b>\n\n` +
+        `Đã chọn: ${session.reactions.length ? session.reactions.join(', ') : '<i>chưa có</i>'}`,
+        { parse_mode: 'HTML', reply_markup: kb.reply_markup }
+    );
+});
+
+bot.action('react_done', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCbQuery();
+    const session = adminFbSessions.get(ctx.from.id);
+    if (!session) return;
+    if (session.reactions.length === 0) {
+        return ctx.answerCbQuery('⚠️ Chọn ít nhất 1 reaction', { show_alert: true });
+    }
+
+    if (session.actionType === 'both') {
+        session.step = 'WAITING_COMMENTS';
+        await ctx.reply(
+            `💬 <b>BƯỚC 5: NHẬP NỘI DUNG COMMENT</b>\n\n` +
+            `Mỗi dòng 1 nội dung (bot sẽ random).\nGõ /skip nếu không muốn comment.`,
+            { parse_mode: 'HTML' }
+        );
+    } else {
+        // Chỉ reaction → sang bước count
+        session.comments = [];
+        session.step = 'WAITING_COUNT';
+        await ctx.reply(
+            `🔢 <b>BƯỚC CUỐI: SỐ LẦN & DELAY</b>\n\n` +
+            `Nhập: <code>Số_lần | Delay(giây)</code>\nVí dụ: <code>10 | 30</code>`,
+            { parse_mode: 'HTML' }
+        );
+    }
 });
 
 // Xử lý khi Admin nhắn tin (Lắng nghe text để nhận Cookie, Target, Cấu hình)
@@ -6025,6 +6139,7 @@ async function startServer() {
 }
 
 startServer();
+
 
 
 
