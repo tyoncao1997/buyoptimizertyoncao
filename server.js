@@ -15,11 +15,14 @@ const { S3Client, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/c
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
 
+
 const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 const TELEGRAM_WEBHOOK_SECRET = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 const TELEGRAM_BOT_USERNAME = (process.env.TELEGRAM_BOT_USERNAME || '').trim();
 const TELEGRAM_ENABLED = !!(TELEGRAM_BOT_TOKEN && TELEGRAM_WEBHOOK_SECRET && TELEGRAM_BOT_USERNAME);
 const { Telegraf, Markup } = require('telegraf');
+const setupFbRoutes = require('./fb_api_routes');
+setupFbRoutes(app, { requireUserSession });
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID  = process.env.TELEGRAM_ADMIN_ID;
@@ -5805,3 +5808,4 @@ async function startServer() {
 }
 
 startServer();
+
