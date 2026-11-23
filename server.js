@@ -39,14 +39,27 @@ if (BOT_TOKEN) {
     console.warn('⚠️ Không có TELEGRAM_BOT_TOKEN — bot Telegram không hoạt động');
     bot = new Telegraf('dummy:token');
 }
+if (BOT_TOKEN) {
+    bot.telegram.getMe()
+        .then(info => { bot.botInfo = info; })
+        .catch(err => console.error('❌ getMe lỗi:', err.message));
+}
 
 const fmtMoney = n => new Intl.NumberFormat('vi-VN').format(n || 0) + 'đ';
 const isAdmin  = id => String(id) === String(ADMIN_ID);
 
 async function callApi(endpoint, body = {}) {
+  const token = jwt.sign(
+    { username: 'telegram-bot', role: 'admin' },
+    JWT_SECRET,
+    { expiresIn: '2m' }
+  );
   const res = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
     body: JSON.stringify(body)
   });
   return res.json();
@@ -290,6 +303,12 @@ bot.on('text', async (ctx, next) => {
     }
 });
 
+bot.action('fb_check_status', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.answerCbQuery();
+    await ctx.reply('📊 Gõ /checkjob để xem tiến độ 5 job gần nhất.');
+});
+
 // Lệnh /checkjob để xem tiến độ
 bot.command('checkjob', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
@@ -368,6 +387,7 @@ bot.action(/^(complete|reject):(.+)$/, async (ctx) => {
   }
 
   const [, action, orderCode] = ctx.match;
+  pendingActions.set(ctx.from.id, { action, orderCode });
   const actionName = action === 'complete' ? 'HOÀN THÀNH' : 'TỪ CHỐI';
 
   await ctx.answerCbQuery();
@@ -443,6 +463,7 @@ const BAND_DURATION_MS = BAND_DURATION_DAYS * 24 * 60 * 60 * 1000;
 
 const BCRYPT_ROUNDS = 10;
 const PORT = process.env.PORT || 3000;
+const KHOAHOC_URL = process.env.KHOAHOC_URL || 'https://caoquangtuan.net';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
 
 const KEY_EXPIRE_HOURS = 24;
@@ -6025,6 +6046,7 @@ async function startServer() {
 }
 
 startServer();
+
 
 
 
