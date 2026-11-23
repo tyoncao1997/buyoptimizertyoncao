@@ -51,7 +51,7 @@ def banner():
         border_style="cyan",
         padding=(1, 4),
         title="🔥 TOOL NUÔI FB VIP 🔥",
-        subtitle="TUẤN TÚ"
+        subtitle="TYONCAO"
     )
 
     with Live(panel, refresh_per_second=10):
