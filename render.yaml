@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tyoncao-web
+    env: node
+    plan: starter # BẮT BUỘC DÙNG STARTER (Free 512MB sẽ bị OOM Crash)
+    buildCommand: |
+      npm install
+      apt-get update && apt-get install -y python3 python3-pip
+      pip3 install -r requirements.txt
+    startCommand: node server.js
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
