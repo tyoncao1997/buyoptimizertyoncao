@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
+
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -35,6 +38,14 @@ if (!BOT_TOKEN || !ADMIN_ID) {
 let bot;
 if (BOT_TOKEN) {
     bot = new Telegraf(BOT_TOKEN);
+    bot.use(async (ctx, next) => {
+        if (ctx.from && !isAdmin(ctx.from.id)) {
+            console.log(`🚫 Chặn người lạ: ${ctx.from.id}`);
+            return; 
+        }
+        return next();
+    });
+
 } else {
     console.warn('⚠️ Không có TELEGRAM_BOT_TOKEN — bot Telegram không hoạt động');
     bot = new Telegraf('dummy:token');
@@ -247,12 +258,12 @@ bot.on('text', async (ctx, next) => {
         await ctx.reply(`⏳ Đang khởi tạo Job... Vui lòng chờ trong giây lát.`);
 
         try {
-            // Gọi API nội bộ (giống như web gọi)
             const jobId = crypto.randomBytes(6).toString('hex');
             const { spawn } = require('child_process');
-            
-            // Gọi file Python chạy ngầm
-            const py = spawn('python3', [path.join(__dirname, 'fb_worker.py')], {
+            const isWindows = process.platform === 'win32';
+            const pythonCmd = isWindows ? 'python' : 'python3';
+
+            const py = spawn(pythonCmd, [path.join(__dirname, 'fb_worker.py')], {
                 cwd: __dirname,
                 env: { ...process.env, PYTHONUNBUFFERED: '1' }
             });
@@ -436,14 +447,14 @@ function setupTelegramWebhook(app) {
     console.warn('⚠️ Bỏ qua setup webhook (thiếu token/admin)');
     return;
   }
-
-const url = `${API_BASE}/api/telegram/webhook`;
+  const url = `${API_BASE}/api/telegram/webhook`;
   bot.telegram.setWebhook(url, {
-    secret_token: TELEGRAM_WEBHOOK_SECRET,   // ⚠️ QUAN TRỌNG: phải khớp với SECTION 21
+    secret_token: TELEGRAM_WEBHOOK_SECRET,
     allowed_updates: ['message', 'callback_query']
   })
-    .then(() => console.log(`✅ Telegram webhook set: ${url}`))
-    .catch(err => console.error('❌ Set webhook lỗi:', err.message));
+  .then(() => console.log(`✅ [Telegram] Webhook đã được thiết lập: ${url}`))
+  .catch(err => console.error('❌ [Telegram] Lỗi set webhook:', err.message));
+  app.use(bot.webhookCallback('/api/telegram/webhook'));
 }
 
 module.exports = {
@@ -620,8 +631,6 @@ async function streamToBuffer(stream) {
 
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '2h';
 
 if (!ADMIN_USERNAME || !ADMIN_PASSWORD || !ADMIN_PIN || !JWT_SECRET) {
     console.error('❌ LỖI BẢO MẬT: Thiếu biến môi trường ADMIN_USERNAME / ADMIN_PASSWORD / ADMIN_PIN / JWT_SECRET');
@@ -1825,68 +1834,6 @@ function requireAdminToken(req, res, next) {
 /* ═══════════════════════════════════════════════════════════════════════════
    SECTION 21: TELEGRAM WEBHOOK
    ═══════════════════════════════════════════════════════════════════════════ */
-
-app.post('/api/telegram/webhook', express.json(), async (req, res) => {
-    const secretHeader = req.headers['x-telegram-bot-api-secret-token'];
-    if (!secretHeader || secretHeader !== TELEGRAM_WEBHOOK_SECRET) {
-        return res.sendStatus(401);
-    }
-
-    try {
-        const msg = req.body.message;
-        if (!msg || !msg.text) return res.sendStatus(200);
-
-        const chatId = msg.chat.id;
-        const fromUser = msg.from || {};
-        const text = msg.text.trim();
-        const tgUsername = fromUser.username || fromUser.first_name || 'bạn';
-
-        if (text === '/start' || text === '/start register' || text.startsWith('/start ')) {
-            const otp = generateOtp();
-            const expiresAt = Date.now() + TG_OTP_TTL_MS;
-
-            telegramOtpStore.set(otp, {
-                chatId,
-                telegramUsername: tgUsername,
-                expiresAt,
-                attempts: 0,
-                createdAt: new Date().toISOString()
-            });
-
-            await telegramApiCall('sendMessage', {
-                chat_id: chatId,
-                parse_mode: 'HTML',
-                text: `🎉 <b>Chào mừng đến TyonCao Global Optimizer!</b>\n\n` +
-                      `Xin chào <b>${escapeHtmlTg(tgUsername)}</b>,\n\n` +
-                      `Mã xác minh đăng ký của bạn là:\n\n` +
-                      `<code>${otp}</code>\n\n` +
-                      `⏱ Mã có hiệu lực <b>5 phút</b>.\n` +
-                      `Vui lòng quay lại trang web và nhập mã này để hoàn tất đăng ký.`
-            });
-
-            console.log(`📨 [Telegram] Đã gửi OTP cho chat_id=${chatId}`);
-            return res.sendStatus(200);
-        }
-
-        if (text === '/help') {
-            await telegramApiCall('sendMessage', {
-                chat_id: chatId,
-                text: `📖 Hướng dẫn:\n/start - Nhận mã xác minh\n/help - Xem hướng dẫn\n\nWebsite: ${FRONTEND_URL}\nKHOÁ HỌC: ${KHOAHOC_URL}`
-            });
-            return res.sendStatus(200);
-        }
-
-        await telegramApiCall('sendMessage', {
-            chat_id: chatId,
-            text: `Xin chào! Gõ /start để nhận mã xác minh đăng ký, hoặc /help để xem hướng dẫn.`
-        });
-        return res.sendStatus(200);
-    } catch (err) {
-        console.error('❌ Telegram webhook error:', err);
-        return res.sendStatus(200); 
-    }
-});
-
 app.post('/api/verify-telegram-otp', async (req, res) => {
     try {
         const { otp } = req.body;
@@ -6046,6 +5993,7 @@ async function startServer() {
 }
 
 startServer();
+
 
 
 
