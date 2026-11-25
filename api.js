@@ -249,6 +249,7 @@ const BCRYPT_ROUNDS = 10;
 const PORT = process.env.PORT || 3000;
 const KHOAHOC_URL = process.env.KHOAHOC_URL || 'https://caoquangtuan.net';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://buyoptimizertc.infinityfreeapp.com';
+const FRONTEND_URL_1 = (process.env.FRONTEND_URL_1 || '').trim().replace(/\/+$/, '');
 
 const KEY_EXPIRE_HOURS = 24;
 const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
@@ -357,10 +358,19 @@ const emailLogPool = new Pool({
 });
 emailLogPool.on('error', (err) => console.error('❌ Email Log Pool error:', err.message));
 
+const GOOGLE_CLIENT_ID_1 = (process.env.GOOGLE_CLIENT_ID_1 || '').trim();
+if (!GOOGLE_CLIENT_ID_1) {
+    console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID_1 - chức năng đăng nhập Google sẽ không hoạt động');
+}
+
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
 if (!GOOGLE_CLIENT_ID) {
     console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID - chức năng đăng nhập Google sẽ không hoạt động');
 }
+
+const googleClient1 = GOOGLE_CLIENT_ID_1
+    ? new OAuth2Client(GOOGLE_CLIENT_ID_1)
+    : null;
 
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
