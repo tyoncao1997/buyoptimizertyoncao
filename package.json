@@ -1,38 +1,40 @@
 {
   "name": "buyoptimizertyoncao",
   "version": "1.0.0",
-  "description": "",
+  "private": true,
+  "description": "TYON CAO Shop API server",
   "main": "server.js",
+  "type": "commonjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check api.js"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tyoncao1997/buyoptimizertyoncao.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "bugs": {
     "url": "https://github.com/tyoncao1997/buyoptimizertyoncao/issues"
   },
   "homepage": "https://github.com/tyoncao1997/buyoptimizertyoncao#readme",
-    "dependencies": {
-    "@aws-sdk/client-s3": "^3.600.0",
-    "@aws-sdk/s3-request-presigner": "^3.600.0",
-    "archiver": "^6.0.1",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/s3-request-presigner": "^3.750.0",
+    "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "express-rate-limit": "^7.2.0",
-    "helmet": "^7.1.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "google-auth-library": "^9.15.1",
+    "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.11.5",
     "nodemailer": "^6.9.13",
-    "google-auth-library": "^9.10.0",
+    "pg": "^8.13.1",
     "telegraf": "^4.16.3"
   }
 }
