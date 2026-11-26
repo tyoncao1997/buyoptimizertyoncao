@@ -1521,6 +1521,7 @@ const CORS_ALLOWED_ORIGINS = [
     FRONTEND_URL,
     ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
     'https://buyoptimizertc.infinityfreeapp.com',
+    'https://tcmmo.infinityfreeapp.com',
     'https://buyoptimizertyoncao.onrender.com',
     'https://dashboardtc.infinityfreeapp.com',
     'http://localhost:3000',
@@ -2937,7 +2938,6 @@ app.post('/api/register', async (req, res) => {
         const usernameTrim = username.trim();
         const fullNameTrim = fullName.trim();
         const emailTrim = email.trim();
-        const emailKey = emailTrim.toLowerCase();
 
         if (!isValidEmail(emailTrim)) return res.status(400).json({ success: false, error: 'Email không hợp lệ' });
         if (!isValidUsername(usernameTrim)) return res.status(400).json({ success: false, error: 'Username không hợp lệ (≥4 ký tự, chỉ chữ/số/_)' });
@@ -2959,8 +2959,6 @@ app.post('/api/register', async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
             [usernameTrim, hashedPassword, fullNameTrim, emailTrim, 0, JSON.stringify([]), JSON.stringify([])]
         );
-
-        registerOtpStore.delete(emailKey);
 
         queueEmail(
             emailTrim,
