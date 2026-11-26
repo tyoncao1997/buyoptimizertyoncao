@@ -429,19 +429,16 @@ if (!ADMIN_USERNAME || !ADMIN_PASSWORD || !ADMIN_PIN || !JWT_SECRET) {
    SECTION 7: PAYMENT GATEWAYS
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const PAY2S_PARTNER_CODE = process.env.PAY2S_PARTNER_CODE;
-const PAY2S_ACCESS_KEY = process.env.PAY2S_ACCESS_KEY;
-const PAY2S_SECRET_KEY = process.env.PAY2S_SECRET_KEY;
-const PAY2S_API_URL = 'https://payment.pay2s.vn/v1/gateway/api/create';
-const PAY2S_WEBHOOK_TOKEN = process.env.PAY2S_WEBHOOK_TOKEN || '';
-
-const WEBHUB_WEBHOOK_TOKEN = process.env.WEBHUB_WEBHOOK_TOKEN || '';
-const WEBHUB_API_BASE = process.env.WEBHUB_API_BASE || 'https://api.webhub.vn/v1';
-
 const SEPAY_WEBHOOK_SECRET = process.env.SEPAY_WEBHOOK_SECRET;
 const SEPAY_BANK_ACCOUNT = process.env.SEPAY_BANK_ACCOUNT;
 const SEPAY_BANK_CODE = process.env.SEPAY_BANK_CODE;
 const SEPAY_ACCOUNT_HOLDER = process.env.SEPAY_ACCOUNT_HOLDER;
+const SEPAY_CONFIGURED = Boolean(
+    SEPAY_WEBHOOK_SECRET &&
+    /^[A-Z0-9]{2,20}$/i.test(SEPAY_BANK_CODE || '') &&
+    /^\d{6,20}$/.test(SEPAY_BANK_ACCOUNT || '') &&
+    SEPAY_ACCOUNT_HOLDER
+);
 
 if (!SEPAY_WEBHOOK_SECRET) {
     console.warn('SePay webhook disabled until SEPAY_WEBHOOK_SECRET is configured.');
@@ -2166,6 +2163,37 @@ app.get('/api/order-status/:orderCode', async (req, res) => {
     }
 });
 
+app.get('/api/user/orders', requireUserSession, async (req, res) => {
+    try {
+        const requestedLimit = Number.parseInt(req.query.limit, 10);
+        const limit = Number.isFinite(requestedLimit)
+            ? Math.min(Math.max(requestedLimit, 1), 120)
+            : 120;
+        const { rows } = await pool.query(
+            `SELECT order_code, plan_name, amount, status, created_at
+             FROM orders
+             WHERE LOWER(customer_username) = LOWER($1)
+             ORDER BY created_at DESC
+             LIMIT $2`,
+            [req.username, limit]
+        );
+
+        return res.json({
+            success: true,
+            data: rows.map(order => ({
+                orderCode: order.order_code,
+                planName: order.plan_name,
+                amount: Number(order.amount) || 0,
+                status: order.status,
+                createdAt: order.created_at
+            }))
+        });
+    } catch (err) {
+        console.error('Lỗi lấy đơn hàng người dùng:', err.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải đơn hàng.' });
+    }
+});
+
 app.post('/api/admin/orders', requireAdminToken, async (req, res) => {
     try {
         const orders = await getOrdersFromSupabase();
@@ -2528,40 +2556,40 @@ app.post('/api/admin/toggle-user-status', requireAdminToken, async (req, res) =>
    SECTION 25: SEPAY WEBHOOK
    ═══════════════════════════════════════════════════════════════════════════ */
 
-async function applyWalletDeposit({ gateway, orderCode, transactionId, amount, payload }) {
+async function applyWalletDeposit({ orderCode, transactionId, amount, payload }) {
     const client = await pool.connect();
     let tierCheck = null;
     try {
         await client.query('BEGIN');
         const { rows: inserted } = await client.query(
             `INSERT INTO payment_events (gateway, provider_transaction_id, order_code, amount, raw_payload, status)
-             VALUES ($1, $2, $3, $4, $5::jsonb, 'received')
+             VALUES ('sepay', $1, $2, $3, $4::jsonb, 'received')
              ON CONFLICT (gateway, provider_transaction_id) DO NOTHING RETURNING id`,
-            [gateway, transactionId, orderCode, amount, JSON.stringify(payload)]
+            [transactionId, orderCode, amount, JSON.stringify(payload)]
         );
         if (!inserted.length) {
             await client.query('COMMIT');
             return { status: 'duplicate' };
         }
         const { rows: intents } = await client.query(
-            'SELECT * FROM payment_intents WHERE gateway = $1 AND order_code = $2 FOR UPDATE',
-            [gateway, orderCode]
+            "SELECT * FROM payment_intents WHERE gateway = 'sepay' AND order_code = $1 FOR UPDATE",
+            [orderCode]
         );
         const intent = intents[0];
         if (!intent || intent.status !== 'pending') {
-            await client.query("UPDATE payment_events SET status = 'unmatched' WHERE gateway = $1 AND provider_transaction_id = $2", [gateway, transactionId]);
+            await client.query("UPDATE payment_events SET status = 'unmatched' WHERE gateway = 'sepay' AND provider_transaction_id = $1", [transactionId]);
             await client.query('COMMIT');
             return { status: 'unmatched' };
         }
         if (new Date(intent.expires_at).getTime() <= Date.now()) {
             await client.query("UPDATE payment_intents SET status = 'expired' WHERE id = $1", [intent.id]);
-            await client.query("UPDATE payment_events SET status = 'unmatched' WHERE gateway = $1 AND provider_transaction_id = $2", [gateway, transactionId]);
+            await client.query("UPDATE payment_events SET status = 'unmatched' WHERE gateway = 'sepay' AND provider_transaction_id = $1", [transactionId]);
             await client.query('COMMIT');
             return { status: 'unmatched' };
         }
         if (Number(intent.amount) !== amount) {
             await client.query("UPDATE payment_intents SET status = 'review' WHERE id = $1", [intent.id]);
-            await client.query("UPDATE payment_events SET status = 'review' WHERE gateway = $1 AND provider_transaction_id = $2", [gateway, transactionId]);
+            await client.query("UPDATE payment_events SET status = 'review' WHERE gateway = 'sepay' AND provider_transaction_id = $1", [transactionId]);
             await client.query('COMMIT');
             return { status: 'review' };
         }
@@ -2572,21 +2600,21 @@ async function applyWalletDeposit({ gateway, orderCode, transactionId, amount, p
         const user = users[0];
         if (!user) {
             await client.query("UPDATE payment_intents SET status = 'review' WHERE id = $1", [intent.id]);
-            await client.query("UPDATE payment_events SET status = 'unmatched' WHERE gateway = $1 AND provider_transaction_id = $2", [gateway, transactionId]);
+            await client.query("UPDATE payment_events SET status = 'unmatched' WHERE gateway = 'sepay' AND provider_transaction_id = $1", [transactionId]);
             await client.query('COMMIT');
             return { status: 'unmatched' };
         }
         const history = safeParseJSON(user.deposit_history);
         if (history.some(item => String(item.transactionId) === transactionId)) {
             await client.query("UPDATE payment_intents SET status = 'paid', provider_transaction_id = $1, paid_at = NOW() WHERE id = $2", [transactionId, intent.id]);
-            await client.query("UPDATE payment_events SET status = 'duplicate', username = $1 WHERE gateway = $2 AND provider_transaction_id = $3", [user.username, gateway, transactionId]);
+            await client.query("UPDATE payment_events SET status = 'duplicate', username = $1 WHERE gateway = 'sepay' AND provider_transaction_id = $2", [user.username, transactionId]);
             await client.query('COMMIT');
             return { status: 'duplicate' };
         }
-        history.push({ amount, method: gateway, content: orderCode, transactionId, at: new Date().toISOString() });
+        history.push({ amount, method: 'sepay', content: orderCode, transactionId, at: new Date().toISOString() });
         await client.query('UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3', [amount, JSON.stringify(history), user.username]);
         await client.query("UPDATE payment_intents SET status = 'paid', provider_transaction_id = $1, paid_at = NOW(), raw_payload = $2::jsonb WHERE id = $3", [transactionId, JSON.stringify(payload), intent.id]);
-        await client.query("UPDATE payment_events SET status = 'credited', username = $1 WHERE gateway = $2 AND provider_transaction_id = $3", [user.username, gateway, transactionId]);
+        await client.query("UPDATE payment_events SET status = 'credited', username = $1 WHERE gateway = 'sepay' AND provider_transaction_id = $2", [user.username, transactionId]);
         await client.query('COMMIT');
         tierCheck = { username: user.username, history: history.slice(0, -1) };
     } catch (error) {
@@ -2629,7 +2657,7 @@ async function handleSePayWebhook(req, res) {
 
         const depositMatch = content.match(/\bNAP[A-Z0-9]{10,32}\b/);
         if (depositMatch) {
-            const result = await applyWalletDeposit({ gateway: 'sepay', orderCode: depositMatch[0], transactionId, amount, payload: data });
+            const result = await applyWalletDeposit({ orderCode: depositMatch[0], transactionId, amount, payload: data });
             return res.status(200).json({ success: true, message: result.status });
         }
         const orderMatch = content.match(/TYON[A-Z0-9]{6,}/);
@@ -4063,94 +4091,8 @@ app.post('/api/user/google-me', async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SECTION 31: PAYMENT GATEWAYS (Pay2S, WebHub)
+   SECTION 31: PAYMENT GATEWAYS (SePay)
    ═══════════════════════════════════════════════════════════════════════════ */
-
-app.post('/api/pay2s-create-order', requireUserSession, requireActiveUser, async (req, res) => {
-    let orderCode;
-    try {
-        const amount = Number(req.body && req.body.amount);
-        if (!Number.isSafeInteger(amount) || amount < 10000 || amount > 50000000) {
-            return res.status(400).json({ success: false, error: 'Số tiền phải từ 10.000đ đến 50.000.000đ.' });
-        }
-        if (!PAY2S_PARTNER_CODE || !PAY2S_ACCESS_KEY || !PAY2S_SECRET_KEY || !PAY2S_WEBHOOK_TOKEN ||
-            !/^\d{6,20}$/.test(process.env.PAY2S_BANK_ACCOUNT || '')) {
-            return res.status(503).json({ success: false, error: 'Pay2S chưa được cấu hình đầy đủ.' });
-        }
-        orderCode = `NAP${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
-        const requestId = `${Date.now()}${crypto.randomBytes(3).toString('hex')}`;
-        const orderInfo = orderCode;
-        const baseUrl = process.env.BASE_URL || `http://localhost:${PORT}`;
-        const redirectUrl = `${baseUrl}/payment-return`;
-        const ipnUrl = `${baseUrl}/api/pay2s-webhook`;
-        const bankId = process.env.PAY2S_BANK_ID || 'MBB';
-        const bankAccount = process.env.PAY2S_BANK_ACCOUNT;
-        const bankAccounts = bankAccount ? [{ account_number: bankAccount, bank_id: bankId }] : [];
-        const rawSignature = `accessKey=${PAY2S_ACCESS_KEY}&amount=${amount}&bankAccounts=Array&ipnUrl=${ipnUrl}&orderId=${orderCode}&orderInfo=${orderInfo}&partnerCode=${PAY2S_PARTNER_CODE}&redirectUrl=${redirectUrl}&requestId=${requestId}&requestType=pay2s`;
-        const signature = crypto.createHmac('sha256', PAY2S_SECRET_KEY).update(rawSignature).digest('hex');
-        const payload = {
-            accessKey: PAY2S_ACCESS_KEY,
-            partnerCode: PAY2S_PARTNER_CODE,
-            partnerName: 'TYON Optimizer',
-            requestId,
-            amount,
-            orderId: orderCode,
-            orderInfo,
-            requestType: 'pay2s',
-            redirectUrl,
-            ipnUrl,
-            bankAccounts,
-            signature
-        };
-        await pool.query(
-            `INSERT INTO payment_intents (gateway, order_code, username, amount, status, expires_at)
-             VALUES ('pay2s', $1, $2, $3, 'pending', NOW() + INTERVAL '30 minutes')`,
-            [orderCode, req.username, amount]
-        );
-        const response = await fetch(PAY2S_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const result = await response.json();
-        const paymentUrl = result.payUrl || result.paymentUrl || (result.data && result.data.payUrl);
-        if (!response.ok || !(result.status === true || String(result.resultCode) === '0') || typeof paymentUrl !== 'string' || !paymentUrl.startsWith('https://')) {
-            await pool.query("UPDATE payment_intents SET status = 'failed' WHERE gateway = 'pay2s' AND order_code = $1", [orderCode]);
-            return res.status(502).json({ success: false, error: result.message || 'Pay2S không tạo được liên kết thanh toán.' });
-        }
-        return res.json({ success: true, paymentUrl, orderCode });
-    } catch (error) {
-        if (orderCode) {
-            await pool.query("UPDATE payment_intents SET status = 'failed' WHERE gateway = 'pay2s' AND order_code = $1", [orderCode]).catch(updateError => console.error('Could not mark Pay2S intent failed:', updateError.message));
-        }
-        console.error('Pay2S create order error:', error.message);
-        return res.status(502).json({ success: false, error: 'Không thể tạo thanh toán Pay2S.' });
-    }
-});
-
-app.post('/api/pay2s-webhook', express.urlencoded({ extended: true }), express.json(), async (req, res) => {
-    try {
-        if (!PAY2S_WEBHOOK_TOKEN) return res.status(503).json({ success: false, error: 'Webhook Pay2S chưa được cấu hình.' });
-        const authHeader = String(req.headers.authorization || '');
-        const token = authHeader.replace(/^Bearer\s+/i, '');
-        if (!safeCompareToken(token, PAY2S_WEBHOOK_TOKEN)) return res.status(401).json({ success: false, error: 'Token webhook không hợp lệ.' });
-
-        const data = req.body;
-        if (!data || typeof data !== 'object' || Array.isArray(data)) return res.status(400).json({ success: false, error: 'Dữ liệu webhook không hợp lệ.' });
-        if (String(data.resultCode) !== '0') return res.status(200).json({ success: true, message: 'Giao dịch chưa hoàn tất.' });
-        const orderCode = String(data.orderId || '').trim().toUpperCase();
-        const transactionId = String(data.transId || data.transactionNumber || '').trim();
-        const amount = Number(data.amount || data.transferAmount);
-        if (!/^NAP[A-F0-9]{16}$/.test(orderCode) || !transactionId || transactionId.length > 200 || !Number.isSafeInteger(amount) || amount <= 0) {
-            return res.status(400).json({ success: false, error: 'Thông tin thanh toán không hợp lệ.' });
-        }
-        const result = await applyWalletDeposit({ gateway: 'pay2s', orderCode, transactionId, amount, payload: data });
-        return res.status(200).json({ success: true, message: result.status });
-    } catch (error) {
-        console.error('Pay2S webhook error:', error.message);
-        return res.status(500).json({ success: false, error: 'Không thể xử lý webhook.' });
-    }
-});
 
 app.post('/api/sepay-create-order', requireUserSession, requireActiveUser, async (req, res) => {
     try {
@@ -4158,7 +4100,7 @@ app.post('/api/sepay-create-order', requireUserSession, requireActiveUser, async
         if (!Number.isSafeInteger(amount) || amount < 10000 || amount > 50000000) {
             return res.status(400).json({ success: false, error: 'Số tiền phải từ 10.000đ đến 50.000.000đ.' });
         }
-        if (!SEPAY_WEBHOOK_SECRET || !/^[A-Z0-9]{2,20}$/i.test(SEPAY_BANK_CODE || '') || !/^\d{6,20}$/.test(SEPAY_BANK_ACCOUNT || '') || !SEPAY_ACCOUNT_HOLDER) {
+        if (!SEPAY_CONFIGURED) {
             return res.status(503).json({ success: false, error: 'Thông tin tài khoản SePay chưa được cấu hình đầy đủ.' });
         }
         const orderCode = `NAP${crypto.randomBytes(8).toString('hex').toUpperCase()}`;
@@ -4183,6 +4125,26 @@ app.post('/api/sepay-create-order', requireUserSession, requireActiveUser, async
     }
 });
 
+app.get('/api/user/deposit-intents', requireUserSession, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT order_code, amount,
+                    CASE WHEN status = 'pending' AND expires_at <= NOW() THEN 'expired' ELSE status END AS status,
+                    expires_at, paid_at
+             FROM payment_intents
+             WHERE gateway = 'sepay' AND LOWER(username) = LOWER($1)
+               AND status IN ('pending', 'review')
+             ORDER BY id DESC
+             LIMIT 10`,
+            [req.username]
+        );
+        return res.json({ success: true, deposits: rows });
+    } catch (error) {
+        console.error('Deposit intents error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải các lệnh nạp đang chờ.' });
+    }
+});
+
 app.get('/api/user/deposit-intents/:orderCode', requireUserSession, async (req, res) => {
     try {
         const orderCode = String(req.params.orderCode || '').trim().toUpperCase();
@@ -4199,109 +4161,6 @@ app.get('/api/user/deposit-intents/:orderCode', requireUserSession, async (req, 
     } catch (error) {
         console.error('Deposit status error:', error.message);
         return res.status(500).json({ success: false, error: 'Không thể tải trạng thái lệnh nạp.' });
-    }
-});
-
-app.post('/api/webhub-create-order', requireUserSession, requireActiveUser, async (req, res) => {
-    try {
-        const amount = Number(req.body && req.body.amount);
-        if (!Number.isSafeInteger(amount) || amount < 10000 || amount > 50000000) {
-            return res.status(400).json({ success: false, error: 'Số tiền tối thiểu 10,000đ' });
-        }
-        if (!WEBHUB_WEBHOOK_TOKEN) return res.status(500).json({ success: false, error: 'WebHub chưa được cấu hình' });
-
-        const webhubRes = await fetch(`${WEBHUB_API_BASE}/orders`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${WEBHUB_WEBHOOK_TOKEN}` },
-            body: JSON.stringify({
-                amount,
-                description: `NAP_${req.username}`,
-                return_url: `${process.env.BASE_URL || 'http://localhost:3000'}/payment-return`
-            })
-        });
-        const rawText = await webhubRes.text();
-        let result;
-        try { result = JSON.parse(rawText); } catch { result = { raw: rawText }; }
-        if (!webhubRes.ok) {
-            return res.status(400).json({ success: false, error: result.message || result.error || `WebHub lỗi ${webhubRes.status}` });
-        }
-        res.json({
-            success: true,
-            paymentUrl: result.payment_url || result.checkout_url || result.paymentUrl,
-            qrCode: result.qr_code || result.qr_string || result.qrCode,
-            orderId: result.order_id || result.id || result.orderId
-        });
-    } catch (err) {
-        console.error('WebHub create order error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi kết nối WebHub: ' + err.message });
-    }
-});
-
-app.post('/api/webhub-webhook', async (req, res) => {
-    try {
-        if (!WEBHUB_WEBHOOK_TOKEN) {
-            return res.status(503).json({ success: false, error: 'WebHub webhook is not configured.' });
-        }
-        const authHeader = req.headers['authorization'] || req.headers['x-webhub-signature'] || '';
-        const token = String(authHeader).replace(/^Bearer\s+/i, '');
-        if (!safeCompareToken(token, WEBHUB_WEBHOOK_TOKEN)) {
-            return res.status(401).json({ success: false, message: 'Unauthorized' });
-        }
-        const data = req.body;
-        const status = data.status || data.transactionStatus;
-        const amount = parseInt(data.amount || data.transferAmount || 0);
-        const content = (data.description || data.content || '').toUpperCase();
-
-        if (status === 'success' || status === 'completed' || data.transferType === 'IN') {
-            const match = content.match(/NAP[_\s\-\.]*([A-Z0-9_\.\-]+)/i);
-            console.log(`🔍 [WebHub] content="${content}" | match=${match ? match[1] : 'NULL'}`);
-            if (match && match[1] && amount > 0) {
-                const username = match[1].toLowerCase();
-                const transId = data.transactionId || data.orderId;
-                if (!transId) return res.status(200).json({ success: true });
-
-                const client = await pool.connect();
-                try {
-                    await client.query('BEGIN');
-                    const { rows: userRows } = await client.query(
-                        'SELECT username, balance, deposit_history FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE',
-                        [username]
-                    );
-                    if (userRows.length > 0) {
-                        const user = userRows[0];
-                        const depositHistory = safeParseJSON(user.deposit_history);
-                        const isDuplicate = depositHistory.some(d => d.transactionId === transId);
-                        if (!isDuplicate) {
-                            depositHistory.push({
-                                amount, method: 'webhub',
-                                transactionId: transId,
-                                at: new Date().toISOString()
-                            });
-                            await client.query(
-                                'UPDATE users SET balance = balance + $1, deposit_history = $2 WHERE username = $3',
-                                [amount, JSON.stringify(depositHistory), user.username]
-                            );
-                            console.log(`💰 Đã cộng ${amount}đ cho ${username} qua WebHub`);
-                            const oldHistoryForTier = depositHistory.slice(0, -1);
-                            setImmediate(() => {
-                                checkAndSendTierUpgrade(user.username, oldHistoryForTier)
-                                    .catch(err => console.error('Tier check error:', err.message));
-                            });
-                        }
-                    }
-                    await client.query('COMMIT');
-                } catch (txErr) {
-                    await client.query('ROLLBACK');
-                    throw txErr;
-                } finally {
-                    client.release();
-                }
-            }
-        }
-        res.status(200).json({ success: true });
-    } catch (error) {
-        console.error('WebHub webhook error:', error);
-        res.status(500).json({ success: false });
     }
 });
 
@@ -4868,36 +4727,8 @@ app.post('/api/admin/feedbacks', requireAdminToken, async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SECTION 37: HEALTH & PAYMENT RETURN
+   SECTION 37: HEALTH
    ═══════════════════════════════════════════════════════════════════════════ */
-
-app.get('/payment-return', (req, res) => {
-    const message = req.query.message || 'Giao dịch đã được xử lý.';
-    const safeMessage = String(message).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
-
-    res.send(`
-<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kết quả thanh toán</title>
-<style>
-body { font-family: sans-serif; background: #0f172a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; text-align: center; }
-.box { background: #1e293b; padding: 40px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); max-width: 400px; width: 90%; }
-h1 { color: #22c55e; font-size: 24px; margin-bottom: 10px; }
-p { color: #a0a5b5; font-size: 14px; margin-bottom: 20px; line-height: 1.5; }
-.btn { display: inline-block; padding: 12px 24px; background: #3b82f6; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; }
-.btn:hover { background: #2563eb; }
-</style></head>
-<body><div class="box">
-<h1>🎉 Thanh toán hoàn tất!</h1>
-<p>Cảm ơn bạn đã nạp tiền. Hệ thống sẽ tự động cộng tiền vào ví của bạn trong 1-2 phút.</p>
-<p><strong>Trạng thái:</strong> ${safeMessage}</p>
-<a href="${FRONTEND_URL}" class="btn">Quay lại trang chủ</a>
-</div>
-<script>setTimeout(() => { window.location.href = ${JSON.stringify(FRONTEND_URL)}; }, 5000);</script>
-</body></html>`);
-});
 
 app.get('/api/health', globalLimiter, async (req, res) => {
     let orderStats = { total: 0, pending: 0, paid: 0, underpaid: 0 };
@@ -4932,9 +4763,7 @@ app.get('/api/health', globalLimiter, async (req, res) => {
         uptime: process.uptime(),
         storage: USE_GIST ? 'github-gist' : 'local-file',
         emailConfigured: !!(process.env.GMAIL_CLIENT_ID && process.env.GMAIL_CLIENT_SECRET && process.env.GMAIL_REFRESH_TOKEN),
-        pay2sConfigured: !!PAY2S_PARTNER_CODE,
-        webhubConfigured: !!WEBHUB_WEBHOOK_TOKEN,
-        sepayConfigured: !!SEPAY_WEBHOOK_SECRET,
+        sepayConfigured: SEPAY_CONFIGURED,
         googleConfigured: !!GOOGLE_CLIENT_ID,
         totalUsers, totalKeys, pendingKeys, confirmedKeys, totalFeedbacks,
         totalOrders: orderStats.total,
@@ -6429,9 +6258,7 @@ async function startServer() {
         console.log(`📨 Telegram Bot: ${TELEGRAM_ENABLED ? '✅ Đã cấu hình' : '❌ CHƯA'}`);
         console.log(`☁️  Storage Keys/Feedbacks: ${USE_GIST ? 'GitHub Gist' : 'LOCAL FILE'}`);
         console.log(`🗄️  Storage Users/Orders/Sessions: Supabase`);
-        console.log(`💳 Pay2S: ${PAY2S_PARTNER_CODE ? '✅ Đã cấu hình' : '❌ CHƯA'}`);
-        console.log(`💳 SePay: ${SEPAY_WEBHOOK_SECRET ? '✅ Đã cấu hình' : '❌ CHƯA'}`);
-        console.log(`💳 WebHub: ${WEBHUB_WEBHOOK_TOKEN ? '✅ Đã cấu hình' : '❌ CHƯA'}`);
+        console.log(`💳 SePay: ${SEPAY_CONFIGURED ? '✅ Đã cấu hình' : '❌ CHƯA'}`);
         console.log(`🔑 Google OAuth: ${GOOGLE_CLIENT_ID ? '✅ Đã cấu hình' : '❌ CHƯA'}`);
         console.log(`🚫 Band System: ✅ BẬT (7 ngày + kháng cáo)`);
         console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
