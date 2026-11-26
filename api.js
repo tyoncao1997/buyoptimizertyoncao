@@ -1521,7 +1521,7 @@ const CORS_ALLOWED_ORIGINS = [
     FRONTEND_URL,
     ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
     'https://buyoptimizertc.infinityfreeapp.com',
-    'https://tyonmmotc.infinityfreeapp.com',
+    'https://mmotc.infinityfreeapp.com',
     'https://buyoptimizertyoncao.onrender.com',
     'https://dashboardtc.infinityfreeapp.com',
     'http://localhost:3000',
