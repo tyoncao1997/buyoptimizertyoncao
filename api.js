@@ -2925,12 +2925,12 @@ app.post('/api/send-register-otp', (req, res, next) => {
 
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, password, fullName, email, otp } = req.body || {};
+        const { username, password, fullName, email } = req.body || {};
 
-        if (!username || !password || !fullName || !email || !otp) {
+        if (!username || !password || !fullName || !email) {
             return res.status(400).json({
                 success: false,
-                error: 'Thiếu thông tin (cần username, password, fullName, email, otp)'
+                error: 'Thiếu thông tin (cần username, password, fullName, email)'
             });
         }
 
@@ -2938,7 +2938,6 @@ app.post('/api/register', async (req, res) => {
         const fullNameTrim = fullName.trim();
         const emailTrim = email.trim();
         const emailKey = emailTrim.toLowerCase();
-        const otpTrim = String(otp).trim();
 
         if (!isValidEmail(emailTrim)) return res.status(400).json({ success: false, error: 'Email không hợp lệ' });
         if (!isValidUsername(usernameTrim)) return res.status(400).json({ success: false, error: 'Username không hợp lệ (≥4 ký tự, chỉ chữ/số/_)' });
@@ -2946,53 +2945,6 @@ app.post('/api/register', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥8 ký tự' });
         }
         if (fullNameTrim.length < 2) return res.status(400).json({ success: false, error: 'Họ tên quá ngắn' });
-
-        let otpValid = false;
-        let otpSource = null;
-        let lastError = null;
-
-        const storedOtp = registerOtpStore.get(emailKey);
-        if (storedOtp) {
-            if (Date.now() > storedOtp.expiresAt) {
-                registerOtpStore.delete(emailKey);
-                lastError = 'Mã OTP đã hết hạn. Vui lòng gửi lại!';
-            } else if (storedOtp.attempts >= OTP_MAX_ATTEMPTS) {
-                registerOtpStore.delete(emailKey);
-                lastError = 'Nhập sai OTP quá nhiều lần. Vui lòng gửi lại!';
-            } else if (storedOtp.otp === otpTrim) {
-                otpValid = true;
-                otpSource = 'email';
-                registerOtpStore.delete(emailKey);
-            } else {
-                storedOtp.attempts += 1;
-                registerOtpStore.set(emailKey, storedOtp);
-                lastError = `Mã OTP không chính xác! Còn ${OTP_MAX_ATTEMPTS - storedOtp.attempts} lần thử.`;
-            }
-        }
-
-        if (!otpValid) {
-            const tgRecord = telegramOtpStore.get(otpTrim);
-            if (tgRecord) {
-                if (Date.now() > tgRecord.expiresAt) {
-                    telegramOtpStore.delete(otpTrim);
-                    lastError = 'Mã Telegram đã hết hạn.';
-                } else if (tgRecord.attempts >= TG_OTP_MAX_ATTEMPTS) {
-                    telegramOtpStore.delete(otpTrim);
-                    lastError = 'Nhập sai quá nhiều lần.';
-                } else {
-                    otpValid = true;
-                    otpSource = 'telegram';
-                    telegramOtpStore.delete(otpTrim);
-                }
-            }
-        }
-
-        if (!otpValid) {
-            return res.status(400).json({
-                success: false,
-                error: lastError || 'Vui lòng yêu cầu gửi mã OTP trước, hoặc /start trên Telegram để nhận mã.'
-            });
-        }
 
         const { rows: dup } = await pool.query(
             'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)',
