@@ -256,6 +256,7 @@ const KEY_EXPIRE_MS = KEY_EXPIRE_HOURS * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const SESSION_IDLE_TIMEOUT_MS = 60 * 60 * 1000;
 const SESSION_ABSOLUTE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
+const SHOP_GOOGLE_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -359,19 +360,18 @@ const emailLogPool = new Pool({
 emailLogPool.on('error', (err) => console.error('❌ Email Log Pool error:', err.message));
 
 const GOOGLE_CLIENT_ID_1 = (process.env.GOOGLE_CLIENT_ID_1 || '').trim();
-if (!GOOGLE_CLIENT_ID_1) {
-    console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID_1 - chức năng đăng nhập Google sẽ không hoạt động');
-}
-
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
 if (!GOOGLE_CLIENT_ID) {
-    console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID - chức năng đăng nhập Google sẽ không hoạt động');
+    console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID - Google login admin/legacy sẽ không hoạt động');
 }
 
-const googleClient1 = GOOGLE_CLIENT_ID_1
-    ? new OAuth2Client(GOOGLE_CLIENT_ID_1)
+const SHOP_GOOGLE_CLIENT_ID = GOOGLE_CLIENT_ID_1 || GOOGLE_CLIENT_ID;
+if (!SHOP_GOOGLE_CLIENT_ID) {
+    console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID hoặc GOOGLE_CLIENT_ID_1 - Google login shop sẽ không hoạt động');
+}
+const shopGoogleClient = SHOP_GOOGLE_CLIENT_ID
+    ? new OAuth2Client(SHOP_GOOGLE_CLIENT_ID)
     : null;
-
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 const gmailOAuth2Client = new OAuth2Client(
@@ -669,6 +669,18 @@ function safeParseJSON(value, fallback = []) {
         try { return JSON.parse(value) || fallback; } catch { return fallback; }
     }
     return fallback;
+}
+
+function hashShopGoogleValue(value) {
+    return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function timingSafeHashEquals(left, right) {
+    if (typeof left !== 'string' || typeof right !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) {
+        return false;
+    }
+    return crypto.timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
 }
 
 function calculateTier(totalDeposit) {
@@ -1453,6 +1465,21 @@ const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, max: 5, skipSuccessfulRequests: true,
     message: { error: 'Sai mật khẩu quá 5 lần. Vui lòng thử lại sau 15 phút.' }
 });
+const shopGoogleChallengeLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Quá nhiều yêu cầu đăng nhập Google. Vui lòng thử lại sau.' }
+});
+const shopGoogleLoginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, error: 'Quá nhiều lần xác thực Google. Vui lòng thử lại sau.' }
+});
 const pollingLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, max: 500,
     message: { error: 'Quá nhiều request. Vui lòng thử lại sau.' }
@@ -1474,6 +1501,7 @@ app.use('/api/', globalLimiter);
 app.use(cors({
     origin: [
         FRONTEND_URL,
+        ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
         'https://buyoptimizertc.infinityfreeapp.com',
         'https://buyoptimizertyoncao.onrender.com',
         'https://dashboardtc.infinityfreeapp.com',
@@ -1654,7 +1682,7 @@ app.post('/api/verify-telegram-otp', async (req, res) => {
 
 app.get('/api/config', (req, res) => {
     res.json({
-        googleClientId: process.env.GOOGLE_CLIENT_ID || '',
+        googleClientId: SHOP_GOOGLE_CLIENT_ID,
         telegramBotUsername: TELEGRAM_BOT_USERNAME || '',
         telegramAvailable: TELEGRAM_ENABLED
     });
@@ -2861,7 +2889,9 @@ app.post('/api/register', async (req, res) => {
 
         if (!isValidEmail(emailTrim)) return res.status(400).json({ success: false, error: 'Email không hợp lệ' });
         if (!isValidUsername(usernameTrim)) return res.status(400).json({ success: false, error: 'Username không hợp lệ (≥4 ký tự, chỉ chữ/số/_)' });
-        if (password.length < 6) return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥6 ký tự' });
+        if (typeof password !== 'string' || password.length < 8) {
+            return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥8 ký tự' });
+        }
         if (fullNameTrim.length < 2) return res.status(400).json({ success: false, error: 'Họ tên quá ngắn' });
 
         let otpValid = false;
@@ -2991,7 +3021,9 @@ app.post('/api/reset-password', async (req, res) => {
     try {
         const { email, otp, newPassword } = req.body;
         if (!email || !otp || !newPassword) return res.status(400).json({ success: false, error: 'Thiếu thông tin' });
-        if (newPassword.length < 6) return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥6 ký tự' });
+        if (typeof newPassword !== 'string' || newPassword.length < 8) {
+            return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥8 ký tự' });
+        }
 
         const record = otpStore.get(email.trim().toLowerCase());
         if (!record || record.otp !== otp || Date.now() > record.expiresAt) {
@@ -3517,6 +3549,225 @@ app.post('/api/heartbeat', requireUserSession, (req, res) => {
    SECTION 30: GOOGLE OAUTH CALLBACK
    ═══════════════════════════════════════════════════════════════════════════ */
 
+async function createGoogleUserSession(queryable, { email, fullName, picture, rememberMe = false }) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedName = typeof fullName === 'string' && fullName.trim()
+        ? fullName.trim()
+        : normalizedEmail.split('@')[0];
+
+    let { rows } = await queryable.query(
+        'SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1 FOR UPDATE',
+        [normalizedEmail]
+    );
+    let dbUser = rows[0] || null;
+
+    if (!dbUser) {
+        const emailPrefix = normalizedEmail.split('@')[0]
+            .replace(/[^a-zA-Z0-9_]/g, '')
+            .slice(0, 20);
+        const baseUsername = emailPrefix.length >= 4 ? emailPrefix : `google_${emailPrefix || 'user'}`;
+
+        for (let attempt = 0; attempt < 8 && !dbUser; attempt++) {
+            const username = attempt === 0
+                ? baseUsername
+                : `${baseUsername.slice(0, 20)}_${crypto.randomBytes(3).toString('hex')}`;
+            const inserted = await queryable.query(
+                `INSERT INTO users
+                    (username, password, full_name, email, balance, purchase_history, deposit_history, avatar_url, created_at)
+                 VALUES ($1, '', $2, $3, 0, $4, $4, $5, NOW())
+                 ON CONFLICT DO NOTHING
+                 RETURNING *`,
+                [username, normalizedName, normalizedEmail, JSON.stringify([]), picture || null]
+            );
+            dbUser = inserted.rows[0] || null;
+
+            if (!dbUser) {
+                const existing = await queryable.query(
+                    'SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1 FOR UPDATE',
+                    [normalizedEmail]
+                );
+                dbUser = existing.rows[0] || null;
+            }
+        }
+    }
+
+    if (dbUser && !dbUser.avatar_url && picture) {
+        await queryable.query(
+            'UPDATE users SET avatar_url = $1 WHERE username = $2',
+            [picture, dbUser.username]
+        );
+        dbUser.avatar_url = picture;
+    }
+
+    if (!dbUser) throw new Error('Could not create or locate the Google user.');
+
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + (
+        rememberMe ? 30 * 24 * 60 * 60 * 1000 : SESSION_ABSOLUTE_TIMEOUT_MS
+    ));
+
+    await queryable.query('DELETE FROM sessions WHERE username = $1', [dbUser.username]);
+    await queryable.query(
+        `INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
+         VALUES ($1, $2, NOW(), NOW(), $3)`,
+        [dbUser.username, sessionToken, expiresAt]
+    );
+
+    return {
+        success: true,
+        user: {
+            username: dbUser.username,
+            fullName: dbUser.full_name,
+            email: dbUser.email || normalizedEmail,
+            balance: Number(dbUser.balance),
+            status: dbUser.status || 'active',
+            depositHistory: safeParseJSON(dbUser.deposit_history),
+            purchaseHistory: safeParseJSON(dbUser.purchase_history),
+            avatar: dbUser.avatar_url || null
+        },
+        sessionToken,
+        expiresAt: expiresAt.toISOString()
+    };
+}
+
+app.post('/api/shop-auth/google/challenge', shopGoogleChallengeLimiter, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!shopGoogleClient || !SHOP_GOOGLE_CLIENT_ID) {
+        return res.status(503).json({ success: false, error: 'Đăng nhập Google chưa được cấu hình.' });
+    }
+
+    const challengeId = crypto.randomBytes(32).toString('hex');
+    const nonce = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + SHOP_GOOGLE_CHALLENGE_TTL_MS);
+
+    try {
+        await pool.query(
+            `DELETE FROM public.google_login_challenges
+             WHERE expires_at <= NOW()
+                OR consumed_at <= NOW() - INTERVAL '1 day'`
+        );
+        await pool.query(
+            `INSERT INTO public.google_login_challenges
+                (challenge_id_hash, nonce_hash, expires_at)
+             VALUES ($1, $2, $3)`,
+            [hashShopGoogleValue(challengeId), hashShopGoogleValue(nonce), expiresAt]
+        );
+        return res.json({
+            success: true,
+            challengeId,
+            nonce,
+            expiresAt: expiresAt.toISOString()
+        });
+    } catch (error) {
+        console.error('Shop Google challenge error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể khởi tạo đăng nhập Google.' });
+    }
+});
+
+app.post('/api/shop-auth/google/login', shopGoogleLoginLimiter, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!shopGoogleClient || !SHOP_GOOGLE_CLIENT_ID) {
+        return res.status(503).json({ success: false, error: 'Đăng nhập Google chưa được cấu hình.' });
+    }
+
+    const { credential, challengeId, rememberMe } = req.body || {};
+    if (typeof credential !== 'string' || credential.length > 10000 ||
+        typeof challengeId !== 'string' || !/^[a-f0-9]{64}$/.test(challengeId)) {
+        return res.status(400).json({ success: false, error: 'Yêu cầu đăng nhập Google không hợp lệ.' });
+    }
+
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        const challengeHash = hashShopGoogleValue(challengeId);
+        const { rows: challenges } = await client.query(
+            `SELECT nonce_hash
+             FROM public.google_login_challenges
+             WHERE challenge_id_hash = $1
+               AND consumed_at IS NULL
+               AND expires_at > NOW()
+             FOR UPDATE`,
+            [challengeHash]
+        );
+        if (!challenges.length) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(401).json({
+                success: false,
+                error: 'Yêu cầu đăng nhập Google đã hết hạn. Vui lòng thử lại.'
+            });
+        }
+
+        let payload;
+        try {
+            const ticket = await shopGoogleClient.verifyIdToken({
+                idToken: credential,
+                audience: SHOP_GOOGLE_CLIENT_ID
+            });
+            payload = ticket.getPayload();
+        } catch {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(401).json({ success: false, error: 'Không xác thực được tài khoản Google.' });
+        }
+
+        const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : '';
+        if (typeof payload?.sub !== 'string' || payload.email_verified !== true || !isValidEmail(email) ||
+            typeof payload.nonce !== 'string' ||
+            !timingSafeHashEquals(challenges[0].nonce_hash, hashShopGoogleValue(payload.nonce))) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(401).json({
+                success: false,
+                error: 'Thông tin xác thực Google không hợp lệ hoặc đã hết hạn.'
+            });
+        }
+
+        const { rowCount } = await client.query(
+            `UPDATE public.google_login_challenges
+             SET consumed_at = NOW()
+             WHERE challenge_id_hash = $1
+               AND consumed_at IS NULL
+               AND expires_at > NOW()`,
+            [challengeHash]
+        );
+        if (rowCount !== 1) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(401).json({
+                success: false,
+                error: 'Yêu cầu đăng nhập Google đã được sử dụng. Vui lòng thử lại.'
+            });
+        }
+
+        const result = await createGoogleUserSession(client, {
+            email,
+            fullName: payload.name,
+            picture: typeof payload.picture === 'string' ? payload.picture : null,
+            rememberMe: rememberMe === true
+        });
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.json(result);
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Shop Google login rollback error:', rollbackError.message);
+            }
+        }
+        console.error('Shop Google login error:', error.message);
+        return res.status(500).json({ success: false, error: 'Đăng nhập Google thất bại. Vui lòng thử lại.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
 app.get('/api/auth/google/callback', async (req, res) => {
     const { code } = req.query;
     if (!code) return res.redirect(`${FRONTEND_URL}?error=GoogleAuthFailed`);
@@ -3564,7 +3815,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
 
 app.post('/api/user/google-me', async (req, res) => {
     try {
-        const { token } = req.body;
+        const { token } = req.body || {};
         if (!token) return res.status(400).json({ success: false, error: 'Thiếu token' });
         
         const { rows: tempRows } = await pool.query(
@@ -3576,57 +3827,19 @@ app.post('/api/user/google-me', async (req, res) => {
             return res.status(401).json({ success: false, error: 'Token Google không hợp lệ hoặc đã hết hạn' });
         }
         const { email, full_name: fullName, picture } = tempRows[0];
-        await pool.query('DELETE FROM google_temp_tokens WHERE token = $1', [token]);
-        
-        let { rows } = await pool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
-        let dbUser = rows[0];
-
-        if (!dbUser) {
-            let baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
-            const { rows: checkUser } = await pool.query('SELECT 1 FROM users WHERE LOWER(username) = LOWER($1)', [baseUsername]);
-            if (checkUser.length > 0) {
-                baseUsername = baseUsername + Math.floor(1000 + Math.random() * 9000);
-            }
-            const insertQuery = `
-                INSERT INTO users (username, password, full_name, email, balance, purchase_history, deposit_history, avatar_url, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) RETURNING *
-            `;
-            const { rows: newRows } = await pool.query(insertQuery, [
-                baseUsername, '', fullName, email, 0, JSON.stringify([]), JSON.stringify([]), picture || null
-            ]);
-            dbUser = newRows[0];
-        } else if (!dbUser.avatar_url && picture) {
-            await pool.query('UPDATE users SET avatar_url = $1 WHERE username = $2', [picture, dbUser.username]);
-            dbUser.avatar_url = picture;
+        const { rowCount } = await pool.query(
+            'DELETE FROM google_temp_tokens WHERE token = $1 AND expires_at > NOW()',
+            [token]
+        );
+        if (rowCount !== 1) {
+            return res.status(401).json({ success: false, error: 'Token Google đã được sử dụng hoặc hết hạn' });
         }
 
-        const sessionToken = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
-        
-        await pool.query('DELETE FROM sessions WHERE username = $1', [dbUser.username]);
-        await pool.query(
-            `INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
-             VALUES ($1, $2, NOW(), NOW(), $3)`,
-            [dbUser.username, sessionToken, expiresAt]
-        );
-
-        res.json({
-            success: true,
-            user: {
-                username: dbUser.username,
-                fullName: dbUser.full_name,
-                email: dbUser.email,
-                balance: Number(dbUser.balance),
-                avatar: dbUser.avatar_url || null, 
-                depositHistory: safeParseJSON(dbUser.deposit_history),
-                purchaseHistory: safeParseJSON(dbUser.purchase_history)
-            },
-            sessionToken,
-            expiresAt: expiresAt.toISOString()
-        });
+        const result = await createGoogleUserSession(pool, { email, fullName, picture });
+        return res.json(result);
     } catch (err) {
         console.error('Google login error:', err);
-        res.status(500).json({ success: false, error: 'Lỗi server' });
+        return res.status(500).json({ success: false, error: 'Lỗi server' });
     }
 });
 
