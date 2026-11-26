@@ -361,11 +361,16 @@ emailLogPool.on('error', (err) => console.error('❌ Email Log Pool error:', err
 
 const GOOGLE_CLIENT_ID_1 = (process.env.GOOGLE_CLIENT_ID_1 || '').trim();
 const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const GOOGLE_CLIENT_SECRET_1 = (process.env.GOOGLE_CLIENT_SECRET_1 || '').trim();
+const GOOGLE_CLIENT_SECRET = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
 if (!GOOGLE_CLIENT_ID) {
     console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID - Google login admin/legacy sẽ không hoạt động');
 }
 
 const SHOP_GOOGLE_CLIENT_ID = GOOGLE_CLIENT_ID_1 || GOOGLE_CLIENT_ID;
+const SHOP_GOOGLE_CLIENT_SECRET = GOOGLE_CLIENT_ID_1
+    ? (GOOGLE_CLIENT_SECRET_1 || (GOOGLE_CLIENT_ID_1 === GOOGLE_CLIENT_ID ? GOOGLE_CLIENT_SECRET : ''))
+    : GOOGLE_CLIENT_SECRET;
 if (!SHOP_GOOGLE_CLIENT_ID) {
     console.warn('⚠️ Thiếu GOOGLE_CLIENT_ID hoặc GOOGLE_CLIENT_ID_1 - Google login shop sẽ không hoạt động');
 }
@@ -907,6 +912,23 @@ async function initDB() {
         console.log(`✅ Đã kết nối Supabase. Tổng số Users: ${rows[0].count}`);
     } catch (err) {
         console.error('❌ Lỗi kết nối Supabase:', err.message);
+    }
+}
+
+async function initTuTienCheckinHistory() {
+    if (!pool) return;
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_cultivation_checkins (
+                username VARCHAR(100) NOT NULL,
+                checkin_date DATE NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (username, checkin_date)
+            )
+        `);
+    } catch (error) {
+        console.error('❌ Không thể khởi tạo lịch sử điểm danh tu vi:', error.message);
+        throw error;
     }
 }
 
@@ -1498,21 +1520,24 @@ app.use('/api/', globalLimiter);
    SECTION 19: CORS
    ═══════════════════════════════════════════════════════════════════════════ */
 
+const CORS_ALLOWED_ORIGINS = [
+    FRONTEND_URL,
+    ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
+    'https://buyoptimizertc.infinityfreeapp.com',
+    'https://buyoptimizertyoncao.onrender.com',
+    'https://dashboardtc.infinityfreeapp.com',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5500',
+    'http://127.0.0.1:5500'
+].map(origin => origin.replace(/\/+$/, ''));
+const CORS_ALLOWED_ORIGIN_SET = new Set(CORS_ALLOWED_ORIGINS);
+
 app.use(cors({
-    origin: [
-        FRONTEND_URL,
-        ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
-        'https://buyoptimizertc.infinityfreeapp.com',
-        'https://buyoptimizertyoncao.onrender.com',
-        'https://dashboardtc.infinityfreeapp.com',
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-        'http://localhost:5500',
-        'http://127.0.0.1:5500'
-    ],
+    origin: CORS_ALLOWED_ORIGINS,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
 app.post('/api/sepay-webhook', express.raw({ type: 'application/json' }), handleSePayWebhook);
@@ -3257,6 +3282,42 @@ app.get('/api/user/tu-tien', requireUserSession, async (req, res) => {
     }
 });
 
+app.get('/api/user/tu-tien/check-ins', requireUserSession, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const month = typeof req.query.month === 'string' ? req.query.month : '';
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+    if (!match || Number(match[1]) < 2000 || Number(match[1]) > 2100) {
+        return res.status(400).json({ success: false, error: 'Tháng điểm danh không hợp lệ.' });
+    }
+
+    try {
+        const monthStart = `${month}-01`;
+        const { rows } = await pool.query(
+            `WITH checkin_dates AS (
+                 SELECT checkin_date
+                 FROM user_cultivation_checkins
+                 WHERE username = $1
+                   AND checkin_date >= $2::date
+                   AND checkin_date < ($2::date + INTERVAL '1 month')::date
+                 UNION
+                 SELECT last_checkin_date AS checkin_date
+                 FROM user_cultivation
+                 WHERE username = $1
+                   AND last_checkin_date >= $2::date
+                   AND last_checkin_date < ($2::date + INTERVAL '1 month')::date
+             )
+             SELECT TO_CHAR(checkin_date, 'YYYY-MM-DD') AS date
+             FROM checkin_dates
+             ORDER BY checkin_date`,
+            [req.username, monthStart]
+        );
+        return res.json({ success: true, month, dates: rows.map(row => row.date) });
+    } catch (error) {
+        console.error('Tu Vi check-in history error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải lịch sử điểm danh.' });
+    }
+});
+
 app.post('/api/user/tu-tien/check-in', requireUserSession, requireActiveUser, async (req, res) => {
     let client;
     try {
@@ -3289,6 +3350,12 @@ app.post('/api/user/tu-tien/check-in', requireUserSession, requireActiveUser, as
                  updated_at = NOW()
              WHERE username = $3`,
             [points, streakDays, req.username]
+        );
+        await client.query(
+            `INSERT INTO user_cultivation_checkins (username, checkin_date)
+             VALUES ($1, (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date)
+             ON CONFLICT (username, checkin_date) DO NOTHING`,
+            [req.username]
         );
         await client.query('COMMIT');
         return res.json({
@@ -3762,6 +3829,158 @@ app.post('/api/shop-auth/google/login', shopGoogleLoginLimiter, async (req, res)
             }
         }
         console.error('Shop Google login error:', error.message);
+        return res.status(500).json({ success: false, error: 'Đăng nhập Google thất bại. Vui lòng thử lại.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.post('/api/shop-auth/google/code-login', shopGoogleLoginLimiter, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const origin = req.get('Origin');
+    if (!origin || !CORS_ALLOWED_ORIGIN_SET.has(origin) ||
+        req.get('X-Requested-With') !== 'XmlHttpRequest') {
+        return res.status(403).json({ success: false, error: 'Yêu cầu đăng nhập Google không hợp lệ.' });
+    }
+    if (!shopGoogleClient || !SHOP_GOOGLE_CLIENT_ID || !SHOP_GOOGLE_CLIENT_SECRET) {
+        return res.status(503).json({
+            success: false,
+            error: 'Đăng nhập Google chưa được cấu hình đầy đủ trên máy chủ.'
+        });
+    }
+
+    const { code, challengeId, state, rememberMe } = req.body || {};
+    if (typeof code !== 'string' || !code || code.length > 4096 ||
+        typeof challengeId !== 'string' || !/^[a-f0-9]{64}$/.test(challengeId) ||
+        state !== challengeId || typeof rememberMe !== 'boolean') {
+        return res.status(400).json({ success: false, error: 'Yêu cầu đăng nhập Google không hợp lệ.' });
+    }
+
+    const challengeHash = hashShopGoogleValue(challengeId);
+    let client;
+    let transactionOpen = false;
+    try {
+        const { rows: pendingChallenges } = await pool.query(
+            `SELECT challenge_id_hash
+             FROM public.google_login_challenges
+             WHERE challenge_id_hash = $1
+               AND consumed_at IS NULL
+               AND expires_at > NOW()`,
+            [challengeHash]
+        );
+        if (!pendingChallenges.length) {
+            return res.status(401).json({
+                success: false,
+                error: 'Yêu cầu đăng nhập Google đã hết hạn. Vui lòng thử lại.'
+            });
+        }
+
+        const controller = new AbortController();
+        const tokenTimeout = setTimeout(() => controller.abort(), 15000);
+        let tokenResponse;
+        let tokenData;
+        try {
+            tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                    code,
+                    client_id: SHOP_GOOGLE_CLIENT_ID,
+                    client_secret: SHOP_GOOGLE_CLIENT_SECRET,
+                    redirect_uri: origin,
+                    grant_type: 'authorization_code'
+                }),
+                signal: controller.signal
+            });
+            tokenData = await tokenResponse.json();
+        } finally {
+            clearTimeout(tokenTimeout);
+        }
+
+        if (!tokenResponse.ok || typeof tokenData?.id_token !== 'string') {
+            console.warn('Shop Google code exchange rejected:', tokenData?.error || tokenResponse.status);
+            return res.status(401).json({
+                success: false,
+                error: 'Google không xác thực được tài khoản. Vui lòng thử lại.'
+            });
+        }
+
+        let payload;
+        try {
+            const ticket = await shopGoogleClient.verifyIdToken({
+                idToken: tokenData.id_token,
+                audience: SHOP_GOOGLE_CLIENT_ID
+            });
+            payload = ticket.getPayload();
+        } catch {
+            return res.status(401).json({ success: false, error: 'Không xác thực được tài khoản Google.' });
+        }
+
+        const email = typeof payload?.email === 'string' ? payload.email.trim().toLowerCase() : '';
+        if (typeof payload?.sub !== 'string' || payload.email_verified !== true || !isValidEmail(email)) {
+            return res.status(401).json({
+                success: false,
+                error: 'Thông tin xác thực Google không hợp lệ.'
+            });
+        }
+
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        const { rows: challenges } = await client.query(
+            `SELECT challenge_id_hash
+             FROM public.google_login_challenges
+             WHERE challenge_id_hash = $1
+               AND consumed_at IS NULL
+               AND expires_at > NOW()
+             FOR UPDATE`,
+            [challengeHash]
+        );
+        if (!challenges.length) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(401).json({
+                success: false,
+                error: 'Yêu cầu đăng nhập Google đã hết hạn. Vui lòng thử lại.'
+            });
+        }
+
+        const { rowCount } = await client.query(
+            `UPDATE public.google_login_challenges
+             SET consumed_at = NOW()
+             WHERE challenge_id_hash = $1
+               AND consumed_at IS NULL
+               AND expires_at > NOW()`,
+            [challengeHash]
+        );
+        if (rowCount !== 1) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(401).json({
+                success: false,
+                error: 'Yêu cầu đăng nhập Google đã được sử dụng. Vui lòng thử lại.'
+            });
+        }
+
+        const result = await createGoogleUserSession(client, {
+            email,
+            fullName: payload.name,
+            picture: typeof payload.picture === 'string' ? payload.picture : null,
+            rememberMe
+        });
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.json(result);
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Shop Google code login rollback error:', rollbackError.message);
+            }
+        }
+        console.error('Shop Google code login error:', error.message);
         return res.status(500).json({ success: false, error: 'Đăng nhập Google thất bại. Vui lòng thử lại.' });
     } finally {
         if (client) client.release();
@@ -6196,6 +6415,7 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
     await initDB();
+    await initTuTienCheckinHistory();
     await initNotificationTables();
 
     const server = app.listen(PORT, async () => {
