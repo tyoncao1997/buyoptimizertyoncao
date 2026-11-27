@@ -1484,6 +1484,28 @@ const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, max: 5, skipSuccessfulRequests: true,
     message: { error: 'Sai mật khẩu quá 5 lần. Vui lòng thử lại sau 15 phút.' }
 });
+const registrationOtpLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        code: 'REGISTRATION_IP_LIMIT',
+        error: 'IP này đã tạo nhiều tài khoản trong thời gian ngắn. Vui lòng thử lại sau hoặc liên hệ admin.'
+    }
+});
+const registrationAccountLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        code: 'REGISTRATION_IP_LIMIT',
+        error: 'IP này đã tạo nhiều tài khoản trong thời gian ngắn. Vui lòng thử lại sau hoặc liên hệ admin.'
+    }
+});
 const shopGoogleChallengeLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 20,
@@ -1521,8 +1543,7 @@ const CORS_ALLOWED_ORIGINS = [
     FRONTEND_URL,
     ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
     'https://buyoptimizertc.infinityfreeapp.com',
-    'http://127.0.0.1:5500',
-    'https://tcmmo.infinityfreeapp.com',
+    'https://tcsmmo.infinityfreeapp.com',
     'https://buyoptimizertyoncao.onrender.com',
     'https://dashboardtc.infinityfreeapp.com',
     'http://localhost:3000',
@@ -1536,7 +1557,7 @@ app.use(cors({
     origin: CORS_ALLOWED_ORIGINS,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key']
 }));
 
 app.post('/api/sepay-webhook', express.raw({ type: 'application/json' }), handleSePayWebhook);
@@ -2063,7 +2084,7 @@ const PCMB_ORDER_PLANS = Object.freeze({
     pro: Object.freeze({ name: 'TỐI ƯU CHUYÊN SÂU', amount: 550000 })
 });
 
-app.post('/api/create-order', async (req, res) => {
+app.post('/api/create-order', requireUserSession, requireActiveUser, async (req, res) => {
     try {
         const { 
             plan, customerName,
@@ -2079,6 +2100,9 @@ app.post('/api/create-order', async (req, res) => {
 
         if (!customerUsername || !customerPhone || !remoteTool || !remoteId || !remotePass) {
             return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
+        }
+        if (String(customerUsername).trim().toLowerCase() !== req.username.toLowerCase()) {
+            return res.status(403).json({ success: false, error: 'Đơn hàng phải được tạo cho tài khoản đang đăng nhập.' });
         }
 
         const phoneClean = String(customerPhone).replace(/[^0-9]/g, '');
@@ -2272,6 +2296,15 @@ app.post('/api/admin/confirm-order', requireAdminToken, async (req, res) => {
              WHERE order_code = $5`,
             [now, finalPaidAmount, req.admin.username, auditNote, orderCode]
         );
+
+        if (order.customer_username) {
+            await recordAffiliateCommission(client, {
+                buyerUsername: order.customer_username,
+                sourceOrderId: `optimizer:${order.order_code}`,
+                category: 'optimizer',
+                grossAmount: requiredAmount
+            });
+        }
 
         await client.query('COMMIT');
 
@@ -2471,6 +2504,12 @@ app.post('/api/admin/refund-order', requireAdminToken, async (req, res) => {
             await client.query(
                 `UPDATE orders SET status='cancelled', confirmed_by=$1, note=$2 WHERE order_code=$3`,
                 [req.admin.username, note, orderCode]
+            );
+            await client.query(
+                `UPDATE public.affiliate_commissions
+                 SET status = 'void'
+                 WHERE source_order_id = $1 AND category = 'optimizer' AND status <> 'void'`,
+                [`optimizer:${order.order_code}`]
             );
 
             const { rows: userRows } = await client.query(
@@ -2697,6 +2736,14 @@ async function handleSePayWebhook(req, res) {
                 [status, received, transactionId, note, order.order_code]
             );
             await client.query("UPDATE payment_events SET status = 'credited', username = $1 WHERE gateway = 'sepay' AND provider_transaction_id = $2", [order.customer_username || null, transactionId]);
+            if (status === 'paid' && order.customer_username) {
+                await recordAffiliateCommission(client, {
+                    buyerUsername: order.customer_username,
+                    sourceOrderId: `optimizer:${order.order_code}`,
+                    category: 'optimizer',
+                    grossAmount: Number(order.amount)
+                });
+            }
             await client.query('COMMIT');
             if (status === 'paid' && order.remote_tool && order.remote_id) {
                 notifyOrder = { orderCode: order.order_code, customerName: order.customer_name, customerUsername: order.customer_username, customerPhone: order.customer_phone, amount: Number(order.amount), plan: order.plan, planName: order.plan_name, remoteTool: order.remote_tool, remoteId: order.remote_id, remotePass: order.remote_pass, paidAt: new Date().toISOString() };
@@ -2851,7 +2898,7 @@ app.post('/api/admin/add-balance', requireAdminToken, async (req, res) => {
    SECTION 28: USER AUTH (Register / Login / Reset)
    ═══════════════════════════════════════════════════════════════════════════ */
 
-app.post('/api/send-otp', async (req, res) => {
+app.post('/api/send-otp', registrationOtpLimiter, async (req, res) => {
     try {
         const { email } = req.body || {};
         if (!email || !isValidEmail(email)) {
@@ -2925,9 +2972,13 @@ app.post('/api/send-register-otp', (req, res, next) => {
     app._router.handle(req, res, next);
 });
 
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', registrationAccountLimiter, async (req, res) => {
+    let client;
+    let transactionOpen = false;
     try {
         const { username, password, fullName, email, otp } = req.body || {};
+        const referralCode = String(req.body && req.body.referralCode || '').trim().toUpperCase();
+        const referralToken = String(req.body && req.body.referralToken || '').trim().toLowerCase();
 
         if (typeof username !== 'string' || typeof password !== 'string' ||
             typeof fullName !== 'string' || typeof email !== 'string' ||
@@ -2981,19 +3032,79 @@ app.post('/api/register', async (req, res) => {
             });
         }
 
-        const { rows: dup } = await pool.query(
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        const { rows: dup } = await client.query(
             'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)',
             [usernameTrim, emailTrim]
         );
-        if (dup.length > 0) return res.status(400).json({ success: false, error: 'Username hoặc Email đã tồn tại' });
+        if (dup.length > 0) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(400).json({ success: false, error: 'Username hoặc Email đã tồn tại' });
+        }
 
         const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-        await pool.query(
-            `INSERT INTO users (username, password, full_name, email, balance, purchase_history, deposit_history, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+        await client.query(
+            `INSERT INTO users
+                (username, password, full_name, email, balance, purchase_history, deposit_history, created_at, last_login_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())`,
             [usernameTrim, hashedPassword, fullNameTrim, emailTrim, 0, JSON.stringify([]), JSON.stringify([])]
         );
+
+        let referralAttributed = false;
+        if (/^[A-Z0-9_-]{4,20}$/.test(referralCode) && /^[a-f0-9]{64}$/.test(referralToken)) {
+            const tokenHash = hashShopGoogleValue(referralToken);
+            const { rows: clickRows } = await client.query(
+                `SELECT click.code, click.affiliate_username
+                 FROM public.affiliate_clicks click
+                 JOIN public.affiliate_codes active_code
+                   ON active_code.code = click.code
+                  AND active_code.is_current = TRUE
+                  AND LOWER(active_code.username) = LOWER(click.affiliate_username)
+                 WHERE click.code = $1
+                   AND click.attribution_token_hash = $2
+                   AND click.token_consumed_at IS NULL
+                   AND click.clicked_at >= NOW() - INTERVAL '30 days'
+                   AND click.clicked_at + INTERVAL '30 days' > NOW()
+                 FOR UPDATE OF click`,
+                [referralCode, tokenHash]
+            );
+            if (clickRows.length &&
+                clickRows[0].affiliate_username.toLowerCase() !== usernameTrim.toLowerCase()) {
+                const click = clickRows[0];
+                const insertedReferral = await client.query(
+                    `INSERT INTO public.affiliate_referrals
+                         (affiliate_username, referred_username, code_used, attributed_at, eligible_until)
+                     VALUES ($1, $2, $3, NOW(), NOW() + INTERVAL '30 days')
+                     ON CONFLICT (referred_username) DO NOTHING
+                     RETURNING id`,
+                    [click.affiliate_username, usernameTrim, click.code]
+                );
+                if (insertedReferral.rowCount) {
+                    await client.query(
+                        `UPDATE public.affiliate_clicks
+                         SET token_consumed_at = NOW(), referred_username = $1
+                         WHERE attribution_token_hash = $2`,
+                        [usernameTrim, tokenHash]
+                    );
+                    referralAttributed = true;
+                }
+            }
+        }
+
+        const sessionToken = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
+        await client.query(
+            `INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
+             VALUES ($1, $2, NOW(), NOW(), $3)`,
+            [usernameTrim, sessionToken, expiresAt]
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
 
         registerOtpStore.delete(emailKey);
 
@@ -3003,25 +3114,33 @@ app.post('/api/register', async (req, res) => {
             emailTemplates.welcome(fullNameTrim, usernameTrim)
         ).catch(err => console.error('Lỗi gửi mail welcome:', err));
 
-        const sessionToken = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + SESSION_ABSOLUTE_TIMEOUT_MS);
-        await pool.query(
-            `INSERT INTO sessions (username, token, last_activity, created_at, expires_at)
-             VALUES ($1, $2, NOW(), NOW(), $3)`,
-            [usernameTrim, sessionToken, expiresAt]
-        );
-
         return res.json({
             success: true,
             message: 'Đăng ký thành công',
             user: { username: usernameTrim, fullName: fullNameTrim, email: emailTrim, balance: 0 },
+            referralAttributed,
             sessionToken,
             expiresAt: expiresAt.toISOString()
         });
     } catch (err) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback registration failed:', rollbackError.message);
+            }
+        }
+        if (isAffiliateSchemaError(err)) {
+            return res.status(503).json({
+                success: false,
+                error: 'Hệ thống affiliate chưa được khởi tạo. Vui lòng liên hệ quản trị viên.'
+            });
+        }
         console.error('Register error:', err);
         if (err.code === '23505') return res.status(400).json({ success: false, error: 'Username hoặc Email đã tồn tại' });
         return res.status(500).json({ success: false, error: 'Lỗi server' });
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -3111,6 +3230,13 @@ app.post('/api/login', async (req, res) => {
             }
         }
         if (!passwordMatch) return res.status(401).json({ success: false, error: 'Sai tài khoản hoặc mật khẩu' });
+
+        await pool.query(
+            `UPDATE users
+             SET previous_login_at = last_login_at, last_login_at = NOW()
+             WHERE username = $1`,
+            [dbUser.username]
+        );
         
         const sessionToken = crypto.randomBytes(32).toString('hex');
         const expiresAt = rememberMe 
@@ -3274,6 +3400,9 @@ app.get('/api/user/tu-tien', requireUserSession, async (req, res) => {
         if (!rows.length) throw new Error('Tu Vi profile was not initialized.');
         const points = Number(rows[0].points);
         const streakDays = Number(rows[0].streak_days);
+        const equippedFrameMode = ['auto', 'none', 'frame'].includes(rows[0].equipped_frame_mode)
+            ? rows[0].equipped_frame_mode
+            : 'auto';
         return res.json({
             success: true,
             data: {
@@ -3283,12 +3412,16 @@ app.get('/api/user/tu-tien', requireUserSession, async (req, res) => {
                 todayReward: TUVI_DAILY_REWARD,
                 realmName: getTuViRealm(points),
                 equippedFrame: {
-                    mode: ['auto', 'none', 'frame'].includes(rows[0].equipped_frame_mode)
-                        ? rows[0].equipped_frame_mode
-                        : 'auto',
+                    mode: equippedFrameMode,
                     realmId: rows[0].equipped_frame_realm,
                     frameIndex: rows[0].equipped_frame_index
-                }
+                },
+                frame: getEquippedTuViFrame(
+                    points,
+                    equippedFrameMode,
+                    rows[0].equipped_frame_realm,
+                    rows[0].equipped_frame_index
+                )
             }
         });
     } catch (error) {
@@ -3344,6 +3477,7 @@ app.post('/api/user/tu-tien/check-in', requireUserSession, requireActiveUser, as
         );
         const { rows } = await client.query(
             `SELECT points, streak_days, last_checkin_date,
+                    equipped_frame_mode, equipped_frame_realm, equipped_frame_index,
                     last_checkin_date = (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date AS checked_today,
                     last_checkin_date = ((NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - 1) AS checked_yesterday
              FROM user_cultivation WHERE username = $1 FOR UPDATE`,
@@ -3381,7 +3515,13 @@ app.post('/api/user/tu-tien/check-in', requireUserSession, requireActiveUser, as
                 streakDays,
                 checkedToday: true,
                 todayReward: TUVI_DAILY_REWARD,
-                realmName: getTuViRealm(points)
+                realmName: getTuViRealm(points),
+                frame: getEquippedTuViFrame(
+                    points,
+                    profile.equipped_frame_mode,
+                    profile.equipped_frame_realm,
+                    profile.equipped_frame_index
+                )
             }
         });
     } catch (error) {
@@ -3436,11 +3576,1621 @@ app.post('/api/user/tu-tien/frame', requireUserSession, requireActiveUser, async
         );
         return res.json({
             success: true,
-            data: { mode, realmId: frame ? frame.realmId : null, frameIndex: frame ? frame.frameIndex : null }
+            data: {
+                mode,
+                realmId: frame ? frame.realmId : null,
+                frameIndex: frame ? frame.frameIndex : null,
+                points,
+                frame: getEquippedTuViFrame(points, mode, frame && frame.realmId, frame && frame.frameIndex)
+            }
         });
     } catch (error) {
         console.error('Tu Vi frame update error:', error.message);
         return res.status(500).json({ success: false, error: 'Could not update equipped frame.' });
+    }
+});
+
+function buildUserStatistics(dbUser, sessionCreatedAt) {
+    const depositHistory = safeParseJSON(dbUser.deposit_history);
+    const purchaseHistory = safeParseJSON(dbUser.purchase_history);
+    const deposits = depositHistory.filter(item => item && !/refund/i.test(String(item.method || '')));
+    const refunds = depositHistory.filter(item => item && /refund/i.test(String(item.method || '')));
+    const sum = (items, field) => items.reduce(
+        (total, item) => total + (Number(item && item[field]) || 0),
+        0
+    );
+    const totalDeposits = sum(deposits, 'amount');
+    const now = new Date();
+    const vietnamMonthParts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Ho_Chi_Minh',
+        year: 'numeric',
+        month: '2-digit'
+    }).formatToParts(now);
+    const currentVietnamMonth = `${vietnamMonthParts.find(part => part.type === 'year').value}-${vietnamMonthParts.find(part => part.type === 'month').value}`;
+    const monthlyDeposits = sum(
+        deposits.filter(item => {
+            const transactionDate = new Date(item.at || item.date || item.createdAt || item.created_at || '');
+            if (Number.isNaN(transactionDate.getTime())) return false;
+            const parts = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Ho_Chi_Minh',
+                year: 'numeric',
+                month: '2-digit'
+            }).formatToParts(transactionDate);
+            return `${parts.find(part => part.type === 'year').value}-${parts.find(part => part.type === 'month').value}` === currentVietnamMonth;
+        }),
+        'amount'
+    );
+    const currentTier = totalDeposits >= 10000000
+        ? 'Diamond'
+        : totalDeposits >= 2000000
+            ? 'Gold'
+            : totalDeposits >= 500000
+                ? 'Silver'
+                : 'Member';
+
+    return {
+        balance: Number(dbUser.balance) || 0,
+        totalDeposits,
+        monthlyDeposits,
+        totalSpent: sum(purchaseHistory, 'price'),
+        totalRefunded: sum(refunds, 'amount'),
+        depositCount: deposits.length,
+        purchaseCount: purchaseHistory.length,
+        totalOrders: purchaseHistory.length,
+        rank: dbUser.rank || currentTier,
+        lastLoginAt: dbUser.previous_login_at || sessionCreatedAt || null,
+        currentLoginAt: dbUser.last_login_at || sessionCreatedAt || null,
+        createdAt: dbUser.created_at || null
+    };
+}
+
+app.get('/api/user/statistics', requireUserSession, async (req, res) => {
+    try {
+        const dbUser = await getUserByUsername(req.username);
+        if (!dbUser) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+        return res.json({
+            success: true,
+            data: buildUserStatistics(dbUser, req.session.created_at)
+        });
+    } catch (err) {
+        console.error('Lỗi lấy thống kê trang chủ:', err);
+        return res.status(500).json({ success: false, error: 'Không thể tải thống kê người dùng.' });
+    }
+});
+
+function getSocialUsername(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function getSocialRecordId(value) {
+    const id = Number(value);
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function handleSocialApiError(res, error, action) {
+    if (error.code === '42P01') {
+        return res.status(503).json({
+            success: false,
+            error: 'Hộp thư chưa được khởi tạo. Vui lòng chạy migration Supabase mới nhất.'
+        });
+    }
+    console.error(`${action}:`, error);
+    return res.status(500).json({ success: false, error: `Không thể ${action.toLowerCase()}.` });
+}
+
+app.get('/api/user/messages/users', requireUserSession, async (req, res) => {
+    const query = String(req.query.q || '').trim().replace(/^@/, '');
+    if (query.length < 2 || query.length > 60) {
+        return res.status(400).json({ success: false, error: 'Từ khóa tìm kiếm phải dài từ 2 đến 60 ký tự.' });
+    }
+
+    try {
+        const username = getSocialUsername(req.username);
+        const search = `%${query}%`;
+        const { rows } = await pool.query(
+            `SELECT u.username, u.full_name, u.avatar_url, u.blue_tick_active,
+                    u.blue_tick_expires_at
+             FROM public.users u
+             WHERE LOWER(u.username) <> $1
+               AND COALESCE(LOWER(u.status), 'active') <> 'banned'
+               AND (u.username ILIKE $2 OR COALESCE(u.full_name, '') ILIKE $2)
+               AND NOT EXISTS (
+                   SELECT 1 FROM public.user_blocks b
+                   WHERE (b.blocker_username = $1 AND b.blocked_username = LOWER(u.username))
+                      OR (b.blocker_username = LOWER(u.username) AND b.blocked_username = $1)
+               )
+             ORDER BY CASE WHEN LOWER(u.username) = LOWER($3) THEN 0 ELSE 1 END,
+                      u.username
+             LIMIT 15`,
+            [username, search, query]
+        );
+        return res.json({
+            success: true,
+            data: rows.map(user => ({
+                username: user.username,
+                fullName: user.full_name || '',
+                avatar: user.avatar_url || '',
+                blueTickActive: Boolean(user.blue_tick_active) &&
+                    user.blue_tick_expires_at &&
+                    new Date(user.blue_tick_expires_at).getTime() > Date.now()
+            }))
+        });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Tìm người dùng để nhắn tin');
+    }
+});
+
+app.get('/api/user/messages/conversations', requireUserSession, async (req, res) => {
+    try {
+        const username = getSocialUsername(req.username);
+        const { rows } = await pool.query(
+            `SELECT c.id, u.username, u.full_name, u.avatar_url, u.blue_tick_active,
+                    u.blue_tick_expires_at, latest.body AS last_message,
+                    latest.created_at AS last_message_at,
+                    (SELECT COUNT(*)::INTEGER
+                     FROM public.direct_messages unread
+                     WHERE unread.conversation_id = c.id
+                       AND LOWER(unread.sender_username) = LOWER(u.username)
+                       AND unread.read_at IS NULL) AS unread_count
+             FROM public.direct_conversations c
+             JOIN public.users u
+               ON LOWER(u.username) = CASE
+                    WHEN c.participant_one = $1 THEN c.participant_two
+                    ELSE c.participant_one
+                  END
+             LEFT JOIN LATERAL (
+                 SELECT m.body, m.created_at
+                 FROM public.direct_messages m
+                 WHERE m.conversation_id = c.id
+                 ORDER BY m.id DESC
+                 LIMIT 1
+             ) latest ON TRUE
+             WHERE (c.participant_one = $1 OR c.participant_two = $1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM public.user_blocks b
+                   WHERE (b.blocker_username = $1 AND b.blocked_username = LOWER(u.username))
+                      OR (b.blocker_username = LOWER(u.username) AND b.blocked_username = $1)
+               )
+             ORDER BY COALESCE(latest.created_at, c.updated_at) DESC
+             LIMIT 100`,
+            [username]
+        );
+        return res.json({
+            success: true,
+            data: rows.map(conversation => ({
+                id: String(conversation.id),
+                username: conversation.username,
+                fullName: conversation.full_name || '',
+                avatar: conversation.avatar_url || '',
+                blueTickActive: Boolean(conversation.blue_tick_active) &&
+                    conversation.blue_tick_expires_at &&
+                    new Date(conversation.blue_tick_expires_at).getTime() > Date.now(),
+                lastMessage: conversation.last_message || '',
+                lastMessageAt: conversation.last_message_at || null,
+                unreadCount: Number(conversation.unread_count) || 0
+            }))
+        });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Tải danh sách hội thoại');
+    }
+});
+
+app.post('/api/user/messages/conversations', requireUserSession, requireActiveUser, async (req, res) => {
+    const targetUsername = getSocialUsername(req.body && req.body.username);
+    const ownUsername = getSocialUsername(req.username);
+    if (!targetUsername || targetUsername.length > 100) {
+        return res.status(400).json({ success: false, error: 'Tên người dùng không hợp lệ.' });
+    }
+    if (targetUsername === ownUsername) {
+        return res.status(400).json({ success: false, error: 'Bạn không thể tự mở hội thoại với mình.' });
+    }
+
+    try {
+        const { rows: users } = await pool.query(
+            `SELECT username, full_name, avatar_url, blue_tick_active, blue_tick_expires_at
+             FROM public.users
+             WHERE LOWER(username) = $1
+               AND COALESCE(LOWER(status), 'active') <> 'banned'
+             LIMIT 1`,
+            [targetUsername]
+        );
+        if (!users.length) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng.' });
+
+        const blocked = await pool.query(
+            `SELECT 1 FROM public.user_blocks
+             WHERE (blocker_username = $1 AND blocked_username = $2)
+                OR (blocker_username = $2 AND blocked_username = $1)
+             LIMIT 1`,
+            [ownUsername, targetUsername]
+        );
+        if (blocked.rowCount) {
+            return res.status(403).json({ success: false, error: 'Không thể nhắn tin với người dùng này.' });
+        }
+
+        const [participantOne, participantTwo] = [ownUsername, targetUsername].sort();
+        let { rows } = await pool.query(
+            `INSERT INTO public.direct_conversations (participant_one, participant_two)
+             VALUES ($1, $2)
+             ON CONFLICT (participant_one, participant_two) DO NOTHING
+             RETURNING id`,
+            [participantOne, participantTwo]
+        );
+        if (!rows.length) {
+            ({ rows } = await pool.query(
+                `SELECT id FROM public.direct_conversations
+                 WHERE participant_one = $1 AND participant_two = $2`,
+                [participantOne, participantTwo]
+            ));
+        }
+
+        const target = users[0];
+        return res.json({
+            success: true,
+            data: {
+                id: String(rows[0].id),
+                username: target.username,
+                fullName: target.full_name || '',
+                avatar: target.avatar_url || '',
+                blueTickActive: Boolean(target.blue_tick_active) &&
+                    target.blue_tick_expires_at &&
+                    new Date(target.blue_tick_expires_at).getTime() > Date.now()
+            }
+        });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Mở hội thoại');
+    }
+});
+
+app.get('/api/user/messages/conversations/:conversationId/messages', requireUserSession, async (req, res) => {
+    const conversationId = getSocialRecordId(req.params.conversationId);
+    const beforeId = req.query.before ? getSocialRecordId(req.query.before) : null;
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+    if (!conversationId || (req.query.before && !beforeId)) {
+        return res.status(400).json({ success: false, error: 'Hội thoại không hợp lệ.' });
+    }
+
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        const username = getSocialUsername(req.username);
+        await client.query('BEGIN');
+        transactionOpen = true;
+        const access = await client.query(
+            `SELECT 1
+             FROM public.direct_conversations c
+             WHERE c.id = $1
+               AND (c.participant_one = $2 OR c.participant_two = $2)
+               AND NOT EXISTS (
+                   SELECT 1 FROM public.user_blocks b
+                   WHERE (b.blocker_username = $2 AND b.blocked_username = CASE
+                            WHEN c.participant_one = $2 THEN c.participant_two ELSE c.participant_one END)
+                      OR (b.blocked_username = $2 AND b.blocker_username = CASE
+                            WHEN c.participant_one = $2 THEN c.participant_two ELSE c.participant_one END)
+               )`,
+            [conversationId, username]
+        );
+        if (!access.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy hội thoại.' });
+        }
+
+        const { rows } = await client.query(
+            `SELECT id, sender_username, body, created_at, read_at
+             FROM public.direct_messages
+             WHERE conversation_id = $1
+               AND ($2::BIGINT IS NULL OR id < $2)
+             ORDER BY id DESC
+             LIMIT $3`,
+            [conversationId, beforeId, limit]
+        );
+        const messageIds = rows
+            .filter(message => getSocialUsername(message.sender_username) !== username && !message.read_at)
+            .map(message => String(message.id));
+        if (messageIds.length) {
+            await client.query(
+                `UPDATE public.direct_messages
+                 SET read_at = NOW()
+                 WHERE id = ANY($1::BIGINT[]) AND read_at IS NULL`,
+                [messageIds]
+            );
+        }
+        await client.query('COMMIT');
+        transactionOpen = false;
+
+        return res.json({
+            success: true,
+            data: rows.reverse().map(message => ({
+                id: String(message.id),
+                senderUsername: message.sender_username,
+                body: message.body,
+                createdAt: message.created_at,
+                readAt: message.read_at || (messageIds.includes(String(message.id)) ? new Date().toISOString() : null)
+            }))
+        });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback tải tin nhắn thất bại:', rollbackError.message);
+            }
+        }
+        return handleSocialApiError(res, error, 'Tải tin nhắn');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.post('/api/user/messages/conversations/:conversationId/messages', requireUserSession, requireActiveUser, async (req, res) => {
+    const conversationId = getSocialRecordId(req.params.conversationId);
+    const body = req.body && typeof req.body.body === 'string' ? req.body.body.trim() : '';
+    if (!conversationId) return res.status(400).json({ success: false, error: 'Hội thoại không hợp lệ.' });
+    if (!body || body.length > 4000) {
+        return res.status(400).json({ success: false, error: 'Tin nhắn phải có từ 1 đến 4.000 ký tự.' });
+    }
+
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        const username = getSocialUsername(req.username);
+        await client.query('BEGIN');
+        transactionOpen = true;
+        const access = await client.query(
+            `SELECT c.id
+             FROM public.direct_conversations c
+             WHERE c.id = $1
+               AND (c.participant_one = $2 OR c.participant_two = $2)
+               AND NOT EXISTS (
+                   SELECT 1 FROM public.user_blocks b
+                   WHERE (b.blocker_username = $2 AND b.blocked_username = CASE
+                            WHEN c.participant_one = $2 THEN c.participant_two ELSE c.participant_one END)
+                      OR (b.blocked_username = $2 AND b.blocker_username = CASE
+                            WHEN c.participant_one = $2 THEN c.participant_two ELSE c.participant_one END)
+               )
+             FOR UPDATE`,
+            [conversationId, username]
+        );
+        if (!access.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy hội thoại hoặc quyền nhắn tin đã bị thu hồi.' });
+        }
+        const { rows } = await client.query(
+            `INSERT INTO public.direct_messages (conversation_id, sender_username, body)
+             VALUES ($1, $2, $3)
+             RETURNING id, sender_username, body, created_at, read_at`,
+            [conversationId, username, body]
+        );
+        await client.query(
+            'UPDATE public.direct_conversations SET updated_at = NOW() WHERE id = $1',
+            [conversationId]
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
+        const message = rows[0];
+        return res.status(201).json({
+            success: true,
+            data: {
+                id: String(message.id),
+                senderUsername: message.sender_username,
+                body: message.body,
+                createdAt: message.created_at,
+                readAt: null
+            }
+        });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback gửi tin nhắn thất bại:', rollbackError.message);
+            }
+        }
+        return handleSocialApiError(res, error, 'Gửi tin nhắn');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.get('/api/user/friends', requireUserSession, async (req, res) => {
+    try {
+        const username = getSocialUsername(req.username);
+        const [friends, incoming, outgoing, blocked] = await Promise.all([
+            pool.query(
+                `SELECT r.id,
+                        u.username, u.full_name, u.avatar_url, u.blue_tick_active,
+                        u.blue_tick_expires_at
+                 FROM public.user_friend_requests r
+                 JOIN public.users u ON LOWER(u.username) = CASE
+                    WHEN r.requester_username = $1 THEN r.recipient_username
+                    ELSE r.requester_username END
+                 WHERE r.status = 'accepted'
+                   AND (r.requester_username = $1 OR r.recipient_username = $1)
+                 ORDER BY LOWER(COALESCE(u.full_name, u.username)), u.username`,
+                [username]
+            ),
+            pool.query(
+                `SELECT r.id, u.username, u.full_name, u.avatar_url
+                 FROM public.user_friend_requests r
+                 JOIN public.users u ON LOWER(u.username) = r.requester_username
+                 WHERE r.recipient_username = $1 AND r.status = 'pending'
+                 ORDER BY r.created_at DESC`,
+                [username]
+            ),
+            pool.query(
+                `SELECT r.id, u.username, u.full_name, u.avatar_url
+                 FROM public.user_friend_requests r
+                 JOIN public.users u ON LOWER(u.username) = r.recipient_username
+                 WHERE r.requester_username = $1 AND r.status = 'pending'
+                 ORDER BY r.created_at DESC`,
+                [username]
+            ),
+            pool.query(
+                `SELECT u.username, u.full_name, u.avatar_url
+                 FROM public.user_blocks b
+                 JOIN public.users u ON LOWER(u.username) = b.blocked_username
+                 WHERE b.blocker_username = $1
+                 ORDER BY b.created_at DESC`,
+                [username]
+            )
+        ]);
+        const toUser = user => ({
+            username: user.username,
+            fullName: user.full_name || '',
+            avatar: user.avatar_url || '',
+            blueTickActive: Boolean(user.blue_tick_active) &&
+                user.blue_tick_expires_at &&
+                new Date(user.blue_tick_expires_at).getTime() > Date.now()
+        });
+        return res.json({
+            success: true,
+            data: {
+                friends: friends.rows.map(user => ({ id: String(user.id), ...toUser(user) })),
+                incomingRequests: incoming.rows.map(user => ({ id: String(user.id), ...toUser(user) })),
+                outgoingRequests: outgoing.rows.map(user => ({ id: String(user.id), ...toUser(user) })),
+                blockedUsers: blocked.rows.map(toUser)
+            }
+        });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Tải danh sách bạn bè');
+    }
+});
+
+app.get('/api/user/friends/search', requireUserSession, async (req, res) => {
+    const query = String(req.query.q || '').trim().replace(/^@/, '');
+    if (query.length < 2 || query.length > 60) {
+        return res.status(400).json({ success: false, error: 'Từ khóa tìm kiếm phải dài từ 2 đến 60 ký tự.' });
+    }
+    try {
+        const username = getSocialUsername(req.username);
+        const { rows } = await pool.query(
+            `SELECT u.username, u.full_name, u.avatar_url,
+                    CASE
+                      WHEN blocked.blocker_username IS NOT NULL THEN 'blocked'
+                      WHEN relation.status = 'accepted' THEN 'friends'
+                      WHEN relation.requester_username = $1 THEN 'sent'
+                      WHEN relation.recipient_username = $1 THEN 'received'
+                      ELSE 'none'
+                    END AS relationship,
+                    (blocked.blocker_username = $1) AS blocked_by_me,
+                    relation.id AS request_id
+             FROM public.users u
+             LEFT JOIN LATERAL (
+                 SELECT r.id, r.status, r.requester_username, r.recipient_username
+                 FROM public.user_friend_requests r
+                 WHERE (r.requester_username = $1 AND r.recipient_username = LOWER(u.username))
+                    OR (r.recipient_username = $1 AND r.requester_username = LOWER(u.username))
+                 ORDER BY CASE WHEN r.status = 'accepted' THEN 0 ELSE 1 END, r.updated_at DESC
+                 LIMIT 1
+             ) relation ON TRUE
+             LEFT JOIN LATERAL (
+                 SELECT b.blocker_username
+                 FROM public.user_blocks b
+                 WHERE (b.blocker_username = $1 AND b.blocked_username = LOWER(u.username))
+                    OR (b.blocked_username = $1 AND b.blocker_username = LOWER(u.username))
+                 LIMIT 1
+             ) blocked ON TRUE
+             WHERE LOWER(u.username) <> $1
+               AND COALESCE(LOWER(u.status), 'active') <> 'banned'
+               AND (u.username ILIKE $2 OR COALESCE(u.full_name, '') ILIKE $2)
+             ORDER BY LOWER(COALESCE(u.full_name, u.username)), u.username
+             LIMIT 15`,
+            [username, `%${query}%`]
+        );
+        return res.json({
+            success: true,
+            data: rows.map(user => ({
+                username: user.username,
+                fullName: user.full_name || '',
+                avatar: user.avatar_url || '',
+                relationship: user.relationship,
+                blockedByMe: Boolean(user.blocked_by_me),
+                requestId: user.request_id ? String(user.request_id) : null
+            }))
+        });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Tìm người dùng');
+    }
+});
+
+app.post('/api/user/friends/requests', requireUserSession, requireActiveUser, async (req, res) => {
+    const targetUsername = getSocialUsername(req.body && req.body.username);
+    const ownUsername = getSocialUsername(req.username);
+    if (!targetUsername || targetUsername.length > 100 || targetUsername === ownUsername) {
+        return res.status(400).json({ success: false, error: 'Tên người dùng không hợp lệ.' });
+    }
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+        const { rows: lockedUsers } = await client.query(
+            `SELECT username FROM public.users
+             WHERE LOWER(username) IN ($1, $2)
+               AND COALESCE(LOWER(status), 'active') <> 'banned'
+             ORDER BY LOWER(username)
+             FOR UPDATE`,
+            [ownUsername, targetUsername]
+        );
+        if (!lockedUsers.some(user => getSocialUsername(user.username) === targetUsername)) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng.' });
+        }
+        const blocked = await client.query(
+            `SELECT 1 FROM public.user_blocks
+             WHERE (blocker_username = $1 AND blocked_username = $2)
+                OR (blocker_username = $2 AND blocked_username = $1)
+             LIMIT 1`,
+            [ownUsername, targetUsername]
+        );
+        if (blocked.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ success: false, error: 'Không thể gửi lời mời tới người dùng này.' });
+        }
+        const accepted = await client.query(
+            `SELECT 1 FROM public.user_friend_requests
+             WHERE status = 'accepted'
+               AND ((requester_username = $1 AND recipient_username = $2)
+                 OR (requester_username = $2 AND recipient_username = $1))
+             LIMIT 1`,
+            [ownUsername, targetUsername]
+        );
+        if (accepted.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ success: false, error: 'Hai tài khoản đã là bạn bè.' });
+        }
+
+        const { rows: reciprocal } = await client.query(
+            `UPDATE public.user_friend_requests
+             SET status = 'accepted', updated_at = NOW()
+             WHERE requester_username = $1 AND recipient_username = $2 AND status = 'pending'
+             RETURNING id, status`,
+            [targetUsername, ownUsername]
+        );
+        if (reciprocal.length) {
+            await client.query('COMMIT');
+            transactionOpen = false;
+            return res.json({
+                success: true,
+                data: { id: String(reciprocal[0].id), status: reciprocal[0].status },
+                message: 'Đã chấp nhận lời mời kết bạn.'
+            });
+        }
+
+        let { rows } = await client.query(
+            `INSERT INTO public.user_friend_requests (requester_username, recipient_username)
+             VALUES ($1, $2)
+             ON CONFLICT (requester_username, recipient_username) DO UPDATE
+                 SET status = 'pending', updated_at = NOW()
+                 WHERE public.user_friend_requests.status = 'rejected'
+             RETURNING id, status`,
+            [ownUsername, targetUsername]
+        );
+        if (!rows.length) {
+            ({ rows } = await client.query(
+                `SELECT id, status FROM public.user_friend_requests
+                 WHERE requester_username = $1 AND recipient_username = $2`,
+                [ownUsername, targetUsername]
+            ));
+        }
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.json({
+            success: true,
+            data: { id: String(rows[0].id), status: rows[0].status },
+            message: rows[0].status === 'pending'
+                ? 'Đã gửi lời mời kết bạn.'
+                : 'Hai tài khoản đã là bạn bè.'
+        });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback gửi lời mời thất bại:', rollbackError.message);
+            }
+        }
+        return handleSocialApiError(res, error, 'Gửi lời mời kết bạn');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.post('/api/user/friends/requests/:requestId/accept', requireUserSession, requireActiveUser, async (req, res) => {
+    const requestId = getSocialRecordId(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, error: 'Lời mời không hợp lệ.' });
+    try {
+        const username = getSocialUsername(req.username);
+        const { rows } = await pool.query(
+            `UPDATE public.user_friend_requests r
+             SET status = 'accepted', updated_at = NOW()
+             WHERE r.id = $1 AND r.recipient_username = $2 AND r.status = 'pending'
+               AND NOT EXISTS (
+                   SELECT 1 FROM public.user_blocks b
+                   WHERE (b.blocker_username = $2 AND b.blocked_username = r.requester_username)
+                      OR (b.blocker_username = r.requester_username AND b.blocked_username = $2)
+               )
+             RETURNING id`,
+            [requestId, username]
+        );
+        if (!rows.length) {
+            return res.status(404).json({ success: false, error: 'Lời mời không còn hiệu lực hoặc đã bị chặn.' });
+        }
+        return res.json({ success: true, message: 'Đã chấp nhận lời mời kết bạn.' });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Chấp nhận lời mời kết bạn');
+    }
+});
+
+app.post('/api/user/friends/requests/:requestId/reject', requireUserSession, requireActiveUser, async (req, res) => {
+    const requestId = getSocialRecordId(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, error: 'Lời mời không hợp lệ.' });
+    try {
+        const { rowCount } = await pool.query(
+            `UPDATE public.user_friend_requests
+             SET status = 'rejected', updated_at = NOW()
+             WHERE id = $1 AND recipient_username = $2 AND status = 'pending'`,
+            [requestId, getSocialUsername(req.username)]
+        );
+        if (!rowCount) return res.status(404).json({ success: false, error: 'Không tìm thấy lời mời.' });
+        return res.json({ success: true, message: 'Đã từ chối lời mời kết bạn.' });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Từ chối lời mời kết bạn');
+    }
+});
+
+app.delete('/api/user/friends/requests/:requestId', requireUserSession, requireActiveUser, async (req, res) => {
+    const requestId = getSocialRecordId(req.params.requestId);
+    if (!requestId) return res.status(400).json({ success: false, error: 'Lời mời không hợp lệ.' });
+    try {
+        const { rowCount } = await pool.query(
+            `DELETE FROM public.user_friend_requests
+             WHERE id = $1 AND requester_username = $2 AND status = 'pending'`,
+            [requestId, getSocialUsername(req.username)]
+        );
+        if (!rowCount) return res.status(404).json({ success: false, error: 'Không tìm thấy lời mời đang chờ.' });
+        return res.json({ success: true, message: 'Đã hủy lời mời kết bạn.' });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Hủy lời mời kết bạn');
+    }
+});
+
+app.delete('/api/user/friends/:username', requireUserSession, requireActiveUser, async (req, res) => {
+    const targetUsername = getSocialUsername(req.params.username);
+    const ownUsername = getSocialUsername(req.username);
+    if (!targetUsername || targetUsername === ownUsername) {
+        return res.status(400).json({ success: false, error: 'Tên người dùng không hợp lệ.' });
+    }
+    try {
+        const { rowCount } = await pool.query(
+            `DELETE FROM public.user_friend_requests
+             WHERE status = 'accepted'
+               AND ((requester_username = $1 AND recipient_username = $2)
+                 OR (requester_username = $2 AND recipient_username = $1))`,
+            [ownUsername, targetUsername]
+        );
+        if (!rowCount) return res.status(404).json({ success: false, error: 'Hai tài khoản chưa là bạn bè.' });
+        return res.json({ success: true, message: 'Đã xóa bạn bè.' });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Xóa bạn bè');
+    }
+});
+
+app.post('/api/user/friends/blocks', requireUserSession, requireActiveUser, async (req, res) => {
+    const targetUsername = getSocialUsername(req.body && req.body.username);
+    const ownUsername = getSocialUsername(req.username);
+    if (!targetUsername || targetUsername.length > 100 || targetUsername === ownUsername) {
+        return res.status(400).json({ success: false, error: 'Tên người dùng không hợp lệ.' });
+    }
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+        const target = await client.query(
+            'SELECT 1 FROM public.users WHERE LOWER(username) = $1',
+            [targetUsername]
+        );
+        if (!target.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng.' });
+        }
+        await client.query(
+            `INSERT INTO public.user_blocks (blocker_username, blocked_username)
+             VALUES ($1, $2) ON CONFLICT (blocker_username, blocked_username) DO NOTHING`,
+            [ownUsername, targetUsername]
+        );
+        await client.query(
+            `DELETE FROM public.user_friend_requests
+             WHERE (requester_username = $1 AND recipient_username = $2)
+                OR (requester_username = $2 AND recipient_username = $1)`,
+            [ownUsername, targetUsername]
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.json({ success: true, message: 'Đã chặn người dùng.' });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback chặn người dùng thất bại:', rollbackError.message);
+            }
+        }
+        return handleSocialApiError(res, error, 'Chặn người dùng');
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.delete('/api/user/friends/blocks/:username', requireUserSession, requireActiveUser, async (req, res) => {
+    const targetUsername = getSocialUsername(req.params.username);
+    if (!targetUsername) return res.status(400).json({ success: false, error: 'Tên người dùng không hợp lệ.' });
+    try {
+        const { rowCount } = await pool.query(
+            `DELETE FROM public.user_blocks
+             WHERE blocker_username = $1 AND blocked_username = $2`,
+            [getSocialUsername(req.username), targetUsername]
+        );
+        if (!rowCount) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng trong danh sách chặn.' });
+        return res.json({ success: true, message: 'Đã bỏ chặn người dùng.' });
+    } catch (error) {
+        return handleSocialApiError(res, error, 'Bỏ chặn người dùng');
+    }
+});
+
+function getPartnerApiEncryptionKey() {
+    const secret = String(process.env.API_KEY_ENCRYPTION_SECRET || JWT_SECRET || '').trim();
+    if (!secret) throw new Error('API_KEY_ENCRYPTION_SECRET chưa được cấu hình.');
+    return crypto.createHash('sha256').update(secret).digest();
+}
+
+function encryptPartnerApiKey(key) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', getPartnerApiEncryptionKey(), iv);
+    const encrypted = Buffer.concat([cipher.update(key, 'utf8'), cipher.final()]);
+    return {
+        encryptedKey: encrypted.toString('base64'),
+        iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64')
+    };
+}
+
+function decryptPartnerApiKey(record) {
+    const decipher = crypto.createDecipheriv(
+        'aes-256-gcm',
+        getPartnerApiEncryptionKey(),
+        Buffer.from(record.encryption_iv, 'base64')
+    );
+    decipher.setAuthTag(Buffer.from(record.encryption_tag, 'base64'));
+    return Buffer.concat([
+        decipher.update(Buffer.from(record.encrypted_key, 'base64')),
+        decipher.final()
+    ]).toString('utf8');
+}
+
+app.post('/api/user/public-api-key', requireUserSession, requireActiveUser, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const rotate = Boolean(req.body && req.body.rotate === true);
+    try {
+        const existing = await pool.query(
+            `SELECT encrypted_key, encryption_iv, encryption_tag, created_at
+             FROM public.user_api_keys WHERE username = $1`,
+            [req.username]
+        );
+        if (existing.rows.length && !rotate) {
+            return res.json({
+                success: true,
+                data: {
+                    key: decryptPartnerApiKey(existing.rows[0]),
+                    createdAt: existing.rows[0].created_at
+                }
+            });
+        }
+
+        const key = `tyon_api_${crypto.randomBytes(32).toString('hex')}`;
+        const encrypted = encryptPartnerApiKey(key);
+        const keyHash = crypto.createHash('sha256').update(key).digest('hex');
+        const saved = await pool.query(
+            `INSERT INTO public.user_api_keys
+                 (username, key_hash, encrypted_key, encryption_iv, encryption_tag, created_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())
+             ON CONFLICT (username) DO UPDATE
+             SET key_hash = EXCLUDED.key_hash,
+                 encrypted_key = EXCLUDED.encrypted_key,
+                 encryption_iv = EXCLUDED.encryption_iv,
+                 encryption_tag = EXCLUDED.encryption_tag,
+                 created_at = NOW()
+             RETURNING created_at`,
+            [req.username, keyHash, encrypted.encryptedKey, encrypted.iv, encrypted.tag]
+        );
+        return res.json({
+            success: true,
+            data: { key, createdAt: saved.rows[0].created_at }
+        });
+    } catch (error) {
+        if (error.code === '42P01') {
+            return res.status(503).json({
+                success: false,
+                error: 'API key chưa được khởi tạo. Vui lòng chạy migration Supabase mới nhất.'
+            });
+        }
+        console.error('Partner API key error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải hoặc tạo API key.' });
+    }
+});
+
+const AFFILIATE_COMMISSION_RATES_BPS = Object.freeze({
+    blue_tick: 2000,
+    automxh: 1000,
+    ai_agent: 500,
+    tyon_shop: 1000,
+    optimizer: 1000
+});
+
+function isAffiliateSchemaError(error) {
+    return error && (error.code === '42P01' || error.code === '42703');
+}
+
+function affiliateMigrationResponse(res) {
+    return res.status(503).json({
+        success: false,
+        error: 'Affiliate chưa được khởi tạo. Vui lòng chạy migration Supabase mới nhất.'
+    });
+}
+
+async function recordAffiliateCommission(client, { buyerUsername, sourceOrderId, category, grossAmount }) {
+    const rateBps = AFFILIATE_COMMISSION_RATES_BPS[category];
+    const gross = Number(grossAmount);
+    if (!rateBps || !Number.isSafeInteger(gross) || gross <= 0 ||
+        typeof sourceOrderId !== 'string' || !sourceOrderId || sourceOrderId.length > 160) {
+        return;
+    }
+
+    const amount = Math.floor(gross * rateBps / 10000);
+    if (!Number.isSafeInteger(amount) || amount <= 0) return;
+
+    const { rows } = await client.query(
+        `SELECT affiliate_username
+         FROM public.affiliate_referrals
+         WHERE LOWER(referred_username) = LOWER($1)
+           AND eligible_until > NOW()
+           AND LOWER(affiliate_username) <> LOWER($1)
+         FOR UPDATE`,
+        [buyerUsername]
+    );
+    if (!rows.length) return;
+
+    await client.query(
+        `INSERT INTO public.affiliate_commissions
+             (affiliate_username, referred_username, category, source_order_id,
+              gross_amount, rate_bps, amount, status, hold_until)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', NOW() + INTERVAL '3 days')
+         ON CONFLICT (source_order_id) DO NOTHING`,
+        [rows[0].affiliate_username, buyerUsername, category, sourceOrderId, gross, rateBps, amount]
+    );
+}
+
+app.post('/api/public/affiliate/click', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const code = String(req.body && req.body.code || '').trim().toUpperCase();
+    const visitorId = String(req.body && req.body.visitorId || '').trim();
+    if (!/^[A-Z0-9_-]{4,20}$/.test(code) ||
+        !/^[a-f0-9-]{32,64}$/i.test(visitorId)) {
+        return res.status(400).json({ success: false, error: 'Link affiliate không hợp lệ.' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    try {
+        const { rows: owners } = await pool.query(
+            `SELECT code, username
+             FROM public.affiliate_codes
+             WHERE code = $1 AND is_current = TRUE`,
+            [code]
+        );
+        if (!owners.length) {
+            return res.status(404).json({ success: false, error: 'Không tìm thấy mã affiliate.' });
+        }
+
+        await pool.query(
+            `INSERT INTO public.affiliate_clicks
+                 (code, affiliate_username, visitor_hash, attribution_token_hash, clicked_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (code, visitor_hash, click_day)
+             DO UPDATE SET affiliate_username = EXCLUDED.affiliate_username,
+                           attribution_token_hash = EXCLUDED.attribution_token_hash,
+                           clicked_at = NOW(),
+                           token_consumed_at = NULL,
+                           referred_username = NULL`,
+            [code, owners[0].username, hashShopGoogleValue(visitorId), hashShopGoogleValue(token)]
+        );
+        return res.json({
+            success: true,
+            data: {
+                code,
+                token,
+                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+            }
+        });
+    } catch (error) {
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Track affiliate click error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể ghi nhận lượt truy cập affiliate.' });
+    }
+});
+
+app.get('/api/user/affiliate/code', requireUserSession, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+        const { rows } = await pool.query(
+            `SELECT code, created_at
+             FROM public.affiliate_codes
+             WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+             LIMIT 1`,
+            [req.username]
+        );
+        return res.json({
+            success: true,
+            data: rows.length
+                ? { code: rows[0].code, createdAt: rows[0].created_at }
+                : { code: null, createdAt: null }
+        });
+    } catch (error) {
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Load affiliate code error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải mã affiliate.' });
+    }
+});
+
+app.post('/api/user/affiliate/code', requireUserSession, requireActiveUser, async (req, res) => {
+    const requestedCode = String(req.body && req.body.code || '').trim().toUpperCase();
+    if (requestedCode && !/^[A-Z0-9_-]{4,20}$/.test(requestedCode)) {
+        return res.status(400).json({
+            success: false,
+            error: 'Mã affiliate phải có 4–20 ký tự gồm chữ, số, dấu gạch dưới hoặc gạch ngang.'
+        });
+    }
+
+    try {
+        const current = await pool.query(
+            `SELECT code, created_at
+             FROM public.affiliate_codes
+             WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+             LIMIT 1`,
+            [req.username]
+        );
+        if (current.rows.length) {
+            return res.json({
+                success: true,
+                data: { code: current.rows[0].code, createdAt: current.rows[0].created_at }
+            });
+        }
+
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const code = requestedCode || `TYON${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+            try {
+                const inserted = await pool.query(
+                    `INSERT INTO public.affiliate_codes (code, username, is_current)
+                     VALUES ($1, $2, TRUE)
+                     ON CONFLICT (code) DO NOTHING
+                     RETURNING code, created_at`,
+                    [code, req.username]
+                );
+                if (inserted.rows.length) {
+                    return res.status(201).json({
+                        success: true,
+                        data: { code: inserted.rows[0].code, createdAt: inserted.rows[0].created_at }
+                    });
+                }
+
+                const concurrent = await pool.query(
+                    `SELECT code, created_at
+                     FROM public.affiliate_codes
+                     WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+                     LIMIT 1`,
+                    [req.username]
+                );
+                if (concurrent.rows.length) {
+                    return res.json({
+                        success: true,
+                        data: { code: concurrent.rows[0].code, createdAt: concurrent.rows[0].created_at }
+                    });
+                }
+                if (requestedCode) {
+                    return res.status(409).json({ success: false, error: 'Mã affiliate này đã được sử dụng.' });
+                }
+            } catch (error) {
+                if (error.code !== '23505') throw error;
+                const concurrent = await pool.query(
+                    `SELECT code, created_at
+                     FROM public.affiliate_codes
+                     WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+                     LIMIT 1`,
+                    [req.username]
+                );
+                if (concurrent.rows.length) {
+                    return res.json({
+                        success: true,
+                        data: { code: concurrent.rows[0].code, createdAt: concurrent.rows[0].created_at }
+                    });
+                }
+                if (requestedCode) {
+                    return res.status(409).json({ success: false, error: 'Mã affiliate này đã được sử dụng.' });
+                }
+            }
+        }
+
+        return res.status(503).json({
+            success: false,
+            error: 'Chưa thể tạo mã affiliate ngẫu nhiên. Vui lòng thử lại.'
+        });
+    } catch (error) {
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Create affiliate code error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tạo mã affiliate.' });
+    }
+});
+
+app.patch('/api/user/affiliate/code', requireUserSession, requireActiveUser, async (req, res) => {
+    const code = String(req.body && req.body.code || '').trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{4,20}$/.test(code)) {
+        return res.status(400).json({
+            success: false,
+            error: 'Mã affiliate phải có 4–20 ký tự gồm chữ, số, dấu gạch dưới hoặc gạch ngang.'
+        });
+    }
+
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        const { rows: currentRows } = await client.query(
+            `SELECT code, created_at
+             FROM public.affiliate_codes
+             WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+             FOR UPDATE`,
+            [req.username]
+        );
+        if (!currentRows.length) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(404).json({ success: false, error: 'Chưa có mã affiliate để đổi.' });
+        }
+
+        const currentCode = currentRows[0].code;
+        if (currentCode === code) {
+            await client.query('COMMIT');
+            transactionOpen = false;
+            return res.json({ success: true, data: { code, createdAt: currentRows[0].created_at } });
+        }
+
+        const { rows: existingRows } = await client.query(
+            `SELECT username, is_current, created_at
+             FROM public.affiliate_codes
+             WHERE code = $1
+             FOR UPDATE`,
+            [code]
+        );
+        if (existingRows.length && existingRows[0].username.toLowerCase() !== req.username.toLowerCase()) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(409).json({ success: false, error: 'Mã affiliate này đã được sử dụng.' });
+        }
+
+        await client.query(
+            `UPDATE public.affiliate_codes
+             SET is_current = FALSE
+             WHERE LOWER(username) = LOWER($1) AND is_current = TRUE`,
+            [req.username]
+        );
+
+        if (existingRows.length) {
+            await client.query(
+                `UPDATE public.affiliate_codes
+                 SET is_current = TRUE
+                 WHERE code = $1 AND LOWER(username) = LOWER($2)`,
+                [code, req.username]
+            );
+        } else {
+            await client.query(
+                `INSERT INTO public.affiliate_codes (code, username, is_current)
+                 VALUES ($1, $2, TRUE)`,
+                [code, req.username]
+            );
+        }
+
+        const { rows: updatedRows } = await client.query(
+            `SELECT code, created_at
+             FROM public.affiliate_codes
+             WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+             LIMIT 1`,
+            [req.username]
+        );
+        await client.query(
+            `UPDATE public.affiliate_clicks
+             SET token_consumed_at = NOW()
+             WHERE LOWER(affiliate_username) = LOWER($1)
+               AND token_consumed_at IS NULL`,
+            [req.username]
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.json({
+            success: true,
+            data: { code: updatedRows[0].code, createdAt: updatedRows[0].created_at }
+        });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback affiliate code change failed:', rollbackError.message);
+            }
+        }
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        if (error.code === '23505') {
+            return res.status(409).json({ success: false, error: 'Mã affiliate này đã được sử dụng.' });
+        }
+        console.error('Change affiliate code error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể đổi mã affiliate.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.get('/api/user/affiliate/dashboard', requireUserSession, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+        await pool.query(
+            `UPDATE public.affiliate_commissions
+             SET status = 'available'
+             WHERE LOWER(affiliate_username) = LOWER($1)
+               AND status = 'pending'
+               AND hold_until <= NOW()`,
+            [req.username]
+        );
+
+        const [codeResult, statsResult, referralsResult, commissionsResult, payoutsResult] = await Promise.all([
+            pool.query(
+                `SELECT code, created_at
+                 FROM public.affiliate_codes
+                 WHERE LOWER(username) = LOWER($1) AND is_current = TRUE
+                 LIMIT 1`,
+                [req.username]
+            ),
+            pool.query(
+                `SELECT
+                    COALESCE((
+                        SELECT SUM(GREATEST(c.amount - COALESCE((
+                            SELECT SUM(pi.amount)
+                            FROM public.affiliate_payout_items pi
+                            JOIN public.affiliate_payouts p ON p.id = pi.payout_id
+                            WHERE pi.commission_id = c.id
+                              AND p.status IN ('pending', 'completed')
+                        ), 0), 0))
+                        FROM public.affiliate_commissions c
+                        WHERE LOWER(c.affiliate_username) = LOWER($1)
+                          AND c.status = 'available'
+                          AND c.hold_until <= NOW()
+                    ), 0)::BIGINT AS available,
+                    COALESCE((
+                        SELECT SUM(c.amount)
+                        FROM public.affiliate_commissions c
+                        WHERE LOWER(c.affiliate_username) = LOWER($1)
+                          AND c.status = 'pending'
+                          AND c.hold_until > NOW()
+                    ), 0)::BIGINT AS pending,
+                    COALESCE((
+                        SELECT SUM(c.amount)
+                        FROM public.affiliate_commissions c
+                        WHERE LOWER(c.affiliate_username) = LOWER($1)
+                          AND c.status <> 'void'
+                    ), 0)::BIGINT AS total_commission,
+                    COALESCE((
+                        SELECT SUM(c.gross_amount)
+                        FROM public.affiliate_commissions c
+                        WHERE LOWER(c.affiliate_username) = LOWER($1)
+                          AND c.status <> 'void'
+                    ), 0)::BIGINT AS revenue,
+                    COALESCE((
+                        SELECT COUNT(*)
+                        FROM public.affiliate_commissions c
+                        WHERE LOWER(c.affiliate_username) = LOWER($1)
+                          AND c.status <> 'void'
+                    ), 0)::INTEGER AS order_count,
+                    COALESCE((
+                        SELECT COUNT(*)
+                        FROM public.affiliate_referrals r
+                        WHERE LOWER(r.affiliate_username) = LOWER($1)
+                    ), 0)::INTEGER AS referral_count,
+                    COALESCE((
+                        SELECT COUNT(*)
+                        FROM public.affiliate_clicks cl
+                        WHERE LOWER(cl.affiliate_username) = LOWER($1)
+                          AND cl.clicked_at >= NOW() - INTERVAL '30 days'
+                    ), 0)::INTEGER AS click_count,
+                    COALESCE((
+                        SELECT SUM(p.amount)
+                        FROM public.affiliate_payouts p
+                        WHERE LOWER(p.username) = LOWER($1)
+                          AND p.status = 'completed'
+                    ), 0)::BIGINT AS withdrawn`,
+                [req.username]
+            ),
+            pool.query(
+                `SELECT referred_username AS "referredUsername", created_at AS "createdAt"
+                 FROM public.affiliate_referrals
+                 WHERE LOWER(affiliate_username) = LOWER($1)
+                 ORDER BY created_at DESC
+                 LIMIT 100`,
+                [req.username]
+            ),
+            pool.query(
+                `SELECT id, referred_username AS "referredUsername", category,
+                        gross_amount AS "grossAmount", amount, status,
+                        hold_until AS "holdUntil", created_at AS "createdAt"
+                 FROM public.affiliate_commissions
+                 WHERE LOWER(affiliate_username) = LOWER($1)
+                 ORDER BY created_at DESC
+                 LIMIT 100`,
+                [req.username]
+            ),
+            pool.query(
+                `SELECT id, amount, method, status, created_at AS "createdAt",
+                        reviewed_at AS "reviewedAt", review_note AS "reviewNote"
+                 FROM public.affiliate_payouts
+                 WHERE LOWER(username) = LOWER($1)
+                 ORDER BY created_at DESC
+                 LIMIT 100`,
+                [req.username]
+            )
+        ]);
+        const row = statsResult.rows[0] || {};
+        return res.json({
+            success: true,
+            data: {
+                code: codeResult.rows[0]
+                    ? { value: codeResult.rows[0].code, createdAt: codeResult.rows[0].created_at }
+                    : null,
+                stats: {
+                    available: Number(row.available) || 0,
+                    pending: Number(row.pending) || 0,
+                    totalCommission: Number(row.total_commission) || 0,
+                    orderCount: Number(row.order_count) || 0,
+                    clicks: Number(row.click_count) || 0,
+                    referrals: Number(row.referral_count) || 0,
+                    revenue: Number(row.revenue) || 0,
+                    withdrawn: Number(row.withdrawn) || 0
+                },
+                referrals: referralsResult.rows,
+                orders: commissionsResult.rows,
+                withdrawals: payoutsResult.rows
+            }
+        });
+    } catch (error) {
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Load affiliate dashboard error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải dữ liệu Affiliate.' });
+    }
+});
+
+app.post('/api/user/affiliate/withdrawals', requireUserSession, requireActiveUser, async (req, res) => {
+    const body = req.body || {};
+    const method = body.method === 'wallet' || body.method === 'bank' ? body.method : '';
+    const amountText = String(body.amount == null ? '' : body.amount).trim();
+    const amount = /^\d+$/.test(amountText) ? Number(amountText) : NaN;
+    if (!method || !Number.isSafeInteger(amount) || amount < 100000) {
+        return res.status(400).json({
+            success: false,
+            error: 'Số tiền rút tối thiểu là 100.000đ.'
+        });
+    }
+
+    let bankDetails = null;
+    if (method === 'bank') {
+        const bankName = typeof body.bankName === 'string' ? body.bankName.trim() : '';
+        const accountNumber = typeof body.accountNumber === 'string'
+            ? body.accountNumber.replace(/\s+/g, '')
+            : '';
+        const accountHolder = typeof body.accountHolder === 'string'
+            ? body.accountHolder.trim().normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/[đĐ]/g, 'D')
+                .toUpperCase()
+                .replace(/\s+/g, ' ')
+            : '';
+        if (bankName.length < 2 || bankName.length > 100 ||
+            !/^\d{6,34}$/.test(accountNumber) ||
+            !/^[A-Z0-9 ]{2,100}$/.test(accountHolder)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Vui lòng nhập đúng tên ngân hàng, số tài khoản và tên chủ tài khoản không dấu.'
+            });
+        }
+        bankDetails = { bankName, accountNumber, accountHolder };
+    }
+
+    let encryptedBankDetails = null;
+    if (bankDetails) {
+        try {
+            encryptedBankDetails = encryptPartnerApiKey(JSON.stringify(bankDetails));
+        } catch (error) {
+            console.error('Encrypt affiliate payout details error:', error.message);
+            return res.status(503).json({
+                success: false,
+                error: 'Chưa cấu hình mã hóa thông tin ngân hàng trên máy chủ.'
+            });
+        }
+    }
+
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        await client.query(
+            `UPDATE public.affiliate_commissions
+             SET status = 'available'
+             WHERE LOWER(affiliate_username) = LOWER($1)
+               AND status = 'pending'
+               AND hold_until <= NOW()`,
+            [req.username]
+        );
+
+        const { rows: commissions } = await client.query(
+            `SELECT id, amount
+             FROM public.affiliate_commissions
+             WHERE LOWER(affiliate_username) = LOWER($1)
+               AND status = 'available'
+               AND hold_until <= NOW()
+             ORDER BY created_at, id
+             FOR UPDATE`,
+            [req.username]
+        );
+        const commissionIds = commissions.map(item => item.id);
+        const allocations = commissionIds.length
+            ? await client.query(
+                `SELECT pi.commission_id, SUM(pi.amount)::BIGINT AS amount
+                 FROM public.affiliate_payout_items pi
+                 JOIN public.affiliate_payouts p ON p.id = pi.payout_id
+                 WHERE pi.commission_id = ANY($1::BIGINT[])
+                   AND p.status IN ('pending', 'completed')
+                 GROUP BY pi.commission_id`,
+                [commissionIds]
+            )
+            : { rows: [] };
+        const allocatedByCommission = new Map(
+            allocations.rows.map(item => [String(item.commission_id), Number(item.amount)])
+        );
+        const available = commissions.reduce((sum, item) => {
+            return sum + Math.max(0, Number(item.amount) - (allocatedByCommission.get(String(item.id)) || 0));
+        }, 0);
+        if (amount > available) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(400).json({ success: false, error: 'Số dư hoa hồng khả dụng không đủ.' });
+        }
+
+        const status = method === 'wallet' ? 'completed' : 'pending';
+        const { rows: payoutRows } = await client.query(
+            `INSERT INTO public.affiliate_payouts
+                 (username, amount, method, status, bank_details_encrypted,
+                  bank_details_iv, bank_details_tag, reviewed_at, reviewed_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7,
+                     CASE WHEN $4 = 'completed' THEN NOW() ELSE NULL END,
+                     CASE WHEN $4 = 'completed' THEN 'system' ELSE NULL END)
+             RETURNING id, amount, method, status, created_at`,
+            [
+                req.username,
+                amount,
+                method,
+                status,
+                encryptedBankDetails ? encryptedBankDetails.encryptedKey : null,
+                encryptedBankDetails ? encryptedBankDetails.iv : null,
+                encryptedBankDetails ? encryptedBankDetails.tag : null
+            ]
+        );
+        const payout = payoutRows[0];
+        let remaining = amount;
+        for (const commission of commissions) {
+            if (remaining <= 0) break;
+            const commissionId = String(commission.id);
+            const freeAmount = Math.max(
+                0,
+                Number(commission.amount) - (allocatedByCommission.get(commissionId) || 0)
+            );
+            const allocation = Math.min(remaining, freeAmount);
+            if (allocation <= 0) continue;
+            await client.query(
+                `INSERT INTO public.affiliate_payout_items (payout_id, commission_id, amount)
+                 VALUES ($1, $2, $3)`,
+                [payout.id, commission.id, allocation]
+            );
+            remaining -= allocation;
+        }
+        if (remaining !== 0) throw new Error('Không thể phân bổ chính xác số dư hoa hồng.');
+
+        if (method === 'wallet') {
+            const { rows: users } = await client.query(
+                `SELECT username, balance, deposit_history
+                 FROM public.users
+                 WHERE LOWER(username) = LOWER($1)
+                 FOR UPDATE`,
+                [req.username]
+            );
+            if (!users.length) {
+                await client.query('ROLLBACK');
+                transactionOpen = false;
+                return res.status(404).json({ success: false, error: 'Không tìm thấy tài khoản.' });
+            }
+            const history = users[0].deposit_history == null
+                ? []
+                : safeParseJSON(users[0].deposit_history, null);
+            if (!Array.isArray(history)) throw new Error('Lịch sử ví không hợp lệ.');
+            history.push({
+                amount,
+                method: 'affiliate',
+                content: `Rút hoa hồng Affiliate #${payout.id}`,
+                transactionId: `AFFILIATE_WITHDRAW_${payout.id}`,
+                at: new Date().toISOString()
+            });
+            await client.query(
+                `UPDATE public.users
+                 SET balance = balance + $1, deposit_history = $2
+                 WHERE LOWER(username) = LOWER($3)`,
+                [amount, JSON.stringify(history), req.username]
+            );
+        }
+
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.status(201).json({
+            success: true,
+            data: {
+                id: Number(payout.id),
+                amount: Number(payout.amount),
+                method: payout.method,
+                status: payout.status,
+                createdAt: payout.created_at
+            }
+        });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback affiliate withdrawal failed:', rollbackError.message);
+            }
+        }
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Create affiliate withdrawal error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tạo yêu cầu rút hoa hồng.' });
+    } finally {
+        if (client) client.release();
+    }
+});
+
+app.get('/api/admin/affiliate/withdrawals', requireAdminToken, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, username, amount, method, status,
+                    bank_details_encrypted, bank_details_iv, bank_details_tag,
+                    created_at, reviewed_at
+             FROM public.affiliate_payouts
+             WHERE status = 'pending' AND method = 'bank'
+             ORDER BY created_at
+             LIMIT 100`
+        );
+        const data = rows.map(row => {
+            const bankDetails = JSON.parse(decryptPartnerApiKey({
+                encrypted_key: row.bank_details_encrypted,
+                encryption_iv: row.bank_details_iv,
+                encryption_tag: row.bank_details_tag
+            }));
+            return {
+                id: Number(row.id),
+                username: row.username,
+                amount: Number(row.amount),
+                method: row.method,
+                status: row.status,
+                bankDetails,
+                createdAt: row.created_at
+            };
+        });
+        return res.json({ success: true, data });
+    } catch (error) {
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Load affiliate withdrawals for admin error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể tải yêu cầu rút hoa hồng.' });
+    }
+});
+
+app.post('/api/admin/affiliate/withdrawals/:id/review', requireAdminToken, async (req, res) => {
+    const payoutId = Number(req.params.id);
+    const action = req.body && req.body.action;
+    const note = typeof (req.body && req.body.note) === 'string' ? req.body.note.trim() : '';
+    if (!Number.isSafeInteger(payoutId) || payoutId < 1 ||
+        !['paid', 'rejected'].includes(action) || note.length > 1000) {
+        return res.status(400).json({ success: false, error: 'Thông tin duyệt yêu cầu không hợp lệ.' });
+    }
+
+    let client;
+    let transactionOpen = false;
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+        const { rows } = await client.query(
+            `SELECT id, status, method
+             FROM public.affiliate_payouts
+             WHERE id = $1
+             FOR UPDATE`,
+            [payoutId]
+        );
+        if (!rows.length) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(404).json({ success: false, error: 'Không tìm thấy yêu cầu rút tiền.' });
+        }
+        if (rows[0].method !== 'bank' || rows[0].status !== 'pending') {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
+            return res.status(409).json({ success: false, error: 'Yêu cầu này không còn chờ duyệt.' });
+        }
+
+        const status = action === 'paid' ? 'completed' : 'rejected';
+        await client.query(
+            `UPDATE public.affiliate_payouts
+             SET status = $1, reviewed_at = NOW(), reviewed_by = $2, review_note = $3
+             WHERE id = $4`,
+            [status, req.admin.username || 'admin', note || null, payoutId]
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return res.json({ success: true, data: { id: payoutId, status } });
+    } catch (error) {
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Rollback affiliate withdrawal review failed:', rollbackError.message);
+            }
+        }
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Review affiliate withdrawal error:', error.message);
+        return res.status(500).json({ success: false, error: 'Không thể cập nhật yêu cầu rút tiền.' });
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -3454,6 +5204,8 @@ app.get('/api/user/:username', requireAuthOnly, async (req, res) => {
         if (!dbUser) {
             return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
         }
+        const blueTickExpiresAt = dbUser.blue_tick_expires_at || null;
+        const blueTickExpiryTime = blueTickExpiresAt ? new Date(blueTickExpiresAt).getTime() : null;
         res.json({
             success: true,
             user: {
@@ -3468,7 +5220,13 @@ app.get('/api/user/:username', requireAuthOnly, async (req, res) => {
                 hometown: dbUser.hometown || '',  
                 status: dbUser.status || 'active',
                 kyc_status: dbUser.kyc_status || 'unverified',
+                blueTickActive: Boolean(dbUser.blue_tick_active) &&
+                    Number.isFinite(blueTickExpiryTime) && blueTickExpiryTime > Date.now(),
+                blueTickExpiresAt,
                 createdAt: dbUser.created_at,
+                lastLoginAt: dbUser.previous_login_at || req.session.created_at || null,
+                previousLoginAt: dbUser.previous_login_at || null,
+                currentLoginAt: dbUser.last_login_at || req.session.created_at || null,
                 depositHistory: safeParseJSON(dbUser.deposit_history),
                 purchaseHistory: safeParseJSON(dbUser.purchase_history)
             }
@@ -3520,6 +5278,187 @@ app.get('/api/user/:username/tier', requireUserSession, async (req, res) => {
     } catch (err) {
         console.error('Lỗi lấy cấp bậc:', err);
         res.status(500).json({ success: false, error: 'Lỗi server' });
+    }
+});
+
+app.get('/api/user/:username/statistics', requireUserSession, async (req, res) => {
+    try {
+        const requestedUsername = req.params.username.trim();
+        if (req.username.toLowerCase() !== requestedUsername.toLowerCase()) {
+            return res.status(403).json({ success: false, error: 'Không có quyền' });
+        }
+
+        const dbUser = await getUserByUsername(requestedUsername);
+        if (!dbUser) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+
+        return res.json({
+            success: true,
+            data: buildUserStatistics(dbUser, req.session.created_at)
+        });
+    } catch (err) {
+        console.error('Lỗi lấy thống kê người dùng:', err);
+        return res.status(500).json({ success: false, error: 'Không thể tải thống kê người dùng.' });
+    }
+});
+
+const BLUE_TICK_INTRO_PRICE = 149000;
+const BLUE_TICK_RENEWAL_PRICE = 399000;
+const BLUE_TICK_TERM_DAYS = 30;
+
+function hasPreviouslyPurchasedBlueTick(user, purchaseHistory) {
+    return Boolean(user.blue_tick_active || user.blue_tick_activated_at) ||
+        purchaseHistory.some(item =>
+            item && (
+                ['blue-tick', 'tick-xanh'].includes(String(item.productId || '').toLowerCase()) ||
+                /tick\s*xanh|blue\s*tick/i.test(String(item.productName || ''))
+            )
+        );
+}
+
+app.get('/api/user/:username/tick-xanh', requireUserSession, async (req, res) => {
+    try {
+        const requestedUsername = req.params.username.trim();
+        if (req.username.toLowerCase() !== requestedUsername.toLowerCase()) {
+            return res.status(403).json({ success: false, error: 'Không có quyền' });
+        }
+
+        const dbUser = await getUserByUsername(requestedUsername);
+        if (!dbUser) return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
+        const purchaseHistory = dbUser.purchase_history == null
+            ? []
+            : safeParseJSON(dbUser.purchase_history, null);
+        if (!Array.isArray(purchaseHistory)) {
+            throw new Error('Lịch sử mua Tick xanh không hợp lệ.');
+        }
+        const expiresAt = dbUser.blue_tick_expires_at || null;
+        const expiryTime = expiresAt ? new Date(expiresAt).getTime() : null;
+        const firstPurchase = !hasPreviouslyPurchasedBlueTick(dbUser, purchaseHistory);
+        return res.json({
+            success: true,
+            data: {
+                active: Boolean(dbUser.blue_tick_active) &&
+                    Number.isFinite(expiryTime) && expiryTime > Date.now(),
+                activatedAt: dbUser.blue_tick_activated_at || null,
+                expiresAt,
+                firstPurchase,
+                price: firstPurchase ? BLUE_TICK_INTRO_PRICE : BLUE_TICK_RENEWAL_PRICE
+            }
+        });
+    } catch (err) {
+        console.error('Lỗi lấy trạng thái Tick Xanh:', err);
+        return res.status(500).json({ success: false, error: 'Không thể tải trạng thái Tick Xanh.' });
+    }
+});
+
+app.post('/api/user/blue-tick/purchase', requireUserSession, requireActiveUser, async (req, res) => {
+    const termMs = BLUE_TICK_TERM_DAYS * 24 * 60 * 60 * 1000;
+    let client;
+
+    try {
+        client = await pool.connect();
+        await client.query('BEGIN');
+        const { rows } = await client.query(
+            `SELECT username, balance, purchase_history, blue_tick_active,
+                    blue_tick_activated_at, blue_tick_expires_at
+             FROM users
+             WHERE LOWER(username) = LOWER($1)
+             FOR UPDATE`,
+            [req.username]
+        );
+        if (!rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng.' });
+        }
+
+        const dbUser = rows[0];
+        const purchaseHistory = dbUser.purchase_history == null
+            ? []
+            : safeParseJSON(dbUser.purchase_history, null);
+        if (!Array.isArray(purchaseHistory)) {
+            throw new Error('Lịch sử mua hàng không hợp lệ.');
+        }
+        const firstPurchase = !hasPreviouslyPurchasedBlueTick(dbUser, purchaseHistory);
+        const price = firstPurchase ? BLUE_TICK_INTRO_PRICE : BLUE_TICK_RENEWAL_PRICE;
+        const balance = Number(dbUser.balance);
+        if (!Number.isFinite(balance) || balance < price) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                success: false,
+                error: `Số dư không đủ để mua Tick xanh. Cần ${price.toLocaleString('vi-VN')} đ.`,
+                data: { balance: Number.isFinite(balance) ? balance : 0, price }
+            });
+        }
+
+        const now = new Date();
+        const currentExpiry = dbUser.blue_tick_expires_at
+            ? new Date(dbUser.blue_tick_expires_at).getTime()
+            : NaN;
+        const hasCurrentTerm = Number.isFinite(currentExpiry) && currentExpiry > now.getTime();
+        const startTime = hasCurrentTerm ? currentExpiry : now.getTime();
+        const expiresAt = new Date(startTime + termMs);
+        const activatedAt = hasCurrentTerm && dbUser.blue_tick_activated_at
+            ? dbUser.blue_tick_activated_at
+            : now;
+        const purchasedAt = now.toISOString();
+        const purchaseId = crypto.randomBytes(16).toString('hex');
+        const newPurchase = {
+            purchaseId,
+            productId: 'blue-tick',
+            productName: 'Tick xanh tài khoản (30 ngày)',
+            price,
+            purchasedAt,
+            expiresAt: expiresAt.toISOString()
+        };
+        const updatedHistory = [...purchaseHistory, newPurchase];
+
+        const updated = await client.query(
+            `UPDATE users
+             SET balance = balance - $1,
+                 purchase_history = $2,
+                 blue_tick_active = TRUE,
+                 blue_tick_activated_at = $3,
+                 blue_tick_expires_at = $4
+             WHERE LOWER(username) = LOWER($5)
+             RETURNING balance`,
+            [price, JSON.stringify(updatedHistory), activatedAt, expiresAt, dbUser.username]
+        );
+        if (!updated.rows.length) {
+            throw new Error('Không thể cập nhật giao dịch Tick xanh.');
+        }
+
+        await recordAffiliateCommission(client, {
+            buyerUsername: dbUser.username,
+            sourceOrderId: `blue-tick:${purchaseId}`,
+            category: 'blue_tick',
+            grossAmount: price
+        });
+
+        await client.query('COMMIT');
+        return res.json({
+            success: true,
+            data: {
+                balance: Number(updated.rows[0].balance),
+                active: true,
+                activatedAt,
+                expiresAt: expiresAt.toISOString(),
+                price,
+                firstPurchase,
+                nextPrice: BLUE_TICK_RENEWAL_PRICE
+            }
+        });
+    } catch (error) {
+        if (client) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Không thể hoàn tác giao dịch Tick xanh:', rollbackError);
+            }
+        }
+        if (isAffiliateSchemaError(error)) return affiliateMigrationResponse(res);
+        console.error('Không thể mua Tick xanh:', error);
+        return res.status(500).json({ success: false, error: 'Không thể xử lý giao dịch Tick xanh.' });
+    } finally {
+        if (client) client.release();
     }
 });
 
@@ -3682,6 +5621,16 @@ async function createGoogleUserSession(queryable, { email, fullName, picture, re
     }
 
     if (!dbUser) throw new Error('Could not create or locate the Google user.');
+
+    const loginTimestamps = await queryable.query(
+        `UPDATE users
+         SET previous_login_at = last_login_at, last_login_at = NOW()
+         WHERE username = $1
+         RETURNING previous_login_at, last_login_at`,
+        [dbUser.username]
+    );
+    dbUser.previous_login_at = loginTimestamps.rows[0].previous_login_at;
+    dbUser.last_login_at = loginTimestamps.rows[0].last_login_at;
 
     const sessionToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + (
@@ -4155,74 +6104,107 @@ app.get('/api/user/deposit-intents/:orderCode', requireUserSession, async (req, 
    SECTION 32: BUY PRODUCT & DOWNLOAD
    ═══════════════════════════════════════════════════════════════════════════ */
 
+const TYON_SHOP_PRODUCT_PRICES = Object.freeze({
+    1: 0, 35: 850000, 34: 750000, 32: 650000, 14: 550000, 33: 500000,
+    6: 450000, 5: 350000, 4: 250000, 3: 150000, 2: 100000, 15: 125000,
+    16: 125000, 10: 50000, 20: 275000, 28: 120000, 31: 50000,
+    17: 140000, 21: 50000, 18: 15000, 19: 75000, 12: 25000,
+    13: 45000, 29: 80000, 30: 40000, 25: 75000, 26: 450000,
+    27: 450000, 22: 250000, 23: 150000, 24: 350000
+});
+
 app.post('/api/buy-product', requireUserSession, requireActiveUser, async (req, res) => {
+    const productId = String(req.body && req.body.productId);
+    const numericPrice = TYON_SHOP_PRODUCT_PRICES[productId];
+    const productName = typeof (req.body && req.body.productName) === 'string'
+        ? req.body.productName.trim()
+        : '';
+    if (!Object.prototype.hasOwnProperty.call(TYON_SHOP_PRODUCT_PRICES, productId) ||
+        !productName) {
+        return res.status(400).json({ success: false, error: 'Sản phẩm không hợp lệ.' });
+    }
+
+    let client;
+    let transactionOpen = false;
     try {
-        const { username, productId, price, productName } = req.body;
-
-        if (!username || productId === undefined || price === undefined || !productName) {
-            return res.status(400).json({ success: false, error: 'Thiếu thông tin đơn hàng' });
-        }
-
-        const numericPrice = Number(price);
-        if (isNaN(numericPrice) || numericPrice < 0) {
-            return res.status(400).json({ success: false, error: 'Giá sản phẩm không hợp lệ' });
-        }
-
-        if (req.username.toLowerCase() !== username.trim().toLowerCase()) {
+        const requestedUsername = String(req.body && req.body.username || '').trim();
+        if (!requestedUsername ||
+            req.username.toLowerCase() !== requestedUsername.toLowerCase()) {
             return res.status(403).json({ success: false, error: 'Không có quyền thực hiện giao dịch này' });
         }
 
-        const dbUser = await getUserByUsername(username);
+        client = await pool.connect();
+        await client.query('BEGIN');
+        transactionOpen = true;
+
+        const { rows: users } = await client.query(
+            `SELECT username, balance, purchase_history, email, full_name
+             FROM users
+             WHERE LOWER(username) = LOWER($1)
+             FOR UPDATE`,
+            [req.username]
+        );
+        const dbUser = users[0];
         if (!dbUser) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
             return res.status(404).json({ success: false, error: 'Không tìm thấy người dùng' });
         }
-
         const purchaseHistory = safeParseJSON(dbUser.purchase_history);
 
-        if (purchaseHistory.some(p => String(p.productId) === String(productId))) {
+        if (!Array.isArray(purchaseHistory)) {
+            throw new Error('Lịch sử mua hàng không hợp lệ.');
+        }
+        if (purchaseHistory.some(p => String(p.productId) === productId)) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
             return res.status(400).json({ success: false, error: 'Bạn đã sở hữu sản phẩm này rồi!' });
         }
 
         const now = new Date().toISOString();
+        const purchaseId = crypto.randomBytes(16).toString('hex');
         const newPurchase = {
-            productId: String(productId), 
-            productName: productName.trim(),
+            purchaseId,
+            productId,
+            productName,
             price: numericPrice,
             purchasedAt: now
         };
         const updatedHistory = [...purchaseHistory, newPurchase];
 
-        const { rowCount } = await pool.query(
+        const { rows: updatedUsers } = await client.query(
             `UPDATE users
              SET balance = balance - $1, purchase_history = $2
-             WHERE LOWER(username) = LOWER($3) AND balance >= $1`,
+             WHERE LOWER(username) = LOWER($3) AND balance >= $1
+             RETURNING balance`,
             [numericPrice, JSON.stringify(updatedHistory), dbUser.username]
         );
 
-        if (rowCount === 0) {
+        if (!updatedUsers.length) {
+            await client.query('ROLLBACK');
+            transactionOpen = false;
             return res.status(400).json({ success: false, error: 'Số dư không đủ để thanh toán' });
         }
 
-        const { rows: after } = await pool.query(
-            'SELECT balance FROM users WHERE LOWER(username) = LOWER($1)',
-            [dbUser.username]
-        );
-
-        if (after.length === 0) {
-            return res.status(500).json({ success: false, error: 'Lỗi đồng bộ dữ liệu sau giao dịch' });
-        }
-        
-        const newBalance = Number(after[0].balance);
+        await recordAffiliateCommission(client, {
+            buyerUsername: dbUser.username,
+            sourceOrderId: `tyon-shop:${purchaseId}`,
+            category: 'tyon_shop',
+            grossAmount: numericPrice
+        });
+        await client.query('COMMIT');
+        transactionOpen = false;
+        const newBalance = Number(updatedUsers[0].balance);
 
         if (dbUser.email) {
             const orderInfo = {
-                orderCode: `TYON${Date.now().toString(36).toUpperCase()}`,
+                orderCode: `TYON${purchaseId.slice(0, 12).toUpperCase()}`,
                 customerName: dbUser.full_name || dbUser.username,
                 planName: productName,
                 amount: numericPrice,
                 paidAt: now,
-                transactionId: `BALANCE_${Date.now()}`,
-                key: `TYON-KEY-${Math.random().toString(36).substring(2, 8).toUpperCase()}`
+                transactionId: `BALANCE_${purchaseId}`,
+                key: `TYON-KEY-${purchaseId.slice(-6).toUpperCase()}`
             };
 
             queueEmail(
@@ -4235,16 +6217,26 @@ app.post('/api/buy-product', requireUserSession, requireActiveUser, async (req, 
             success: true,
             message: 'Thanh toán thành công',
             newBalance,
-            productId,
+            productId: Number(productId),
             purchasedAt: now
         });
 
     } catch (err) {
-        console.error('❌ Buy product error:', err);
+        if (client && transactionOpen) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackError) {
+                console.error('Buy product rollback error:', rollbackError.message);
+            }
+        }
+        if (isAffiliateSchemaError(err)) return affiliateMigrationResponse(res);
+        console.error('Buy product error:', err);
         if (err.code === '23514') {
             return res.status(400).json({ success: false, error: 'Số dư không đủ (ràng buộc dữ liệu)' });
         }
         return res.status(500).json({ success: false, error: 'Lỗi server, vui lòng thử lại sau' });
+    } finally {
+        if (client) client.release();
     }
 });
 
