@@ -1521,7 +1521,7 @@ const CORS_ALLOWED_ORIGINS = [
     FRONTEND_URL,
     ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
     'https://buyoptimizertc.infinityfreeapp.com',
-    'https://mmotc.infinityfreeapp.com',
+    'https://tcmmo.infinityfreeapp.com',
     'https://buyoptimizertyoncao.onrender.com',
     'https://dashboardtc.infinityfreeapp.com',
     'http://localhost:3000',
@@ -2926,25 +2926,59 @@ app.post('/api/send-register-otp', (req, res, next) => {
 
 app.post('/api/register', async (req, res) => {
     try {
-        const { username, password, fullName, email } = req.body || {};
+        const { username, password, fullName, email, otp } = req.body || {};
 
-        if (!username || !password || !fullName || !email) {
+        if (typeof username !== 'string' || typeof password !== 'string' ||
+            typeof fullName !== 'string' || typeof email !== 'string' ||
+            typeof otp !== 'string' || !username.trim() || !password || !fullName.trim() ||
+            !email.trim() || !otp.trim()) {
             return res.status(400).json({
                 success: false,
-                error: 'Thiếu thông tin (cần username, password, fullName, email)'
+                error: 'Thiếu thông tin (cần username, password, fullName, email, otp)'
             });
         }
 
         const usernameTrim = username.trim();
         const fullNameTrim = fullName.trim();
         const emailTrim = email.trim();
+        const emailKey = emailTrim.toLowerCase();
+        const otpTrim = String(otp).trim();
 
         if (!isValidEmail(emailTrim)) return res.status(400).json({ success: false, error: 'Email không hợp lệ' });
         if (!isValidUsername(usernameTrim)) return res.status(400).json({ success: false, error: 'Username không hợp lệ (≥4 ký tự, chỉ chữ/số/_)' });
-        if (typeof password !== 'string' || password.length < 8) {
+        if (password.length < 8) {
             return res.status(400).json({ success: false, error: 'Mật khẩu phải ≥8 ký tự' });
         }
         if (fullNameTrim.length < 2) return res.status(400).json({ success: false, error: 'Họ tên quá ngắn' });
+        if (!/^\d{6}$/.test(otpTrim)) return res.status(400).json({ success: false, error: 'Mã xác thực phải gồm 6 chữ số' });
+
+        const storedOtp = registerOtpStore.get(emailKey);
+        if (!storedOtp) {
+            return res.status(400).json({
+                success: false,
+                error: 'Mã xác thực không tồn tại hoặc đã hết hạn. Vui lòng yêu cầu gửi mã mới.'
+            });
+        }
+        if (Date.now() > storedOtp.expiresAt) {
+            registerOtpStore.delete(emailKey);
+            return res.status(400).json({ success: false, error: 'Mã xác thực đã hết hạn. Vui lòng gửi mã mới.' });
+        }
+        if (storedOtp.attempts >= OTP_MAX_ATTEMPTS) {
+            registerOtpStore.delete(emailKey);
+            return res.status(429).json({ success: false, error: 'Bạn đã nhập sai mã quá nhiều lần. Vui lòng gửi mã mới.' });
+        }
+        if (storedOtp.otp !== otpTrim) {
+            storedOtp.attempts += 1;
+            if (storedOtp.attempts >= OTP_MAX_ATTEMPTS) {
+                registerOtpStore.delete(emailKey);
+                return res.status(429).json({ success: false, error: 'Bạn đã nhập sai mã quá nhiều lần. Vui lòng gửi mã mới.' });
+            }
+            registerOtpStore.set(emailKey, storedOtp);
+            return res.status(400).json({
+                success: false,
+                error: `Mã xác thực không chính xác. Bạn còn ${OTP_MAX_ATTEMPTS - storedOtp.attempts} lần thử.`
+            });
+        }
 
         const { rows: dup } = await pool.query(
             'SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($2)',
@@ -2959,6 +2993,8 @@ app.post('/api/register', async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
             [usernameTrim, hashedPassword, fullNameTrim, emailTrim, 0, JSON.stringify([]), JSON.stringify([])]
         );
+
+        registerOtpStore.delete(emailKey);
 
         queueEmail(
             emailTrim,
