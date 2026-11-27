@@ -1521,6 +1521,7 @@ const CORS_ALLOWED_ORIGINS = [
     FRONTEND_URL,
     ...(FRONTEND_URL_1 ? [FRONTEND_URL_1] : []),
     'https://buyoptimizertc.infinityfreeapp.com',
+    'http://127.0.0.1:5500',
     'https://tcmmo.infinityfreeapp.com',
     'https://buyoptimizertyoncao.onrender.com',
     'https://dashboardtc.infinityfreeapp.com',
